@@ -46,6 +46,7 @@ public partial class HUDController : Control
     private Label _woodAmountLabel;
     private Control _amountOfResourcesPanel;
 
+    private Control _speedButtonsContainer;
     private Button _stopButton;
     private Button _speed1xButton;
     private Button _speed5xButton;
@@ -58,6 +59,7 @@ public partial class HUDController : Control
     private Button _activeToolButton;
     private Panel _activeHighlightPanel;
     private PriorityBoardController _priorityBoard;
+    private GardenController _gardenController;
 
     public override void _Ready()
     {
@@ -102,8 +104,10 @@ public partial class HUDController : Control
         _speed25xButton  = FindChild("25x", true, false) as Button ?? FindChild("25xTime", true, false) as Button;
         _speed100xButton = FindChild("100x", true, false) as Button ?? FindChild("100xTime", true, false) as Button;
 
+        SetupSpeedControlsLayer();
         SetupHighlightPanel();
         SetupPriorityBoard();
+        SetupGardenController();
         SetMouseFilterRecursive(this);
 
         if (_buttonConstruct != null)
@@ -195,6 +199,62 @@ public partial class HUDController : Control
         CloseAllMenus();
     }
 
+    private void SetupSpeedControlsLayer()
+    {
+        // Находим родительский контейнер кнопок времени или поднимаем сами кнопки на верхний слой (ZIndex = 50)
+        Control parent = _stopButton?.GetParent() as Control;
+        if (parent != null && parent != this)
+        {
+            _speedButtonsContainer = parent;
+            _speedButtonsContainer.ZIndex = 50;
+        }
+        else
+        {
+            if (_stopButton != null) _stopButton.ZIndex = 50;
+            if (_speed1xButton != null) _speed1xButton.ZIndex = 50;
+            if (_speed5xButton != null) _speed5xButton.ZIndex = 50;
+            if (_speed25xButton != null) _speed25xButton.ZIndex = 50;
+            if (_speed100xButton != null) _speed100xButton.ZIndex = 50;
+        }
+    }
+
+    private void SetupGardenController()
+    {
+        _gardenController = new GardenController { Name = "GardenController" };
+        AddChild(_gardenController);
+
+        _gardenController.OnOpened += () =>
+        {
+            CloseAllMenus();
+            ClearActiveToolButton();
+            SetMainHUDVisible(false);
+        };
+
+        _gardenController.OnClosed += () =>
+        {
+            SetMainHUDVisible(true);
+        };
+    }
+
+    public void SetMainHUDVisible(bool visible)
+    {
+        if (_buttonConstruct != null) _buttonConstruct.Visible = visible;
+        if (_prioritetButton != null) _prioritetButton.Visible = visible;
+        if (_populationLabel != null) _populationLabel.Visible = visible;
+        if (_employmentLabel != null) _employmentLabel.Visible = visible;
+
+        if (_amountOfResourcesPanel != null)
+        {
+            bool shouldShowResources = visible && (_priorityBoard == null || !_priorityBoard.IsOpen);
+            _amountOfResourcesPanel.Visible = shouldShowResources;
+        }
+
+        if (!visible)
+        {
+            CloseAllMenus();
+        }
+    }
+
     private void SetupHighlightPanel()
     {
         _activeHighlightPanel = new Panel
@@ -263,13 +323,16 @@ public partial class HUDController : Control
         {
             _priorityBoard.Close();
             ClearActiveToolButton();
-            if (_amountOfResourcesPanel != null) _amountOfResourcesPanel.Visible = true;
+            if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen))
+                _amountOfResourcesPanel.Visible = true;
         }
         else
         {
             ToggleToolButton(_prioritetButton, () =>
             {
-                if (_amountOfResourcesPanel != null) _amountOfResourcesPanel.Visible = false;
+                FarmZoneManager.Instance.DeselectZone();
+                if (_amountOfResourcesPanel != null)
+                    _amountOfResourcesPanel.Visible = false;
                 _priorityBoard.Open();
             });
         }
@@ -283,13 +346,15 @@ public partial class HUDController : Control
             if (_priorityBoard != null && _priorityBoard.IsOpen)
             {
                 _priorityBoard.Close();
-                if (_amountOfResourcesPanel != null) _amountOfResourcesPanel.Visible = true;
+                if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen))
+                    _amountOfResourcesPanel.Visible = true;
             }
             PlayerInteractionManager.Instance?.ResetToDefault();
             return;
         }
 
         ClearActiveToolButton();
+        FarmZoneManager.Instance.DeselectZone();
         _activeToolButton = button;
 
         if (_activeToolButton != null && _activeHighlightPanel != null)
@@ -341,16 +406,30 @@ public partial class HUDController : Control
     {
         if (@event is InputEventKey key && key.Pressed && key.Keycode == Key.Escape)
         {
+            bool handled = false;
+
+            if (_gardenController != null && _gardenController.IsOpen)
+            {
+                FarmZoneManager.Instance.DeselectZone();
+                handled = true;
+            }
+
             if ((_selectionContainer != null && _selectionContainer.Visible) || _activeToolButton != null || (_priorityBoard != null && _priorityBoard.IsOpen))
             {
                 CloseAllMenus();
                 if (_priorityBoard != null && _priorityBoard.IsOpen)
                 {
                     _priorityBoard.Close();
-                    if (_amountOfResourcesPanel != null) _amountOfResourcesPanel.Visible = true;
+                    if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen))
+                        _amountOfResourcesPanel.Visible = true;
                 }
                 ClearActiveToolButton();
                 PlayerInteractionManager.Instance?.ResetToDefault();
+                handled = true;
+            }
+
+            if (handled)
+            {
                 GetViewport().SetInputAsHandled();
             }
         }

@@ -16,7 +16,7 @@ public partial class Main : Node2D
     private TimeManager _timeManager;
     private PerformanceOverlay _profilerOverlay;
 
-    [Export] public int AgentCount = 550;
+    [Export] public int AgentCount = 100;
     [Export] public HUDController HUD;
 
     public override void _Ready()
@@ -44,6 +44,12 @@ public partial class Main : Node2D
         AddChild(_mapRenderer);
         _mapRenderer.OnMapApplied += OnMapApplied;
 
+        var farmZoneRenderer = new FarmZoneRenderer { Name = "FarmZoneRenderer" };
+        AddChild(farmZoneRenderer);
+
+        var cropRenderer = new CropRenderer { Name = "CropRenderer" };
+        AddChild(cropRenderer);
+
         var itemRenderer = new GroundItemRenderer { Name = "GroundItemRenderer" };
         AddChild(itemRenderer);
 
@@ -59,6 +65,11 @@ public partial class Main : Node2D
         {
             _agentThread = new AgentSimulationThread();
             _agentThread.Start(AgentCount, _mapRenderer.MapData.Ground, _mapRenderer.MapData.TreeOnGrass);
+
+            // Стартовый спавн 100 зерна в центре карты
+            int centerX = MapRenderer.MapWidth / 2;
+            int centerY = MapRenderer.MapHeight / 2;
+            GroundItemManager.Instance.SpawnItems(centerX, centerY, ItemId.Grain, 100);
 
             _timeManager.OnSpeedChanged += speed =>
             {

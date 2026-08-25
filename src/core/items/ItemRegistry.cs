@@ -12,9 +12,18 @@ public static class ItemRegistry
         "uid://by88ysblfuqqu"
     );
 
+    public static readonly ItemDefinition Grain = new(
+        ItemId.Grain,
+        "Зерно",
+        0.15f,
+        100,
+        "uid://byln5m1aam7tg"
+    );
+
     private static readonly Dictionary<ItemId, ItemDefinition> _items = new()
     {
-        { ItemId.Log, Log }
+        { ItemId.Log, Log },
+        { ItemId.Grain, Grain }
     };
 
     public static ItemDefinition Get(ItemId id) => _items[id];

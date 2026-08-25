@@ -16,7 +16,7 @@ public sealed class JobPriorityManager
     {
         for (int i = 0; i < _priorities.Length; i++)
         {
-            _priorities[i] = 1; // По умолчанию приоритет равен 1
+            _priorities[i] = 1;
         }
     }
 
@@ -45,6 +45,8 @@ public sealed class JobPriorityManager
             JobTypeId.TreeChopping      => JobCategory.Lumberjack,
             JobTypeId.Construction      => JobCategory.Construction,
             JobTypeId.Farming           => JobCategory.Farming,
+            JobTypeId.Planting          => JobCategory.Farming,
+            JobTypeId.Harvesting        => JobCategory.Farming,
             _                           => JobCategory.Logistics
         };
     }

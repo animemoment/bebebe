@@ -44,7 +44,7 @@ public sealed class AgentSimulationThread : IDisposable
 
     private const float BaseFixedDeltaTime = 0.05f;
     private const float MinSnapInterval = 1.0f / 60.0f;
-    private const float DispatchInterval = 0.25f; // 4 Гц для диспетчера задач
+    private const float DispatchInterval = 0.25f;
 
     public void Start(int agentCount, TileType[,] ground, bool[,] treeOnGrass, int seed = 0)
     {
@@ -109,6 +109,8 @@ public sealed class AgentSimulationThread : IDisposable
             JobRegistry.Register(new FarmingJobHandler());
             JobRegistry.Register(new BlueprintDeliveryJobHandler());
             JobRegistry.Register(new StockpileHaulingJobHandler());
+            JobRegistry.Register(new PlantingJobHandler());
+            JobRegistry.Register(new HarvestJobHandler());
 
             PushSnapshot();
 
@@ -176,6 +178,8 @@ public sealed class AgentSimulationThread : IDisposable
                             _tickCounter++;
                             _dispatchTimer += currentStepDt;
 
+                            CropGrowthManager.Instance.UpdateGrowth(currentStepDt, _ctx);
+
                             if (_dispatchTimer >= DispatchInterval)
                             {
                                 _dispatchTimer = 0f;
@@ -190,6 +194,7 @@ public sealed class AgentSimulationThread : IDisposable
                         {
                             renderTimer.Restart();
                             GroundItemManager.Instance.GenerateSnapshot();
+                            CropGrowthManager.Instance.GenerateSnapshot();
                             PushSnapshot();
                         }
                     }

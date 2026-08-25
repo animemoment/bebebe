@@ -13,8 +13,8 @@ public class FarmingTool : ITool
     private bool _isDragging = false;
     private bool _isLeftClick = true;
 
-    private static readonly Color FarmZoneFill = new Color(0.4f, 0.6f, 0.2f, 0.35f);
-    private static readonly Color FarmZoneBorder = new Color(0.5f, 0.8f, 0.2f, 0.9f);
+    private static readonly Color FarmZoneFill = new(0.4f, 0.6f, 0.2f, 0.35f);
+    private static readonly Color FarmZoneBorder = new(0.5f, 0.8f, 0.2f, 0.9f);
 
     private readonly List<(int X, int Y)> _cellBuffer = new(2048);
 
@@ -78,6 +78,7 @@ public class FarmingTool : ITool
             if (_cellBuffer.Count > 0)
             {
                 FarmJobManager.Instance.MarkPlotsBatch(_cellBuffer, _mapData?.TreeOnGrass);
+                FarmZoneManager.Instance.CreateZone(_cellBuffer);
             }
         }
         else
@@ -93,6 +94,7 @@ public class FarmingTool : ITool
             if (_cellBuffer.Count > 0)
             {
                 FarmJobManager.Instance.UnmarkPlotsBatch(_cellBuffer);
+                FarmZoneManager.Instance.RemoveTiles(_cellBuffer);
             }
         }
     }

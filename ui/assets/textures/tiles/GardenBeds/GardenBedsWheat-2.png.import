@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cf7ci8om64vt0"
-path="res://.godot/imported/GardenBeds.png-67a1d31debf19777d3ccf26e8bc82c55.ctex"
+uid="uid://cq1k2nlma5qxs"
+path="res://.godot/imported/GardenBedsWheat-2.png-6c987cbd7ad826ba5fad847dda57d12d.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://ui/assets/textures/tiles/GardenBeds.png"
-dest_files=["res://.godot/imported/GardenBeds.png-67a1d31debf19777d3ccf26e8bc82c55.ctex"]
+source_file="res://ui/assets/textures/tiles/GardenBeds/GardenBedsWheat-2.png"
+dest_files=["res://.godot/imported/GardenBedsWheat-2.png-6c987cbd7ad826ba5fad847dda57d12d.ctex"]
 
 [params]
 

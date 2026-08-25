@@ -1,9 +1,10 @@
-﻿# Godot 4 & Mono/C# Ignore
+﻿# Godot 4 & C# ignores
 .godot/
 .mono/
 bin/
 obj/
-*.csproj.user
+*.sln.DotSettings.user
 .vs/
 .idea/
-*.sln.DotSettings.user
+*.tmp
+*.log

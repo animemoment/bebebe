@@ -1,0 +1,117 @@
+[gd_scene format=3 uid="uid://cdw0k5nk6nuof"]
+
+[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="1_4stjd"]
+[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="1_hspbc"]
+[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="3_kumha"]
+
+[sub_resource type="Theme" id="Theme_dtglo"]
+default_font = ExtResource("1_hspbc")
+
+[sub_resource type="Theme" id="Theme_u0ya7"]
+default_font = ExtResource("1_hspbc")
+
+[node name="Control" type="Control" unique_id=1766286521]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="Panel" parent="." unique_id=1965444697]
+self_modulate = Color(0, 0, 0, 1)
+layout_mode = 0
+offset_left = -1.0
+offset_top = 31.0
+offset_right = 1152.0
+offset_bottom = 648.0
+theme = SubResource("Theme_dtglo")
+
+[node name="Panel2" type="Panel" parent="Panel" unique_id=1562267151]
+layout_mode = 0
+offset_right = 1149.0
+offset_bottom = 57.0
+theme = SubResource("Theme_u0ya7")
+
+[node name="Label" type="Label" parent="Panel/Panel2" unique_id=1189356176]
+layout_mode = 0
+offset_right = 1149.0
+offset_bottom = 57.0
+theme_override_font_sizes/font_size = 40
+text = "Планируемые к посадке культуры"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="ScrollContainer" type="ScrollContainer" parent="Panel" unique_id=702807491]
+layout_mode = 0
+offset_top = 55.0
+offset_right = 1149.0
+offset_bottom = 617.0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="Panel/ScrollContainer" unique_id=1323555694]
+custom_minimum_size = Vector2(560, 592)
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="NameCulture" type="Label" parent="Panel/ScrollContainer/VBoxContainer" unique_id=64999606]
+layout_mode = 2
+theme_override_font_sizes/font_size = 40
+text = "ПШЕНИЦА"
+horizontal_alignment = 1
+
+[node name="WheatCont" type="HBoxContainer" parent="Panel/ScrollContainer/VBoxContainer" unique_id=53860287]
+custom_minimum_size = Vector2(250, 250)
+layout_mode = 2
+
+[node name="TextureRect" type="TextureRect" parent="Panel/ScrollContainer/VBoxContainer/WheatCont" unique_id=1587315121]
+layout_mode = 2
+texture = ExtResource("1_4stjd")
+expand_mode = 3
+
+[node name="VBoxContainer" type="VBoxContainer" parent="Panel/ScrollContainer/VBoxContainer/WheatCont" unique_id=381993327]
+layout_mode = 2
+alignment = 1
+
+[node name="CheckMark" type="Button" parent="Panel/ScrollContainer/VBoxContainer/WheatCont/VBoxContainer" unique_id=1489544937]
+custom_maximum_size = Vector2(80, 80)
+layout_mode = 2
+icon = ExtResource("3_kumha")
+
+[node name="Num" type="Label" parent="Panel/ScrollContainer/VBoxContainer/WheatCont" unique_id=1961877223]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "Необходимое 
+количество ресурса 
+для посадки:"
+
+[node name="Label2" type="Label" parent="Panel/ScrollContainer/VBoxContainer/WheatCont" unique_id=1021433657]
+layout_mode = 2
+text = "                                                                                                                   "
+
+[node name="Label3" type="Label" parent="Panel/ScrollContainer/VBoxContainer/WheatCont" unique_id=254181306]
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "Пшеница-базовый ресурс
+для пропитания,
+основа многих цивилизаций 
+и просто очень полезный продукт"
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="Panel/ScrollContainer/VBoxContainer" unique_id=390952330]
+custom_minimum_size = Vector2(250, 250)
+layout_mode = 2
+
+[node name="TextureRect" type="TextureRect" parent="Panel/ScrollContainer/VBoxContainer/HBoxContainer2" unique_id=1077815428]
+layout_mode = 2
+
+[node name="HBoxContainer3" type="HBoxContainer" parent="Panel/ScrollContainer/VBoxContainer" unique_id=742488919]
+custom_minimum_size = Vector2(250, 250)
+layout_mode = 2
+
+[node name="Escape" type="Button" parent="." unique_id=1526164658]
+modulate = Color(0.31381482, 0.4320518, 0.71541405, 1)
+layout_mode = 0
+offset_left = 1.0
+offset_top = 36.0
+offset_right = 52.0
+offset_bottom = 71.0
+text = "esc"

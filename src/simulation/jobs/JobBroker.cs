@@ -146,7 +146,6 @@ public sealed class JobBroker
             {
                 JobDispatcher.Instance.UnregisterJob(job.Id);
 
-                // Создаём задачу постройки строго после доставки всех материалов
                 JobDispatcher.Instance.RegisterJob(new JobData
                 {
                     TypeId = JobTypeId.Construction,
@@ -206,4 +205,42 @@ public sealed class JobBroker
 
     public void UnregisterFarmPlotBatch(List<(int X, int Y)> plots) =>
         JobDispatcher.Instance.UnregisterBatchByPositions(plots, JobTypeId.Farming);
+
+    public void RegisterPlanting(int x, int y, int zoneId)
+    {
+        JobDispatcher.Instance.RegisterJob(new JobData
+        {
+            TypeId = JobTypeId.Planting,
+            ExecutionType = JobExecutionType.Hauling,
+            PriorityTier = JobPriorityTier.Farming,
+            TargetX = x,
+            TargetY = y,
+            StandX = x,
+            StandY = y,
+            MaxWorkers = 1,
+            WorkDuration = 10.0f
+        });
+    }
+
+    public void UnregisterPlanting(int x, int y) =>
+        JobDispatcher.Instance.UnregisterJobByPos(x, y, JobTypeId.Planting);
+
+    public void RegisterHarvest(int x, int y)
+    {
+        JobDispatcher.Instance.RegisterJob(new JobData
+        {
+            TypeId = JobTypeId.Harvesting,
+            ExecutionType = JobExecutionType.Stationary,
+            PriorityTier = JobPriorityTier.Farming,
+            TargetX = x,
+            TargetY = y,
+            StandX = x,
+            StandY = y,
+            MaxWorkers = 1,
+            WorkDuration = 5.0f
+        });
+    }
+
+    public void UnregisterHarvest(int x, int y) =>
+        JobDispatcher.Instance.UnregisterJobByPos(x, y, JobTypeId.Harvesting);
 }
