@@ -1,0 +1,332 @@
+[gd_scene format=3 uid="uid://ddw8eu16j846s"]
+
+[ext_resource type="Texture2D" uid="uid://chubmh2ufwgwp" path="res://ui/assets/textures/construction items/wooden_wall.png" id="1_0mwgc"]
+[ext_resource type="Script" uid="uid://ra22kuvpiydb" path="res://ui/HUDController.cs" id="1_hqnrr"]
+[ext_resource type="Texture2D" uid="uid://c0hnqkwjeowlk" path="res://ui/assets/textures/icons/MapIcon.png" id="2_8qguk"]
+[ext_resource type="Texture2D" uid="uid://4is7x0482hw4" path="res://ui/assets/textures/icons/icon_construct.png" id="3_136eg"]
+[ext_resource type="Texture2D" uid="uid://rl4undajuo11" path="res://ui/assets/textures/icons/politic_icon.png" id="3_gss2c"]
+[ext_resource type="Texture2D" uid="uid://wxsfnv0yq7ot" path="res://ui/assets/textures/icons/people_icon.png" id="4_136eg"]
+[ext_resource type="Texture2D" uid="uid://d1xq2yj0yy17c" path="res://ui/assets/textures/icons/WallIcon.png" id="6_4d46k"]
+[ext_resource type="Texture2D" uid="uid://c0th3ldvb3ab0" path="res://ui/assets/textures/icons/stop.png" id="6_o6xly"]
+[ext_resource type="Texture2D" uid="uid://by88ysblfuqqu" path="res://ui/assets/textures/objects/logs.png" id="7_4jqwt"]
+[ext_resource type="Texture2D" uid="uid://cj4xotk0mcyx4" path="res://ui/assets/textures/icons/ZonesIcon.png" id="7_erw67"]
+[ext_resource type="Texture2D" uid="uid://cgh01o8ypbym7" path="res://ui/assets/textures/icons/order_icon.png" id="7_h022r"]
+[ext_resource type="Texture2D" uid="uid://b53x4gy4f0dd" path="res://ui/assets/textures/icons/IndustrialIcon.png" id="8_gonto"]
+[ext_resource type="Texture2D" uid="uid://cjba4cpjkmomm" path="res://ui/assets/textures/icons/tree_feeling_icon.png" id="8_h022r"]
+[ext_resource type="Texture2D" uid="uid://bmmmyvj838eje" path="res://ui/assets/textures/icons/work_table.png" id="13_cwdlq"]
+[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="14_erw67"]
+[ext_resource type="Texture2D" uid="uid://yvw1b2pmcsfr" path="res://ui/assets/textures/icons/farming.png" id="14_we3sy"]
+[ext_resource type="Texture2D" uid="uid://cmj0eedloosxw" path="res://ui/assets/textures/icons/Bread_icon.png" id="15_gonto"]
+[ext_resource type="Texture2D" uid="uid://cnmxgbn8j1mfp" path="res://ui/assets/textures/icons/PrioritetIcons/PriorityBoardIcon.png" id="18_we3sy"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4jqwt"]
+content_margin_left = 1.0
+content_margin_top = 1.0
+content_margin_right = 1.0
+content_margin_bottom = 0.0
+bg_color = Color(0.1, 0.1, 0.1, 0.6)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+corner_detail = 5
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_u0ya7"]
+bg_color = Color(0.003921569, 0.003921569, 0.003921569, 0.52156866)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_0mwgc"]
+atlas = ExtResource("1_0mwgc")
+region = Rect2(128, 0, 64, 64)
+
+[sub_resource type="Theme" id="Theme_xmflq"]
+default_font = ExtResource("14_erw67")
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dtglo"]
+bg_color = Color(0.12610465, 0.11614745, 0.09679184, 1)
+
+[node name="hud_tscn" type="Control" unique_id=706407172]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 3.0
+offset_right = 3.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_hqnrr")
+
+[node name="ButtonMap" type="Button" parent="." unique_id=1801891714]
+layout_mode = 0
+offset_left = 1089.0
+offset_right = 1149.0
+offset_bottom = 60.0
+icon = ExtResource("2_8qguk")
+expand_icon = true
+
+[node name="Politic" type="Button" parent="." unique_id=6096328]
+layout_mode = 0
+offset_left = 1099.0
+offset_top = 91.0
+offset_right = 1149.0
+offset_bottom = 141.0
+icon = ExtResource("3_gss2c")
+expand_icon = true
+
+[node name="Nothing" type="Button" parent="." unique_id=1977490199]
+layout_mode = 0
+offset_left = 1089.0
+offset_top = 60.0
+offset_right = 1114.0
+offset_bottom = 85.0
+theme_override_font_sizes/font_size = 12
+text = ">"
+
+[node name="ButtonConstruct" type="Button" parent="." unique_id=777103656]
+layout_mode = 0
+offset_left = 1099.0
+offset_top = 143.0
+offset_right = 1149.0
+offset_bottom = 193.0
+icon = ExtResource("3_136eg")
+expand_icon = true
+
+[node name="ButtonVillagers" type="Button" parent="." unique_id=1422304360]
+layout_mode = 0
+offset_left = 1099.0
+offset_top = 196.0
+offset_right = 1149.0
+offset_bottom = 244.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_4jqwt")
+icon = ExtResource("4_136eg")
+expand_icon = true
+
+[node name="GridContainer" type="GridContainer" parent="." unique_id=84373484]
+layout_mode = 0
+offset_left = 1036.0
+offset_top = 245.0
+offset_right = 1149.0
+offset_bottom = 645.0
+columns = 20
+
+[node name="MiniMap" type="Control" parent="." unique_id=1073061695]
+anchors_preset = 0
+offset_left = -3.0
+offset_right = 160.0
+offset_bottom = 159.0
+
+[node name="Population" type="Label" parent="." unique_id=1589536909]
+layout_mode = 0
+offset_left = 164.0
+offset_right = 204.0
+offset_bottom = 23.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_u0ya7")
+horizontal_alignment = 1
+
+[node name="Employment" type="Label" parent="." unique_id=2139642657]
+layout_mode = 0
+offset_left = 205.0
+offset_right = 245.0
+offset_bottom = 23.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_u0ya7")
+horizontal_alignment = 1
+
+[node name="StopTime" type="Button" parent="." unique_id=1576161272]
+layout_mode = 0
+offset_left = 426.0
+offset_right = 459.0
+offset_bottom = 31.0
+icon = ExtResource("6_o6xly")
+expand_icon = true
+
+[node name="1xTime" type="Button" parent="." unique_id=300610884]
+layout_mode = 0
+offset_left = 460.0
+offset_right = 488.0
+offset_bottom = 31.0
+theme_override_font_sizes/font_size = 16
+text = "1X"
+
+[node name="5xTime" type="Button" parent="." unique_id=771317107]
+layout_mode = 0
+offset_left = 490.0
+offset_right = 518.0
+offset_bottom = 31.0
+theme_override_font_sizes/font_size = 16
+text = "5X"
+
+[node name="25xTime" type="Button" parent="." unique_id=2023625705]
+layout_mode = 0
+offset_left = 520.0
+offset_right = 545.0
+offset_bottom = 25.0
+text = "25X"
+
+[node name="100xTime" type="Button" parent="." unique_id=328346353]
+layout_mode = 0
+offset_left = 559.0
+offset_right = 605.0
+offset_bottom = 31.0
+text = "100X"
+
+[node name="BuildContainer" type="HBoxContainer" parent="." unique_id=1240273963]
+layout_mode = 0
+offset_left = -3.0
+offset_top = 576.0
+offset_right = 968.0
+offset_bottom = 648.0
+
+[node name="WallVariant" type="Button" parent="BuildContainer" unique_id=1571784696]
+layout_mode = 2
+icon = ExtResource("6_4d46k")
+
+[node name="ZonesVariant" type="Button" parent="BuildContainer" unique_id=1174968977]
+layout_mode = 2
+icon = ExtResource("7_erw67")
+
+[node name="IndustrialItemsVariant" type="Button" parent="BuildContainer" unique_id=422629745]
+layout_mode = 2
+icon = ExtResource("8_gonto")
+
+[node name="SelectionContainer" type="HBoxContainer" parent="." unique_id=1474878378]
+visible = false
+layout_mode = 0
+offset_left = -3.0
+offset_top = 576.0
+offset_right = 966.0
+offset_bottom = 648.0
+
+[node name="BuildVariant" type="Button" parent="SelectionContainer" unique_id=1024502518]
+layout_mode = 2
+icon = ExtResource("3_136eg")
+
+[node name="OrderVarinat" type="Button" parent="SelectionContainer" unique_id=498456272]
+layout_mode = 2
+icon = ExtResource("7_h022r")
+
+[node name="OrderContainer" type="HBoxContainer" parent="." unique_id=1274488850]
+visible = false
+layout_mode = 0
+offset_left = -3.0
+offset_top = 576.0
+offset_right = 968.0
+offset_bottom = 648.0
+
+[node name="TreeFelingButton" type="Button" parent="OrderContainer" unique_id=1703017043]
+layout_mode = 2
+icon = ExtResource("8_h022r")
+
+[node name="WallContainer" type="HBoxContainer" parent="." unique_id=1879077944]
+visible = false
+layout_mode = 0
+offset_left = -3.0
+offset_top = 576.0
+offset_right = 968.0
+offset_bottom = 648.0
+
+[node name="WoodWallButton" type="Button" parent="WallContainer" unique_id=1934489861]
+layout_mode = 2
+icon = SubResource("AtlasTexture_0mwgc")
+
+[node name="ZoneContainer" type="HBoxContainer" parent="." unique_id=644096561]
+layout_mode = 0
+offset_left = -3.0
+offset_top = 576.0
+offset_right = 968.0
+offset_bottom = 648.0
+
+[node name="WarehouseArea" type="Button" parent="ZoneContainer" unique_id=1289747389]
+layout_mode = 2
+icon = ExtResource("7_4jqwt")
+
+[node name="Farming" type="Button" parent="ZoneContainer" unique_id=1824121777]
+layout_mode = 2
+icon = ExtResource("14_we3sy")
+
+[node name="IndustrialContainer" type="HBoxContainer" parent="." unique_id=668805200]
+visible = false
+layout_mode = 0
+offset_left = -3.0
+offset_top = 576.0
+offset_right = 968.0
+offset_bottom = 648.0
+
+[node name="WorkTableButton" type="Button" parent="IndustrialContainer" unique_id=1166162958]
+layout_mode = 2
+icon = ExtResource("13_cwdlq")
+
+[node name="AmountOfResources" type="PanelContainer" parent="." unique_id=588461379]
+layout_mode = 0
+offset_left = 966.0
+offset_top = 246.0
+offset_right = 1149.0
+offset_bottom = 648.0
+theme = SubResource("Theme_xmflq")
+theme_override_styles/panel = SubResource("StyleBoxFlat_dtglo")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="AmountOfResources" unique_id=2029483042]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="AmountOfResources/VBoxContainer" unique_id=1165391734]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("14_erw67")
+text = "Ресурсы"
+horizontal_alignment = 1
+
+[node name="HBoxContainer" type="HBoxContainer" parent="AmountOfResources/VBoxContainer" unique_id=349843199]
+layout_mode = 2
+size_flags_horizontal = 0
+size_flags_vertical = 4
+
+[node name="BreadContainer" type="PanelContainer" parent="AmountOfResources/VBoxContainer/HBoxContainer" unique_id=36297207]
+custom_minimum_size = Vector2(20, 5)
+layout_mode = 2
+size_flags_horizontal = 0
+size_flags_vertical = 4
+
+[node name="BreadAmount" type="Label" parent="AmountOfResources/VBoxContainer/HBoxContainer/BreadContainer" unique_id=1028487298]
+custom_minimum_size = Vector2(30, 18)
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="TextureRect" type="TextureRect" parent="AmountOfResources/VBoxContainer/HBoxContainer" unique_id=1177668793]
+custom_minimum_size = Vector2(12, 12)
+layout_mode = 2
+texture = ExtResource("15_gonto")
+expand_mode = 1
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="AmountOfResources/VBoxContainer" unique_id=305391719]
+layout_mode = 2
+size_flags_horizontal = 0
+size_flags_vertical = 4
+
+[node name="WoodContainer" type="PanelContainer" parent="AmountOfResources/VBoxContainer/HBoxContainer2" unique_id=1474207007]
+custom_minimum_size = Vector2(20, 5)
+layout_mode = 2
+size_flags_horizontal = 0
+size_flags_vertical = 4
+
+[node name="WoodAmount" type="Label" parent="AmountOfResources/VBoxContainer/HBoxContainer2/WoodContainer" unique_id=1294785765]
+custom_minimum_size = Vector2(30, 18)
+layout_mode = 2
+theme_override_fonts/font = ExtResource("14_erw67")
+theme_override_font_sizes/font_size = 15
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="TextureRect" type="TextureRect" parent="AmountOfResources/VBoxContainer/HBoxContainer2" unique_id=1670379013]
+custom_minimum_size = Vector2(12, 12)
+layout_mode = 2
+texture = ExtResource("7_4jqwt")
+expand_mode = 1
+
+[node name="PrioritetButton" type="Button" parent="." unique_id=218510907]
+layout_mode = 0
+offset_left = 928.0
+offset_top = 246.0
+offset_right = 966.0
+offset_bottom = 284.0
+icon = ExtResource("18_we3sy")
+icon_alignment = 1
+expand_icon = true

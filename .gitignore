@@ -1,0 +1,9 @@
+﻿# Godot 4 & Mono/C# Ignore
+.godot/
+.mono/
+bin/
+obj/
+*.csproj.user
+.vs/
+.idea/
+*.sln.DotSettings.user
