@@ -1,94 +1,103 @@
 using Godot;
+using Game.Core;
 using Game.Simulation;
 using System;
+using System.Collections.Generic;
 
 namespace Game.UI;
 
 public partial class GroundItemRenderer : Node2D
 {
-    private MultiMeshInstance2D _multiMeshInstance;
-    private MultiMesh _multiMesh;
-    private float[] _renderBuffer;
+    private const int MaxRenderedInstances = 4096;
+    private const float DefaultItemSize = 44f;
 
-    private const string TexturePath = "uid://by88ysblfuqqu";
-    private const float ItemSize = 48f;
-    private const int MaxRenderedInstances = 8192;
+    private readonly Dictionary<ItemId, (MultiMesh Mesh, MultiMeshInstance2D Instance, float[] Buffer)> _renderers = new();
 
     public override void _Ready()
     {
         ZIndex = 5;
-        _renderBuffer = new float[MaxRenderedInstances * 8];
 
-        var texture = ResourceLoader.Load<Texture2D>(TexturePath);
-        if (texture == null)
-        {
-            GD.PrintErr($"[GroundItemRenderer] Внимание: текстура '{TexturePath}' не найдена!");
-        }
-
-        var quadMesh = new QuadMesh
-        {
-            Size = new Vector2(ItemSize, ItemSize)
-        };
-
+        var quadMesh = new QuadMesh { Size = new Vector2(DefaultItemSize, DefaultItemSize) };
         float mapSizePx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
         var mapAabb = new Aabb(Godot.Vector3.Zero, new Godot.Vector3(mapSizePx, mapSizePx, 1000f));
 
-        _multiMesh = new MultiMesh
-        {
-            Mesh = quadMesh,
-            TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
-            UseColors = false,
-            UseCustomData = false,
-            InstanceCount = MaxRenderedInstances,
-            VisibleInstanceCount = 0,
-            CustomAabb = mapAabb
-        };
+        ItemId[] itemTypes = { ItemId.Log, ItemId.Grain };
 
-        _multiMeshInstance = new MultiMeshInstance2D
+        foreach (var id in itemTypes)
         {
-            Name = "GroundItemMultiMesh",
-            Multimesh = _multiMesh,
-            Texture = texture
-        };
-        AddChild(_multiMeshInstance);
+            var def = ItemRegistry.Get(id);
+            var texture = ResourceLoader.Load<Texture2D>(def.TextureUid);
+            if (texture == null)
+            {
+                GD.PrintErr($"[GroundItemRenderer] Внимание: текстура '{def.TextureUid}' для {def.Name} не найдена!");
+            }
+
+            var multiMesh = new MultiMesh
+            {
+                Mesh = quadMesh,
+                TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
+                UseColors = false,
+                UseCustomData = false,
+                InstanceCount = MaxRenderedInstances,
+                VisibleInstanceCount = 0,
+                CustomAabb = mapAabb
+            };
+
+            var instance = new MultiMeshInstance2D
+            {
+                Name = $"GroundItems_{def.Name}",
+                Multimesh = multiMesh,
+                Texture = texture
+            };
+            AddChild(instance);
+
+            _renderers[id] = (multiMesh, instance, new float[MaxRenderedInstances * 8]);
+        }
     }
 
     public override void _Process(double delta)
     {
-        if (_multiMesh == null) return;
-
-        // Если в очереди нет новых снапшотов — выходим мгновенно (0.00 мс)
-        if (!GroundItemManager.Instance.ItemPositionsQueue.TryDequeue(out var latestSnapshot))
+        if (!GroundItemManager.Instance.SnapshotQueue.TryDequeue(out var latestSnapshot))
             return;
 
-        // Выгружаем в очередь только самый свежий снапшот, пропуская промежуточные
-        while (GroundItemManager.Instance.ItemPositionsQueue.TryDequeue(out var newerSnapshot))
+        while (GroundItemManager.Instance.SnapshotQueue.TryDequeue(out var newerSnapshot))
         {
             latestSnapshot = newerSnapshot;
         }
 
-        if (latestSnapshot.Buffer != null)
+        if (latestSnapshot.PositionsByItem == null || latestSnapshot.Counts == null)
+            return;
+
+        foreach (var (id, (mesh, _, buffer)) in _renderers)
         {
-            int count = Math.Min(latestSnapshot.Count, MaxRenderedInstances);
-            _multiMesh.VisibleInstanceCount = count;
+            int itemIdx = (int)id;
+            int count = (itemIdx < latestSnapshot.Counts.Length) 
+                ? Math.Min(latestSnapshot.Counts[itemIdx], MaxRenderedInstances) 
+                : 0;
 
-            for (int i = 0; i < count; i++)
+            mesh.VisibleInstanceCount = count;
+
+            if (count > 0)
             {
-                var pos = latestSnapshot.Buffer[i];
-                int idx = i * 8;
+                var positions = latestSnapshot.PositionsByItem[itemIdx];
+                for (int i = 0; i < count; i++)
+                {
+                    var pos = positions[i];
+                    int idx = i * 8;
 
-                _renderBuffer[idx + 0] = 1.0f;
-                _renderBuffer[idx + 1] = 0.0f;
-                _renderBuffer[idx + 2] = 0.0f;
-                _renderBuffer[idx + 3] = pos.X;
+                    buffer[idx + 0] = 1.0f;
+                    buffer[idx + 1] = 0.0f;
+                    buffer[idx + 2] = 0.0f;
+                    buffer[idx + 3] = pos.X;
 
-                _renderBuffer[idx + 4] = 0.0f;
-                _renderBuffer[idx + 5] = 1.0f;
-                _renderBuffer[idx + 6] = 0.0f;
-                _renderBuffer[idx + 7] = pos.Y;
+                    buffer[idx + 4] = 0.0f;
+                    buffer[idx + 5] = 1.0f;
+                    buffer[idx + 6] = 0.0f;
+                    buffer[idx + 7] = pos.Y;
+                }
+
+                mesh.Buffer = buffer;
             }
-
-            _multiMesh.Buffer = _renderBuffer;
         }
     }
 }

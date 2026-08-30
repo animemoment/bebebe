@@ -78,7 +78,14 @@ public partial class AgentRenderer : Node2D
             bool hasNewSnapshot = false;
             while (_simulationThread.PositionQueue.TryDequeue(out var snapshot))
             {
-                Array.Copy(_targetPositions, _prevPositions, _agentCount);
+                // Фиксируем текущее интерполированное положение перед подменой снапшота
+                for (int i = 0; i < _agentCount; i++)
+                {
+                    _prevPositions[i] = new System.Numerics.Vector2(
+                        Mathf.Lerp(_prevPositions[i].X, _targetPositions[i].X, _lerpFactor),
+                        Mathf.Lerp(_prevPositions[i].Y, _targetPositions[i].Y, _lerpFactor)
+                    );
+                }
                 Array.Copy(snapshot, _targetPositions, _agentCount);
                 hasNewSnapshot = true;
             }

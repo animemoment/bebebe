@@ -16,7 +16,7 @@ public partial class Main : Node2D
     private TimeManager _timeManager;
     private PerformanceOverlay _profilerOverlay;
 
-    [Export] public int AgentCount = 100;
+    [Export] public int AgentCount = 10000;
     [Export] public HUDController HUD;
 
     public override void _Ready()
@@ -87,7 +87,8 @@ public partial class Main : Node2D
 
         HUDController hud = HUD
                             ?? GetTree().Root.FindChild("HUDController", true, false) as HUDController
-                            ?? FindChild("HUDController", true, false) as HUDController;
+                            ?? FindChild("HUDController", true, false) as HUDController
+                            ?? FindChild("hud_tscn", true, false) as HUDController;
 
         if (hud != null)
         {

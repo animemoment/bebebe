@@ -26,13 +26,13 @@ public partial class MapRenderer : Node2D
 
     private const uint MapSeed = 12345u;
 
-    private const string TextureGrass     = "uid://bhbo4m0ps7yxc";
+    private const string TextureGrass     = "uid://bw85uoku784o5";
     private const string TextureWater     = "uid://cmi8pjecdx35";
     private const string TextureTree0     = "uid://c70p6ktr0vcx6";
     private const string TextureTree1     = "uid://ddkl165hm35rp";
     private const string TextureWoodWall  = "uid://chubmh2ufwgwp";
     private const string TextureWorkTable = "uid://rp2bpb5c7k2y";
-    private const string TextureGardenBed = "uid://cf7ci8om64vt0";
+    private const string TextureGardenBed = "uid://47god8qachvh"; // <-- Исправлен правильный UID грядки
 
     private const int WallAtlasColumns = 4;
     private const int WallAtlasTilePx = 64;

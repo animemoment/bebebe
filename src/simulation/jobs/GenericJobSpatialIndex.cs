@@ -1,76 +1,297 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using Game.Core;
 
 namespace Game.Simulation;
 
 /// <summary>
-/// Пространственный индекс задач с поддержкой прямого поиска ближайших задач для рабочих.
+/// Пространственный индекс задач на SoA + chunk-bucket + lock-free CAS-claim.
+/// Регистрация/удаление — под lock (producer, редко). 
+/// Claim — lock-free через Interlocked.Increment (consumer, каждый тик).
 /// </summary>
 public sealed class GenericJobSpatialIndex
 {
     private const int ChunkShift = 4;
     private const int ChunkDim = 32;
-    private const int PriorityCount = 7;
+    private const int ChunkCount = ChunkDim * ChunkDim;
+    private const int InitialCapacity = 16384;
+    private const int GrowFactor = 2;
+    private const int JobsPerChunk = 256;
 
-    private readonly object _lock = new();
-    private readonly Dictionary<int, JobData> _jobs = new(4096);
-    private readonly Dictionary<(int X, int Y, JobTypeId Type), int> _jobPosMap = new(4096);
-    private readonly HashSet<int>[] _jobsByPriority = new HashSet<int>[PriorityCount];
-    private readonly HashSet<int>[,] _unclaimedByChunk = new HashSet<int>[ChunkDim, ChunkDim];
+    private readonly object _registerLock = new();
+
+    // SoA — основные поля задачи (индекс = jobId)
+    private int[] _targetX;
+    private int[] _targetY;
+    private int[] _standX;
+    private int[] _standY;
+    private int[] _sourceX;
+    private int[] _sourceY;
+    private JobTypeId[] _typeId;
+    private JobExecutionType[] _executionType;
+    private JobPriorityTier[] _priorityTier;
+    private ToolRequirement[] _requiredTool;
+    private int[] _maxWorkers;
+    private int[] _assignedWorkers;       // ← CAS-цель
+    private int[] _targetItemCount;
+    private int[] _currentDeliveredCount;
+    private ItemId[] _targetItemId;
+    private float[] _workDuration;
+    private bool[] _active;
+
+    // Free-list для переиспользования jobId
+    private int[] _nextFree;
+    private int _freeHead;
+    private int _capacity;
+
+    // Chunk bucket: плоский массив jobId с per-chunk start/count
+    private int[] _chunkJobs;
+    private int[] _chunkStart;
+    private int[] _chunkCount;
+    private int _chunkCapacity;
+    private int _jobsPerChunk = JobsPerChunk;
+
+    // Position-карта для дедупликации при регистрации (только под lock)
+    private readonly Dictionary<(int X, int Y, JobTypeId Type), int> _posMap = new(InitialCapacity);
+
+    // Счётчики (volatile для lock-free чтения)
+    private int _totalCount;
+    private int _unclaimedCount;
 
     private int _nextJobId = 1;
-    private int _unclaimedCount = 0;
 
-    public int UnclaimedCount { get { lock (_lock) return _unclaimedCount; } }
-    public int TotalCount { get { lock (_lock) return _jobs.Count; } }
+    public int UnclaimedCount => Volatile.Read(ref _unclaimedCount);
+    public int TotalCount => Volatile.Read(ref _totalCount);
 
     public GenericJobSpatialIndex()
     {
-        for (int p = 0; p < PriorityCount; p++)
-        {
-            _jobsByPriority[p] = new HashSet<int>();
-        }
+        _capacity = InitialCapacity;
+        AllocateArrays(_capacity);
 
-        for (int cx = 0; cx < ChunkDim; cx++)
+        _chunkStart = new int[ChunkCount];
+        _chunkCount = new int[ChunkCount];
+        _chunkJobs = new int[ChunkCount * _jobsPerChunk];
+        Array.Fill(_chunkJobs, -1);
+        for (int ci = 0; ci < ChunkCount; ci++)
         {
-            for (int cy = 0; cy < ChunkDim; cy++)
-            {
-                _unclaimedByChunk[cx, cy] = new HashSet<int>();
-            }
+            _chunkStart[ci] = ci * _jobsPerChunk;
         }
+        _chunkCapacity = _chunkJobs.Length;
     }
 
-    private static (int CX, int CY) GetChunkCoord(int tileX, int tileY)
+    private void AllocateArrays(int capacity)
+    {
+        _targetX = new int[capacity];
+        _targetY = new int[capacity];
+        _standX = new int[capacity];
+        _standY = new int[capacity];
+        _sourceX = new int[capacity];
+        _sourceY = new int[capacity];
+        _typeId = new JobTypeId[capacity];
+        _executionType = new JobExecutionType[capacity];
+        _priorityTier = new JobPriorityTier[capacity];
+        _requiredTool = new ToolRequirement[capacity];
+        _maxWorkers = new int[capacity];
+        _assignedWorkers = new int[capacity];
+        _targetItemCount = new int[capacity];
+        _currentDeliveredCount = new int[capacity];
+        _targetItemId = new ItemId[capacity];
+        _workDuration = new float[capacity];
+        _active = new bool[capacity];
+        _nextFree = new int[capacity];
+
+        for (int i = 0; i < capacity - 1; i++)
+            _nextFree[i] = i + 1;
+        _nextFree[capacity - 1] = -1;
+        _freeHead = 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int GetChunkIndexStatic(int tileX, int tileY)
     {
         int cx = Math.Clamp(tileX >> ChunkShift, 0, ChunkDim - 1);
         int cy = Math.Clamp(tileY >> ChunkShift, 0, ChunkDim - 1);
-        return (cx, cy);
+        return cy * ChunkDim + cx;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int GetChunkIndex(int tileX, int tileY)
+    {
+        return GetChunkIndexStatic(tileX, tileY);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private JobData GetJobData(int jobId)
+    {
+        return new JobData
+        {
+            Id = jobId,
+            TypeId = _typeId[jobId],
+            ExecutionType = _executionType[jobId],
+            PriorityTier = _priorityTier[jobId],
+            RequiredTool = _requiredTool[jobId],
+            SourceX = _sourceX[jobId],
+            SourceY = _sourceY[jobId],
+            TargetX = _targetX[jobId],
+            TargetY = _targetY[jobId],
+            StandX = _standX[jobId],
+            StandY = _standY[jobId],
+            TargetItemId = _targetItemId[jobId],
+            TargetItemCount = _targetItemCount[jobId],
+            CurrentDeliveredCount = _currentDeliveredCount[jobId],
+            MaxWorkers = _maxWorkers[jobId],
+            AssignedWorkers = Volatile.Read(ref _assignedWorkers[jobId]),
+            WorkDuration = _workDuration[jobId],
+            IsActive = _active[jobId]
+        };
+    }
+
+    private void EnsureCapacity(int neededId)
+    {
+        if (neededId < _capacity) return;
+        int newCap = Math.Max(_capacity * GrowFactor, neededId + 1);
+        Array.Resize(ref _targetX, newCap);
+        Array.Resize(ref _targetY, newCap);
+        Array.Resize(ref _standX, newCap);
+        Array.Resize(ref _standY, newCap);
+        Array.Resize(ref _sourceX, newCap);
+        Array.Resize(ref _sourceY, newCap);
+        Array.Resize(ref _typeId, newCap);
+        Array.Resize(ref _executionType, newCap);
+        Array.Resize(ref _priorityTier, newCap);
+        Array.Resize(ref _requiredTool, newCap);
+        Array.Resize(ref _maxWorkers, newCap);
+        Array.Resize(ref _assignedWorkers, newCap);
+        Array.Resize(ref _targetItemCount, newCap);
+        Array.Resize(ref _currentDeliveredCount, newCap);
+        Array.Resize(ref _targetItemId, newCap);
+        Array.Resize(ref _workDuration, newCap);
+        Array.Resize(ref _active, newCap);
+        Array.Resize(ref _nextFree, newCap);
+
+        for (int i = _capacity; i < newCap - 1; i++)
+            _nextFree[i] = i + 1;
+        _nextFree[newCap - 1] = _freeHead;
+        _freeHead = _capacity;
+        _capacity = newCap;
+    }
+
+    /// <summary>
+    /// ерестраивает макет chunk-бакетов при переполнении слота чанка.
+    /// Rebuilds the chunk-bucket layout when a chunk slot overflows.
+    /// Called only under _registerLock (rare case).
+    private void RebuildChunkBuckets()
+    {
+        int maxCount = 0;
+        for (int ci = 0; ci < ChunkCount; ci++)
+        {
+            if (_chunkCount[ci] > maxCount)
+                maxCount = _chunkCount[ci];
+        }
+
+        _jobsPerChunk = Math.Max(_jobsPerChunk * 2, maxCount);
+        int newCap = ChunkCount * _jobsPerChunk;
+        var newJobs = new int[newCap];
+        Array.Fill(newJobs, -1);
+        var newCounts = new int[ChunkCount];
+
+        foreach (var id in _posMap.Values)
+        {
+            if (!_active[id]) continue;
+            int ci = GetChunkIndex(_targetX[id], _targetY[id]);
+            newJobs[ci * _jobsPerChunk + newCounts[ci]] = id;
+            newCounts[ci]++;
+        }
+
+        _chunkJobs = newJobs;
+        _chunkCapacity = newCap;
+        for (int ci = 0; ci < ChunkCount; ci++)
+        {
+            _chunkStart[ci] = ci * _jobsPerChunk;
+            _chunkCount[ci] = newCounts[ci];
+        }
+    }
+
+    private void AddToChunkBucket(int chunkIndex, int jobId)
+    {
+        if (_chunkCount[chunkIndex] >= _jobsPerChunk)
+        {
+            // Слот чанка переполнен — расширяем макет. jobId уже в _posMap,
+            // поэтому перестройка включит его в новый макет.
+            RebuildChunkBuckets();
+            return;
+        }
+
+        int idx = _chunkStart[chunkIndex] + _chunkCount[chunkIndex];
+        _chunkJobs[idx] = jobId;
+        _chunkCount[chunkIndex]++;
+    }
+
+    private void RemoveFromChunkBucket(int chunkIndex, int jobId)
+    {
+        int start = _chunkStart[chunkIndex];
+        int count = _chunkCount[chunkIndex];
+        int end = start + count - 1;
+        for (int i = start; i <= end; i++)
+        {
+            if (_chunkJobs[i] == jobId)
+            {
+                _chunkJobs[i] = _chunkJobs[end];
+                _chunkJobs[end] = -1;
+                _chunkCount[chunkIndex]--;
+                return;
+            }
+        }
     }
 
     public int RegisterJob(JobData job)
     {
-        lock (_lock)
+        lock (_registerLock)
         {
             var key = (job.TargetX, job.TargetY, job.TypeId);
-            if (_jobPosMap.TryGetValue(key, out int existingId))
+            if (_posMap.TryGetValue(key, out int existingId))
                 return existingId;
 
-            int id = _nextJobId++;
-            job.Id = id;
-            job.IsActive = true;
-
-            _jobs[id] = job;
-            _jobPosMap[key] = id;
-
-            if (job.IsAvailable)
+            int id;
+            if (_freeHead != -1)
             {
-                int p = (int)job.PriorityTier;
-                _jobsByPriority[p].Add(id);
-                var (cx, cy) = GetChunkCoord(job.TargetX, job.TargetY);
-                _unclaimedByChunk[cx, cy].Add(id);
-                _unclaimedCount++;
+                id = _freeHead;
+                _freeHead = _nextFree[id];
+                _nextFree[id] = -1;
             }
+            else
+            {
+                id = _nextJobId++;
+                EnsureCapacity(id);
+            }
+
+            _targetX[id] = job.TargetX;
+            _targetY[id] = job.TargetY;
+            _standX[id] = job.StandX;
+            _standY[id] = job.StandY;
+            _sourceX[id] = job.SourceX;
+            _sourceY[id] = job.SourceY;
+            _typeId[id] = job.TypeId;
+            _executionType[id] = job.ExecutionType;
+            _priorityTier[id] = job.PriorityTier;
+            _requiredTool[id] = job.RequiredTool;
+            _maxWorkers[id] = job.MaxWorkers;
+            _assignedWorkers[id] = 0;
+            _targetItemCount[id] = job.TargetItemCount;
+            _currentDeliveredCount[id] = 0;
+            _targetItemId[id] = job.TargetItemId;
+            _workDuration[id] = job.WorkDuration;
+            _active[id] = true;
+
+            _posMap[key] = id;
+            _totalCount++;
+
+            int chunkIndex = GetChunkIndex(job.TargetX, job.TargetY);
+            AddToChunkBucket(chunkIndex, id);
+            _unclaimedCount++;
+
             return id;
         }
     }
@@ -78,50 +299,75 @@ public sealed class GenericJobSpatialIndex
     public void RegisterBatch(List<JobData> jobs)
     {
         if (jobs == null || jobs.Count == 0) return;
-
-        lock (_lock)
+        lock (_registerLock)
         {
             for (int i = 0; i < jobs.Count; i++)
             {
                 var job = jobs[i];
                 var key = (job.TargetX, job.TargetY, job.TypeId);
-                if (_jobPosMap.ContainsKey(key))
+                if (_posMap.ContainsKey(key))
                     continue;
 
-                int id = _nextJobId++;
-                job.Id = id;
-                job.IsActive = true;
-
-                _jobs[id] = job;
-                _jobPosMap[key] = id;
-
-                if (job.IsAvailable)
+                int id;
+                if (_freeHead != -1)
                 {
-                    int p = (int)job.PriorityTier;
-                    _jobsByPriority[p].Add(id);
-                    var (cx, cy) = GetChunkCoord(job.TargetX, job.TargetY);
-                    _unclaimedByChunk[cx, cy].Add(id);
-                    _unclaimedCount++;
+                    id = _freeHead;
+                    _freeHead = _nextFree[id];
+                    _nextFree[id] = -1;
                 }
+                else
+                {
+                    id = _nextJobId++;
+                    EnsureCapacity(id);
+                }
+
+                _targetX[id] = job.TargetX;
+                _targetY[id] = job.TargetY;
+                _standX[id] = job.StandX;
+                _standY[id] = job.StandY;
+                _sourceX[id] = job.SourceX;
+                _sourceY[id] = job.SourceY;
+                _typeId[id] = job.TypeId;
+                _executionType[id] = job.ExecutionType;
+                _priorityTier[id] = job.PriorityTier;
+                _requiredTool[id] = job.RequiredTool;
+                _maxWorkers[id] = job.MaxWorkers;
+                _assignedWorkers[id] = 0;
+                _targetItemCount[id] = job.TargetItemCount;
+                _currentDeliveredCount[id] = 0;
+                _targetItemId[id] = job.TargetItemId;
+                _workDuration[id] = job.WorkDuration;
+                _active[id] = true;
+
+                _posMap[key] = id;
+                _totalCount++;
+
+                int chunkIndex = GetChunkIndex(job.TargetX, job.TargetY);
+                AddToChunkBucket(chunkIndex, id);
+                _unclaimedCount++;
             }
         }
     }
 
     public bool TryGetJob(int id, out JobData job)
     {
-        lock (_lock)
+        if (id < 0 || id >= _capacity || !_active[id])
         {
-            return _jobs.TryGetValue(id, out job);
+            job = default;
+            return false;
         }
+        job = GetJobData(id);
+        return true;
     }
 
     public bool TryGetJobByPos(int x, int y, JobTypeId type, out JobData job)
     {
-        lock (_lock)
+        lock (_registerLock)
         {
-            if (_jobPosMap.TryGetValue((x, y, type), out int id))
+            if (_posMap.TryGetValue((x, y, type), out int id))
             {
-                return _jobs.TryGetValue(id, out job);
+                job = GetJobData(id);
+                return true;
             }
             job = default;
             return false;
@@ -130,172 +376,166 @@ public sealed class GenericJobSpatialIndex
 
     public bool TryAddJobProgress(int x, int y, JobTypeId type, int countToAdd, out bool isCompleted, out JobData jobSnapshot)
     {
-        lock (_lock)
+        lock (_registerLock)
         {
-            if (_jobPosMap.TryGetValue((x, y, type), out int id) && _jobs.TryGetValue(id, out var job))
+            if (_posMap.TryGetValue((x, y, type), out int id) && _active[id])
             {
-                job.CurrentDeliveredCount += countToAdd;
-                _jobs[id] = job;
-                isCompleted = job.CurrentDeliveredCount >= job.TargetItemCount;
-                jobSnapshot = job;
+                _currentDeliveredCount[id] += countToAdd;
+                isCompleted = _currentDeliveredCount[id] >= _targetItemCount[id];
+                jobSnapshot = GetJobData(id);
                 return true;
             }
-
             isCompleted = false;
             jobSnapshot = default;
             return false;
         }
     }
 
-    public bool TryClaimNearestJobForWorker(
+    /// <summary>
+    /// Lock-free: пытается найти и захватить лучшую доступную задачу в указанном чанке для одного рабочего.
+    /// Использует Interlocked.CompareExchange на AssignedWorkers — без lock'а.
+    /// </summary>
+    public bool TryClaimForWorkerInChunk(
+        int chunkIndex,
         int workerTileX, int workerTileY,
         ToolRequirement workerTools,
         AgentDataPool pool, int agentIndex,
         SimulationContext ctx,
         out JobData claimedJob)
     {
-        lock (_lock)
+        claimedJob = default;
+
+        int start = _chunkStart[chunkIndex];
+        int count = _chunkCount[chunkIndex];
+        if (count == 0) return false;
+
+        // Быстрая проверка: есть ли вообще вакансии в этом чанке?
+        bool hasStockpileSpace = StockpileManager.Instance.HasFreeSpace;
+        bool hasAvailableLogs = GroundItemManager.Instance.HasAvailableLogs;
+
+        int bestJobId = -1;
+        int bestPriority = -1;
+        float bestDistSq = float.MaxValue;
+
+        // Проход 1: read-only поиск лучшего кандидата
+        for (int i = 0; i < count; i++)
         {
-            claimedJob = default;
-            if (_unclaimedCount <= 0) return false;
+            int jobId = _chunkJobs[start + i];
+            if (jobId < 0 || jobId >= _capacity || !_active[jobId])
+                continue;
 
-            int centerCx = Math.Clamp(workerTileX >> ChunkShift, 0, ChunkDim - 1);
-            int centerCy = Math.Clamp(workerTileY >> ChunkShift, 0, ChunkDim - 1);
+            // Lock-free проверка доступности
+            if (Volatile.Read(ref _assignedWorkers[jobId]) >= _maxWorkers[jobId])
+                continue;
 
-            bool hasStockpileSpace = StockpileManager.Instance.HasFreeSpace;
-            bool hasAvailableLogs = GroundItemManager.Instance.HasAvailableLogs;
+            if (_requiredTool[jobId] != ToolRequirement.None && (workerTools & _requiredTool[jobId]) == 0)
+                continue;
 
-            int bestJobId = -1;
-            int bestPriority = -1;
-            float bestDistSq = float.MaxValue;
+            if (_typeId[jobId] == JobTypeId.StockpileHauling && !hasStockpileSpace)
+                continue;
 
-            for (int r = 0; r < ChunkDim; r++)
+            if (_typeId[jobId] == JobTypeId.BlueprintDelivery && !hasAvailableLogs)
+                continue;
+
+            int priority = JobPriorityManager.Instance.GetPriorityForJobType(_typeId[jobId]);
+            if (priority <= 0)
+                continue;
+
+            if (!JobRegistry.TryGetHandler(_typeId[jobId], out var handler) ||
+                !handler.CanAgentExecute(agentIndex, GetJobData(jobId), pool, ctx))
+                continue;
+
+            float dx = _standX[jobId] - workerTileX;
+            float dy = _standY[jobId] - workerTileY;
+            float distSq = dx * dx + dy * dy;
+
+            if (priority > bestPriority || (priority == bestPriority && distSq < bestDistSq))
             {
-                int minCx = Math.Max(0, centerCx - r);
-                int maxCx = Math.Min(ChunkDim - 1, centerCx + r);
-                int minCy = Math.Max(0, centerCy - r);
-                int maxCy = Math.Min(ChunkDim - 1, centerCy + r);
-
-                for (int cx = minCx; cx <= maxCx; cx++)
-                {
-                    for (int cy = minCy; cy <= maxCy; cy++)
-                    {
-                        if (r > 0 && cx > minCx && cx < maxCx && cy > minCy && cy < maxCy)
-                            continue;
-
-                        var chunk = _unclaimedByChunk[cx, cy];
-                        if (chunk.Count == 0) continue;
-
-                        foreach (int jobId in chunk)
-                        {
-                            if (!_jobs.TryGetValue(jobId, out var job) || !job.IsAvailable)
-                                continue;
-
-                            if (job.RequiredTool != ToolRequirement.None && (workerTools & job.RequiredTool) == 0)
-                                continue;
-
-                            if (job.TypeId == JobTypeId.StockpileHauling && !hasStockpileSpace)
-                                continue;
-
-                            if (job.TypeId == JobTypeId.BlueprintDelivery && !hasAvailableLogs)
-                                continue;
-
-                            int priority = JobPriorityManager.Instance.GetPriorityForJobType(job.TypeId);
-                            if (priority <= 0)
-                                continue;
-
-                            if (!JobRegistry.TryGetHandler(job.TypeId, out var handler) || !handler.CanAgentExecute(agentIndex, job, pool, ctx))
-                                continue;
-
-                            float dx = job.StandX - workerTileX;
-                            float dy = job.StandY - workerTileY;
-                            float distSq = dx * dx + dy * dy;
-
-                            if (priority > bestPriority || (priority == bestPriority && distSq < bestDistSq))
-                            {
-                                bestPriority = priority;
-                                bestDistSq = distSq;
-                                bestJobId = jobId;
-                            }
-                        }
-                    }
-                }
-
-                // Если в текущем кольце найдена подходящая задача — мгновенный выход
-                if (bestJobId != -1)
-                    break;
+                bestPriority = priority;
+                bestDistSq = distSq;
+                bestJobId = jobId;
             }
+        }
 
-            if (bestJobId != -1 && _jobs.TryGetValue(bestJobId, out var selectedJob))
+        if (bestJobId == -1)
+            return false;
+
+        // Проход 2: CAS-захват лучшего кандидата
+        int current = Volatile.Read(ref _assignedWorkers[bestJobId]);
+        while (current < _maxWorkers[bestJobId])
+        {
+            int prev = Interlocked.CompareExchange(ref _assignedWorkers[bestJobId], current + 1, current);
+            if (prev == current)
             {
-                selectedJob.AssignedWorkers++;
-                _jobs[bestJobId] = selectedJob;
-
-                if (!selectedJob.IsAvailable)
+                // Успешно захвачен слот
+                if (current + 1 >= _maxWorkers[bestJobId])
                 {
-                    int p = (int)selectedJob.PriorityTier;
-                    _jobsByPriority[p].Remove(bestJobId);
-                    var (cx, cy) = GetChunkCoord(selectedJob.TargetX, selectedJob.TargetY);
-                    _unclaimedByChunk[cx, cy].Remove(bestJobId);
-                    _unclaimedCount = Math.Max(0, _unclaimedCount - 1);
+                    // Задача полностью укомплектована — уменьшаем счётчик
+                    Interlocked.Decrement(ref _unclaimedCount);
                 }
-
-                claimedJob = selectedJob;
+                claimedJob = GetJobData(bestJobId);
                 return true;
             }
-
-            return false;
+            // CAS не удался — другой поток опередил, пробуем снова
+            current = Volatile.Read(ref _assignedWorkers[bestJobId]);
         }
+
+        // Слоты закончились между проходами
+        return false;
     }
 
+    /// <summary>
+    /// Lock-free: освобождает слот задачи (Interlocked.Decrement).
+    /// Если задача снова стала доступна — увеличивает unclaimedCount.
+    /// </summary>
     public void ReleaseWorkerClaim(int jobId)
     {
-        lock (_lock)
-        {
-            if (_jobs.TryGetValue(jobId, out var job))
-            {
-                bool wasFull = !job.IsAvailable;
-                job.AssignedWorkers = Math.Max(0, job.AssignedWorkers - 1);
-                _jobs[jobId] = job;
+        if (jobId < 0 || jobId >= _capacity || !_active[jobId])
+            return;
 
-                if (wasFull && job.IsAvailable)
-                {
-                    int p = (int)job.PriorityTier;
-                    _jobsByPriority[p].Add(jobId);
-                    var (cx, cy) = GetChunkCoord(job.TargetX, job.TargetY);
-                    _unclaimedByChunk[cx, cy].Add(jobId);
-                    _unclaimedCount++;
-                }
-            }
+        int prev = Interlocked.Decrement(ref _assignedWorkers[jobId]);
+        // Если была полностью занята (prev == maxWorkers), а стала доступна
+        if (prev >= _maxWorkers[jobId])
+        {
+            Interlocked.Increment(ref _unclaimedCount);
         }
     }
 
     public bool RemoveJob(int id, out JobData removedJob)
     {
-        lock (_lock)
+        lock (_registerLock)
         {
-            if (_jobs.Remove(id, out removedJob))
+            if (id < 0 || id >= _capacity || !_active[id])
             {
-                _jobPosMap.Remove((removedJob.TargetX, removedJob.TargetY, removedJob.TypeId));
-                int p = (int)removedJob.PriorityTier;
-                if (_jobsByPriority[p].Remove(id))
-                {
-                    var (cx, cy) = GetChunkCoord(removedJob.TargetX, removedJob.TargetY);
-                    _unclaimedByChunk[cx, cy].Remove(id);
-                    _unclaimedCount = Math.Max(0, _unclaimedCount - 1);
-                }
-                return true;
+                removedJob = default;
+                return false;
             }
-            removedJob = default;
-            return false;
+
+            removedJob = GetJobData(id);
+            _active[id] = false;
+            _posMap.Remove((_targetX[id], _targetY[id], _typeId[id]));
+
+            _nextFree[id] = _freeHead;
+            _freeHead = id;
+            _totalCount--;
+
+            int chunkIndex = GetChunkIndex(_targetX[id], _targetY[id]);
+            RemoveFromChunkBucket(chunkIndex, id);
+
+            if (Volatile.Read(ref _assignedWorkers[id]) < _maxWorkers[id])
+            {
+                _unclaimedCount = Math.Max(0, _unclaimedCount - 1);
+            }
+
+            return true;
         }
     }
 
     public bool RemoveJobByPos(int x, int y, JobTypeId type, out JobData removedJob)
     {
-        lock (_lock)
+        lock (_registerLock)
         {
-            if (_jobPosMap.TryGetValue((x, y, type), out int id))
+            if (_posMap.TryGetValue((x, y, type), out int id))
             {
                 return RemoveJob(id, out removedJob);
             }
@@ -307,23 +547,26 @@ public sealed class GenericJobSpatialIndex
     public void RemoveBatchByPositions(List<(int X, int Y)> positions, JobTypeId type)
     {
         if (positions == null || positions.Count == 0) return;
-        lock (_lock)
+        lock (_registerLock)
         {
             for (int i = 0; i < positions.Count; i++)
             {
                 var (x, y) = positions[i];
-                if (_jobPosMap.TryGetValue((x, y, type), out int id))
+                if (_posMap.TryGetValue((x, y, type), out int id) && _active[id])
                 {
-                    if (_jobs.Remove(id, out var removedJob))
+                    _active[id] = false;
+                    _posMap.Remove((x, y, type));
+
+                    _nextFree[id] = _freeHead;
+                    _freeHead = id;
+                    _totalCount--;
+
+                    int chunkIndex = GetChunkIndex(x, y);
+                    RemoveFromChunkBucket(chunkIndex, id);
+
+                    if (Volatile.Read(ref _assignedWorkers[id]) < _maxWorkers[id])
                     {
-                        _jobPosMap.Remove((x, y, type));
-                        int p = (int)removedJob.PriorityTier;
-                        if (_jobsByPriority[p].Remove(id))
-                        {
-                            var (cx, cy) = GetChunkCoord(x, y);
-                            _unclaimedByChunk[cx, cy].Remove(id);
-                            _unclaimedCount = Math.Max(0, _unclaimedCount - 1);
-                        }
+                        _unclaimedCount = Math.Max(0, _unclaimedCount - 1);
                     }
                 }
             }
@@ -332,16 +575,41 @@ public sealed class GenericJobSpatialIndex
 
     public void FillPrioritizedUnclaimed(List<int> destination)
     {
-        lock (_lock)
+        destination.Clear();
+        for (int ci = 0; ci < ChunkCount; ci++)
         {
-            destination.Clear();
-            for (int p = 0; p < PriorityCount; p++)
+            int start = _chunkStart[ci];
+            int count = _chunkCount[ci];
+            for (int i = 0; i < count; i++)
             {
-                foreach (var id in _jobsByPriority[p])
+                int jobId = _chunkJobs[start + i];
+                if (jobId >= 0 && jobId < _capacity && _active[jobId] &&
+                    Volatile.Read(ref _assignedWorkers[jobId]) < _maxWorkers[jobId])
                 {
-                    destination.Add(id);
+                    destination.Add(jobId);
                 }
             }
         }
+        destination.Sort((a, b) =>
+        {
+            int pa = JobPriorityManager.Instance.GetPriorityForJobType(_typeId[a]);
+            int pb = JobPriorityManager.Instance.GetPriorityForJobType(_typeId[b]);
+            int cmp = pb.CompareTo(pa);
+            if (cmp != 0) return cmp;
+            return _priorityTier[b].CompareTo(_priorityTier[a]);
+        });
+    }
+
+    public int GetChunkJobCount(int chunkIndex)
+    {
+        if (chunkIndex < 0 || chunkIndex >= ChunkCount) return 0;
+        return Volatile.Read(ref _chunkCount[chunkIndex]);
+    }
+
+    public JobTypeId GetJobType(int jobId)
+    {
+        if (jobId < 0 || jobId >= _capacity || !_active[jobId])
+            return JobTypeId.None;
+        return _typeId[jobId];
     }
 }

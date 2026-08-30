@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using Game.Core;
 
@@ -11,7 +12,7 @@ public sealed class WanderJobSystem
     public bool TryAssignJob(int agentIndex, AgentDataPool pool, SimulationContext ctx)
     {
         // 70% шанс остаться на месте и не расходовать вычисления коллизий
-        if (ctx.Random.NextDouble() > 0.30)
+        if (Random.Shared.NextDouble() > 0.30)
         {
             pool.TargetPositionX[agentIndex] = pool.PositionX[agentIndex];
             pool.TargetPositionY[agentIndex] = pool.PositionY[agentIndex];
@@ -21,8 +22,8 @@ public sealed class WanderJobSystem
         int curX = (int)(pool.PositionX[agentIndex] / ctx.TileSize);
         int curY = (int)(pool.PositionY[agentIndex] / ctx.TileSize);
 
-        int dx = ctx.Random.Next(-2, 3);
-        int dy = ctx.Random.Next(-2, 3);
+        int dx = Random.Shared.Next(-2, 3);
+        int dy = Random.Shared.Next(-2, 3);
         int tx = curX + dx;
         int ty = curY + dy;
 
@@ -45,31 +46,41 @@ public sealed class WanderJobSystem
 
     public void ExecuteParallel(int agentIndex, float deltaTime, AgentDataPool pool, SimulationContext ctx)
     {
-        Vector2 target = new(pool.TargetPositionX[agentIndex], pool.TargetPositionY[agentIndex]);
-        Vector2 current = pool.GetPosition(agentIndex);
+        float targetX = pool.TargetPositionX[agentIndex];
+        float targetY = pool.TargetPositionY[agentIndex];
+        float curX = pool.PositionX[agentIndex];
+        float curY = pool.PositionY[agentIndex];
 
-        if ((target - current).LengthSquared() > 16.0f)
+        float dx = targetX - curX;
+        float dy = targetY - curY;
+        float distSq = dx * dx + dy * dy;
+
+        if (distSq > 16.0f)
         {
-            Vector2 dir = Vector2.Normalize(target - current);
-            Vector2 step = dir * (60.0f * deltaTime);
-            Vector2 next = current + step;
+            float invDist = 1.0f / MathF.Sqrt(distSq);
+            float stepX = dx * invDist * (60.0f * deltaTime);
+            float stepY = dy * invDist * (60.0f * deltaTime);
+            float nextX = curX + stepX;
+            float nextY = curY + stepY;
 
-            if (!ctx.Movement.IsTileBlocked(next.X, next.Y, ctx))
+            if (!ctx.Movement.IsTileBlocked(nextX, nextY, ctx))
             {
-                pool.SetPosition(agentIndex, next);
+                pool.PositionX[agentIndex] = nextX;
+                pool.PositionY[agentIndex] = nextY;
             }
             else
             {
-                pool.TargetPositionX[agentIndex] = current.X;
-                pool.TargetPositionY[agentIndex] = current.Y;
+                pool.TargetPositionX[agentIndex] = curX;
+                pool.TargetPositionY[agentIndex] = curY;
             }
         }
     }
 
     public void Commit(int agentIndex, float deltaTime, AgentDataPool pool, SimulationContext ctx)
     {
-        Vector2 target = new(pool.TargetPositionX[agentIndex], pool.TargetPositionY[agentIndex]);
-        if ((pool.GetPosition(agentIndex) - target).LengthSquared() <= 16.0f)
+        float dx = pool.PositionX[agentIndex] - pool.TargetPositionX[agentIndex];
+        float dy = pool.PositionY[agentIndex] - pool.TargetPositionY[agentIndex];
+        if (dx * dx + dy * dy <= 16.0f)
         {
             if (pool.States[agentIndex] == AgentState.Evacuating)
             {

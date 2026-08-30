@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Godot;
@@ -21,7 +22,7 @@ public sealed class AgentSimulationThread : IDisposable
 
     private Vector2[][] _snapshotRing;
     private int _snapshotRingIndex;
-    private const int SnapshotRingSize = 6;
+    private const int SnapshotRingSize = 16;
 
     private volatile bool _running;
     public volatile bool IsPaused;
@@ -31,6 +32,7 @@ public sealed class AgentSimulationThread : IDisposable
     private Task _simulationTask;
     private uint _tickCounter;
     private float _dispatchTimer;
+    private float _cropGrowthTimer;
 
     public float SpeedMultiplier
     {
@@ -44,7 +46,17 @@ public sealed class AgentSimulationThread : IDisposable
 
     private const float BaseFixedDeltaTime = 0.05f;
     private const float MinSnapInterval = 1.0f / 60.0f;
-    private const float DispatchInterval = 0.25f;
+
+    // Интервалы диспетчеризации и роста культур измеряются в ИГРОВОМ времени,
+    // поэтому частота вызовов в реальном времени = speed / interval и без
+    // масштабирования растёт линейно со скоростью (на 100x диспетчер вызывался
+    // бы ~333 раза/с, рост культур — ~167 раза/с). Масштаб speed/IntervalScaleSpeed
+    // ограничивает частоту сверху (~56 вызовов/с для диспетчера, ~30 для культур).
+    private const float DispatchIntervalBase = 0.25f;
+    private const float CropGrowthIntervalBase = 0.5f;
+    private const float IntervalScaleSpeed = 16f;
+    private const int ParallelThreshold = 128;
+    private const int ChunkSize = 4096;
 
     public void Start(int agentCount, TileType[,] ground, bool[,] treeOnGrass, int seed = 0)
     {
@@ -87,8 +99,8 @@ public sealed class AgentSimulationThread : IDisposable
             {
                 int tileIndex = random.Next(walkableTiles.Count);
                 var (tx, ty) = walkableTiles[tileIndex];
-                float posX = tx * 64f + 32f;
-                float posY = ty * 64f + 32f;
+                float posX = (tx << 6) + 32f;
+                float posY = (ty << 6) + 32f;
 
                 _pool.PositionX[i] = posX;
                 _pool.PositionY[i] = posY;
@@ -156,7 +168,9 @@ public sealed class AgentSimulationThread : IDisposable
                 accumulator += realDelta * _speedMultiplier;
 
                 float currentStepDt = GetSimStepDelta(_speedMultiplier);
-                int maxAllowedSteps = _speedMultiplier >= 25f ? 25 : 8;
+                float dispatchInterval = GetScaledInterval(DispatchIntervalBase, _speedMultiplier);
+                float cropGrowthInterval = GetScaledInterval(CropGrowthIntervalBase, _speedMultiplier);
+                int maxAllowedSteps = _speedMultiplier >= 100f ? 6 : 8;
                 int steps = (int)(accumulator / currentStepDt);
 
                 if (steps > maxAllowedSteps)
@@ -177,17 +191,25 @@ public sealed class AgentSimulationThread : IDisposable
                         {
                             _tickCounter++;
                             _dispatchTimer += currentStepDt;
+                            _cropGrowthTimer += currentStepDt;
 
-                            CropGrowthManager.Instance.UpdateGrowth(currentStepDt, _ctx);
-
-                            if (_dispatchTimer >= DispatchInterval)
+                            if (_cropGrowthTimer >= cropGrowthInterval)
                             {
-                                _dispatchTimer = 0f;
-                                JobDispatcher.Instance.DispatchPendingJobs(_pool, _ctx);
+                                CropGrowthManager.Instance.UpdateGrowth(_cropGrowthTimer, _ctx);
+                                _cropGrowthTimer = 0f;
                             }
 
+                            if (_dispatchTimer >= dispatchInterval)
+                            {
+                                _dispatchTimer = 0f;
+                                int dispatchScale = (int)Math.Ceiling(Math.Max(1f, _speedMultiplier / IntervalScaleSpeed));
+                                JobDispatcher.Instance.DispatchPendingJobs(_pool, _ctx, dispatchScale);
+                            }
+
+                            bool isLastSubStep = (step == steps - 1);
                             Phase2_ParallelUpdate(currentStepDt);
-                            Phase3_Commit(currentStepDt);
+                            Phase3a_ParallelBookkeeping(currentStepDt, isLastSubStep);
+                            Phase3b_SequentialCommit(currentStepDt, isLastSubStep);
                         }
 
                         if (renderTimer.Elapsed.TotalSeconds >= MinSnapInterval)
@@ -200,7 +222,26 @@ public sealed class AgentSimulationThread : IDisposable
                     }
                 }
 
-                Thread.Sleep(_speedMultiplier <= 1.0f ? 6 : 1);
+                // Sleep(0) при speed >= 25 уступает квант только готовым потокам и
+                // при простое превращается в busy-loop (100% одного ядра). На
+                // «холодных» итерациях (steps == 0) спим 1 мс — темп симуляции при
+                // этом самоподдерживается аккумулятором (realDelta * speed).
+                if (_speedMultiplier >= 25f)
+                {
+                    Thread.Sleep(steps > 0 ? 0 : 1);
+                }
+                else
+                {
+                    Thread.Sleep(6);
+                }
+            }
+            catch (AggregateException aggEx)
+            {
+                foreach (var inner in aggEx.Flatten().InnerExceptions)
+                {
+                    GD.PrintErr($"[AgentSimulationThread] Параллельная ошибка: {inner.Message}\n{inner.StackTrace}");
+                }
+                Thread.Sleep(20);
             }
             catch (Exception ex)
             {
@@ -210,11 +251,46 @@ public sealed class AgentSimulationThread : IDisposable
         }
     }
 
+    /// <summary>
+    /// Масштабирует интервал (в игровом времени) под скорость, чтобы частота
+    /// вызовов в реальном времени (speed / interval) не росла линейно со скоростью.
+    /// При speed &lt;= IntervalScaleSpeed возвращает базовый интервал без изменений.
+    /// </summary>
+    private static float GetScaledInterval(float baseInterval, float speed)
+        => baseInterval * Math.Max(1f, speed / IntervalScaleSpeed);
+
     private static float GetSimStepDelta(float speed)
     {
-        if (speed >= 100f) return 0.15f;
-        if (speed >= 25f)  return 0.08f;
+        if (speed >= 100f) return 0.30f;
+        if (speed >= 25f)  return 0.15f;
         return BaseFixedDeltaTime;
+    }
+
+    private void UpdateSingleAgent(int i, float deltaTime, uint tickBucket)
+    {
+        var state = _pool.States[i];
+        if (state == AgentState.Idle)
+        {
+            // Тайм-слайсинг: безработные обновляются батчами по 25% через битовую маску
+            if ((i & 3) == tickBucket)
+            {
+                _wanderSystem.ExecuteParallel(i, deltaTime * 4.0f, _pool, _ctx);
+            }
+            return;
+        }
+
+        if (state == AgentState.Evacuating)
+        {
+            _wanderSystem.ExecuteParallel(i, deltaTime, _pool, _ctx);
+            return;
+        }
+
+        var jobType = _pool.CurrentJobType[i];
+        if (jobType != JobTypeId.None)
+        {
+            var handler = JobRegistry.GetHandler(jobType);
+            handler?.ExecuteParallel(i, deltaTime, _pool, _ctx);
+        }
     }
 
     private void Phase2_ParallelUpdate(float deltaTime)
@@ -222,72 +298,128 @@ public sealed class AgentSimulationThread : IDisposable
         using (GameProfiler.Scope())
         {
             int count = _pool.Capacity;
+            uint tickBucket = _tickCounter & 3;
 
-            Parallel.For(0, count, i =>
+            if (count < ParallelThreshold)
             {
-                var state = _pool.States[i];
-                if (state == AgentState.Idle || state == AgentState.Evacuating)
+                for (int i = 0; i < count; i++)
                 {
-                    _wanderSystem.ExecuteParallel(i, deltaTime, _pool, _ctx);
-                    return;
+                    UpdateSingleAgent(i, deltaTime, tickBucket);
                 }
-
-                var jobType = _pool.CurrentJobType[i];
-                if (jobType != JobTypeId.None && JobRegistry.TryGetHandler(jobType, out var handler))
-                {
-                    handler.ExecuteParallel(i, deltaTime, _pool, _ctx);
-                }
-            });
+            }
+            else
+            {
+                var partitioner = Partitioner.Create(0, count, ChunkSize);
+                Parallel.ForEach(partitioner,
+                    new ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount },
+                    range =>
+                    {
+                        for (int i = range.Item1; i < range.Item2; i++)
+                        {
+                            UpdateSingleAgent(i, deltaTime, tickBucket);
+                        }
+                    });
+            }
         }
     }
 
-    private void Phase3_Commit(float deltaTime)
+    private void Phase3a_ParallelBookkeeping(float deltaTime, bool rebuildSpatialGrid)
     {
         using (GameProfiler.Scope())
         {
-            _ctx.SpatialGrid.Clear();
+            int count = _pool.Capacity;
+            uint tickBucket = _tickCounter & 3;
+
+            if (count < ParallelThreshold)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    BookkeepSingleAgent(i, deltaTime, tickBucket);
+                }
+            }
+            else
+            {
+                var partitioner = Partitioner.Create(0, count, ChunkSize);
+                Parallel.ForEach(partitioner,
+                    new ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount },
+                    range =>
+                    {
+                        for (int i = range.Item1; i < range.Item2; i++)
+                        {
+                            BookkeepSingleAgent(i, deltaTime, tickBucket);
+                        }
+                    });
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void BookkeepSingleAgent(int i, float deltaTime, uint tickBucket)
+    {
+        int cx = (int)_pool.PositionX[i] >> 6;
+        int cy = (int)_pool.PositionY[i] >> 6;
+
+        if (_pool.CurrentCellX[i] == cx && _pool.CurrentCellY[i] == cy)
+        {
+            _pool.CellStayTime[i] += deltaTime;
+        }
+        else
+        {
+            _pool.CurrentCellX[i] = cx;
+            _pool.CurrentCellY[i] = cy;
+            _pool.CellStayTime[i] = 0f;
+        }
+
+        var state = _pool.States[i];
+        if (state == AgentState.Idle)
+        {
+            // Тайм-слайсинг таймеров поиска работы (потокобезопасный Random.Shared)
+            if ((i & 3) == tickBucket)
+            {
+                _pool.JobSearchTimer[i] -= deltaTime * 4.0f;
+                if (_pool.JobSearchTimer[i] <= 0f)
+                {
+                    _pool.JobSearchTimer[i] = 6.0f + (float)Random.Shared.NextDouble() * 6.0f;
+                    _wanderSystem.TryAssignJob(i, _pool, _ctx);
+                }
+            }
+            return;
+        }
+
+        if (state == AgentState.Evacuating)
+        {
+            _wanderSystem.Commit(i, deltaTime, _pool, _ctx);
+            return;
+        }
+    }
+
+    private void Phase3b_SequentialCommit(float deltaTime, bool rebuildSpatialGrid)
+    {
+        using (GameProfiler.Scope())
+        {
+            if (rebuildSpatialGrid)
+            {
+                _ctx.SpatialGrid.Clear();
+            }
+
             int count = _pool.Capacity;
 
             for (int i = 0; i < count; i++)
             {
-                int cx = (int)(_pool.PositionX[i] / _ctx.TileSize);
-                int cy = (int)(_pool.PositionY[i] / _ctx.TileSize);
-
-                if (_pool.CurrentCellX[i] == cx && _pool.CurrentCellY[i] == cy)
+                if (rebuildSpatialGrid)
                 {
-                    _pool.CellStayTime[i] += deltaTime;
+                    _ctx.SpatialGrid.Insert(i, _pool.CurrentCellX[i], _pool.CurrentCellY[i], _pool);
                 }
-                else
-                {
-                    _pool.CurrentCellX[i] = cx;
-                    _pool.CurrentCellY[i] = cy;
-                    _pool.CellStayTime[i] = 0f;
-                }
-
-                _ctx.SpatialGrid.Insert(i, cx, cy, _pool);
 
                 var state = _pool.States[i];
-                if (state == AgentState.Idle)
-                {
-                    _pool.JobSearchTimer[i] -= deltaTime;
-                    if (_pool.JobSearchTimer[i] <= 0f)
-                    {
-                        _pool.JobSearchTimer[i] = 6.0f + (float)_ctx.Random.NextDouble() * 6.0f;
-                        _wanderSystem.TryAssignJob(i, _pool, _ctx);
-                    }
-                    _wanderSystem.Commit(i, deltaTime, _pool, _ctx);
+                if (state == AgentState.Idle || state == AgentState.Evacuating)
                     continue;
-                }
-                else if (state == AgentState.Evacuating)
-                {
-                    _wanderSystem.Commit(i, deltaTime, _pool, _ctx);
-                    continue;
-                }
 
                 var jobType = _pool.CurrentJobType[i];
-                if (jobType != JobTypeId.None && JobRegistry.TryGetHandler(jobType, out var handler))
+                if (jobType != JobTypeId.None)
                 {
-                    handler.Commit(i, deltaTime, _pool, _ctx);
+                    var handler = JobRegistry.GetHandler(jobType);
+                    handler?.Commit(i, deltaTime, _pool, _ctx);
                 }
             }
         }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Numerics;
 using Game.Core;
 
@@ -100,8 +100,9 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
 
                 if (StockpileManager.Instance.IsZoneTile(sx, sy))
                 {
+                    // Items go ONLY into the stockpile storage (DepositItems).
+                    // A duplicate SpawnItems used to create copies on the ground.
                     StockpileManager.Instance.DepositItems(sx, sy, pool.CarriedItemId[agentIndex], pool.CarriedItemCount[agentIndex]);
-                    GroundItemManager.Instance.SpawnItems(sx, sy, pool.CarriedItemId[agentIndex], pool.CarriedItemCount[agentIndex]);
                 }
                 else
                 {

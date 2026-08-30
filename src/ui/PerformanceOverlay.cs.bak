@@ -1,0 +1,170 @@
+﻿using Godot;
+using Game.Core;
+using System;
+using System.Text;
+
+namespace Game.UI;
+
+public partial class PerformanceOverlay : CanvasLayer
+{
+    private PanelContainer _panel;
+    private RichTextLabel _label;
+    private bool _isVisible = true;
+    private float _refreshTimer = 0f;
+
+    public override void _Ready()
+    {
+        Layer = 120;
+
+        _panel = new PanelContainer
+        {
+            Name = "ProfilerPanel",
+            Position = new Vector2(16, 16),
+            CustomMinimumSize = new Vector2(700, 280),
+            MouseFilter = Control.MouseFilterEnum.Ignore
+        };
+
+        var style = new StyleBoxFlat
+        {
+            BgColor = new Color(0.04f, 0.04f, 0.07f, 0.92f),
+            CornerRadiusTopLeft = 8,
+            CornerRadiusTopRight = 8,
+            CornerRadiusBottomLeft = 8,
+            CornerRadiusBottomRight = 8,
+            ContentMarginLeft = 14,
+            ContentMarginRight = 14,
+            ContentMarginTop = 10,
+            ContentMarginBottom = 10,
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            BorderColor = new Color(0.25f, 0.30f, 0.45f, 0.85f)
+        };
+        _panel.AddThemeStyleboxOverride("panel", style);
+
+        _label = new RichTextLabel
+        {
+            BbcodeEnabled = true,
+            FitContent = true,
+            AutowrapMode = TextServer.AutowrapMode.Off, // Запрещаем ломать строки на части
+            CustomMinimumSize = new Vector2(670, 0),
+            MouseFilter = Control.MouseFilterEnum.Ignore
+        };
+        _panel.AddChild(_label);
+        AddChild(_panel);
+    }
+
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (@event is InputEventKey key && key.Pressed && key.Keycode == Key.F3)
+        {
+            _isVisible = !_isVisible;
+            _panel.Visible = _isVisible;
+            GetViewport().SetInputAsHandled();
+        }
+    }
+
+    public override void _Process(double delta)
+    {
+        if (!_isVisible) return;
+
+        _refreshTimer += (float)delta;
+        if (_refreshTimer < 0.10f) // Обновление 10 раз в секунду без лишней нагрузки
+            return;
+
+        _refreshTimer = 0f;
+
+        double fps = Engine.GetFramesPerSecond();
+        double frameTimeMs = 1000.0 / Math.Max(1.0, fps);
+        long totalMemoryMb = GC.GetTotalMemory(false) / (1024 * 1024);
+        int gen0 = GC.CollectionCount(0);
+        int gen1 = GC.CollectionCount(1);
+        int gen2 = GC.CollectionCount(2);
+
+        GameProfiler.SnapshotMetrics(out var metrics, (float)delta);
+
+        var sb = new StringBuilder(4096);
+
+        sb.Append("[b][color=#61afef]=== SCRIPT PERFORMANCE PROFILER (F3) ===[/color][/b]\n");
+        sb.Append($"[b]FPS:[/b] {FormatFps(fps)} ({frameTimeMs,4:F1} ms)  |  [b]RAM (GC):[/b] {totalMemoryMb} MB (Gen0: {gen0} | G1: {gen1} | G2: {gen2})\n");
+        sb.Append("[color=#3e4451]--------------------------------------------------------------------------------[/color]\n");
+        sb.Append("[color=#abb2bf][b]SCRIPT / METHOD                         AVG        MAX      CALLS/s     LOAD[/b][/color]\n");
+        sb.Append("[color=#3e4451]--------------------------------------------------------------------------------[/color]\n");
+
+        int displayedCount = 0;
+        foreach (var m in metrics)
+        {
+            if (m.AvgMs < 0.005 && m.CallsPerSec == 0) continue;
+            if (displayedCount++ >= 15) break; // Топ-15 самых нагруженных методов
+
+            string name = FormatMethodName(m.Name, 36);
+            string avgStr = FormatMs(m.AvgMs, 8);
+            string maxStr = FormatMs(m.MaxMs, 8);
+            string callsStr = FormatCalls(m.CallsPerSec, 10);
+            string loadStr = FormatLoad(m.PercentLoad, 6);
+
+            sb.Append($"[color=#e5c07b]{name}[/color]  {avgStr}  {maxStr}  {callsStr}  {loadStr}\n");
+        }
+
+        if (displayedCount == 0)
+        {
+            sb.Append("[color=#5c6370]  Нет активных измерений нагрузки...[/color]\n");
+        }
+
+        _label.Text = sb.ToString();
+    }
+
+    private static string FormatMethodName(string str, int targetLen)
+    {
+        if (string.IsNullOrEmpty(str)) return new string(' ', targetLen);
+
+        if (str.Length > targetLen)
+        {
+            // Обрезаем длинные имена красиво с середины или конца
+            return str.Substring(0, targetLen - 2) + "..";
+        }
+        return str.PadRight(targetLen);
+    }
+
+    private static string FormatCalls(int calls, int width)
+    {
+        string text;
+        if (calls >= 1_000_000)
+            text = $"{calls / 1_000_000f:F2}M/s";
+        else if (calls >= 10_000)
+            text = $"{calls / 1_000f:F1}k/s";
+        else
+            text = $"{calls}/s";
+
+        string padded = text.PadLeft(width);
+        return calls > 500_000 ? $"[color=#e06c75]{padded}[/color]" : $"[color=#abb2bf]{padded}[/color]";
+    }
+
+    private static string FormatLoad(double percent, int width)
+    {
+        string text = $"{percent,4:F0}%".PadLeft(width);
+        if (percent >= 35.0)
+            return $"[color=#e06c75][b]{text}[/b][/color]";
+        if (percent >= 15.0)
+            return $"[color=#e5c07b]{text}[/color]";
+        return $"[color=#61afef]{text}[/color]";
+    }
+
+    private static string FormatMs(double ms, int width)
+    {
+        string text = $"{ms,5:F2}ms".PadLeft(width);
+        if (ms >= 10.0)
+            return $"[color=#e06c75][b]{text}[/b][/color]";
+        if (ms >= 2.0)
+            return $"[color=#e5c07b]{text}[/color]";
+        return $"[color=#98c379]{text}[/color]";
+    }
+
+    private static string FormatFps(double fps)
+    {
+        if (fps >= 55) return $"[color=#98c379]{fps:F0}[/color]";
+        if (fps >= 30) return $"[color=#e5c07b]{fps:F0}[/color]";
+        return $"[color=#e06c75][b]{fps:F0}[/b][/color]";
+    }
+}

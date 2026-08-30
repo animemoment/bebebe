@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading;
 using Game.Core;
 
 namespace Game.Simulation;
@@ -19,7 +20,7 @@ public sealed class IdleWorkerSpatialGrid
     private int _totalIdleCount = 0;
     private int _lastChunkScanIndex = 0;
 
-    public int TotalIdleCount { get { lock (_lock) return _totalIdleCount; } }
+    public int TotalIdleCount => Volatile.Read(ref _totalIdleCount);
 
     public IdleWorkerSpatialGrid()
     {
@@ -107,108 +108,60 @@ public sealed class IdleWorkerSpatialGrid
         }
     }
 
+    /// <summary>
+    /// Lock-free сбор свободных рабочих из указанного чанка.
+    /// Читает односвязный список без lock'а — консистентность для симуляции достаточна.
+    /// </summary>
+    public int CollectIdleWorkersInChunk(int chunkIndex, int maxCount, int[] destination, AgentDataPool pool)
+    {
+        if (chunkIndex < 0 || chunkIndex >= _chunkHeads.Length || maxCount <= 0)
+            return 0;
+
+        int collected = 0;
+        int curr = Volatile.Read(ref _chunkHeads[chunkIndex]);
+
+        while (curr != -1 && collected < maxCount)
+        {
+            if (curr < pool.Capacity && pool.States[curr] == AgentState.Idle)
+            {
+                destination[collected++] = curr;
+            }
+            curr = Volatile.Read(ref pool.NextInIdleCell[curr]);
+        }
+
+        return collected;
+    }
+
+    /// <summary>
+    /// Lock-free сбор свободных рабочих round-robin по чанкам (без глобального lock'а).
+    /// </summary>
     public int CollectIdleWorkers(int maxCount, int[] destination, AgentDataPool pool)
     {
         if (destination == null || destination.Length < maxCount)
             return 0;
 
-        lock (_lock)
+        if (Volatile.Read(ref _totalIdleCount) <= 0)
+            return 0;
+
+        int collected = 0;
+        int totalChunks = _chunkHeads.Length;
+
+        for (int offset = 0; offset < totalChunks && collected < maxCount; offset++)
         {
-            if (_totalIdleCount <= 0)
-                return 0;
+            int chunkIdx = (_lastChunkScanIndex + offset) % totalChunks;
+            int curr = Volatile.Read(ref _chunkHeads[chunkIdx]);
 
-            int collected = 0;
-            int totalChunks = _chunkHeads.Length;
-
-            // Round-robin проход по всем чанкам карты без застревания на 0-м чанке
-            for (int offset = 0; offset < totalChunks && collected < maxCount; offset++)
+            while (curr != -1 && collected < maxCount)
             {
-                int chunkIdx = (_lastChunkScanIndex + offset) % totalChunks;
-                int curr = _chunkHeads[chunkIdx];
-
-                while (curr != -1 && collected < maxCount)
+                if (curr < pool.Capacity && pool.States[curr] == AgentState.Idle)
                 {
                     destination[collected++] = curr;
-                    curr = pool.NextInIdleCell[curr];
                 }
+                curr = Volatile.Read(ref pool.NextInIdleCell[curr]);
             }
-
-            _lastChunkScanIndex = (_lastChunkScanIndex + 17) % totalChunks;
-            return collected;
         }
-    }
 
-    public bool TryClaimNearestIdleWorker(
-        int targetTileX, int targetTileY,
-        ToolRequirement requiredTool,
-        AgentDataPool pool,
-        out int claimedAgentIndex)
-    {
-        claimedAgentIndex = -1;
-        if (_totalIdleCount <= 0) return false;
-
-        lock (_lock)
-        {
-            if (_totalIdleCount <= 0) return false;
-
-            int centerCx = Math.Clamp(targetTileX >> ChunkShift, 0, ChunkDim - 1);
-            int centerCy = Math.Clamp(targetTileY >> ChunkShift, 0, ChunkDim - 1);
-
-            float targetPxX = targetTileX * 64f + 32f;
-            float targetPxY = targetTileY * 64f + 32f;
-
-            float bestDistSq = float.MaxValue;
-            int bestAgent = -1;
-
-            for (int r = 0; r < ChunkDim; r++)
-            {
-                int minCx = Math.Max(0, centerCx - r);
-                int maxCx = Math.Min(ChunkDim - 1, centerCx + r);
-                int minCy = Math.Max(0, centerCy - r);
-                int maxCy = Math.Min(ChunkDim - 1, centerCy + r);
-
-                for (int cx = minCx; cx <= maxCx; cx++)
-                {
-                    for (int cy = minCy; cy <= maxCy; cy++)
-                    {
-                        if (r > 0 && cx > minCx && cx < maxCx && cy > minCy && cy < maxCy)
-                            continue;
-
-                        int curr = _chunkHeads[cy * ChunkDim + cx];
-                        int inspectCount = 0;
-
-                        while (curr != -1 && inspectCount++ < MaxPerChunkInspect)
-                        {
-                            if (pool.States[curr] == AgentState.Idle &&
-                                (requiredTool == ToolRequirement.None || (pool.EquippedTools[curr] & requiredTool) != 0))
-                            {
-                                float dx = pool.PositionX[curr] - targetPxX;
-                                float dy = pool.PositionY[curr] - targetPxY;
-                                float distSq = dx * dx + dy * dy;
-
-                                if (distSq < bestDistSq)
-                                {
-                                    bestDistSq = distSq;
-                                    bestAgent = curr;
-                                }
-                            }
-                            curr = pool.NextInIdleCell[curr];
-                        }
-                    }
-                }
-
-                if (bestAgent != -1)
-                    break;
-            }
-
-            if (bestAgent != -1)
-            {
-                RemoveIdleWorker(bestAgent, pool);
-                claimedAgentIndex = bestAgent;
-                return true;
-            }
-
-            return false;
-        }
+        _lastChunkScanIndex = (_lastChunkScanIndex + 17) % totalChunks;
+        return collected;
     }
 }

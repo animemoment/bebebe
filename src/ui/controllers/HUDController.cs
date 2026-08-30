@@ -9,8 +9,6 @@ namespace Game.UI;
 
 public partial class HUDController : Control
 {
-    private const float VerticalTierOffset = 75.0f;
-
     private Button _buttonConstruct;
 
     private Control _selectionContainer;
@@ -19,13 +17,6 @@ public partial class HUDController : Control
     private Control _wallContainer;
     private Control _zoneContainer;
     private Control _industrialContainer;
-
-    private Vector2 _selectionInitialPos;
-    private Vector2 _buildInitialPos;
-    private Vector2 _orderInitialPos;
-    private Vector2 _wallInitialPos;
-    private Vector2 _zoneInitialPos;
-    private Vector2 _industrialInitialPos;
 
     private Button _buildVariantButton;
     private Button _orderVariantButton;
@@ -71,13 +62,6 @@ public partial class HUDController : Control
         _wallContainer       = FindChild("WallContainer", true, false) as Control;
         _zoneContainer       = FindChild("ZoneContainer", true, false) as Control;
         _industrialContainer = FindChild("IndustrialContainer", true, false) as Control;
-
-        if (_selectionContainer != null)  _selectionInitialPos  = _selectionContainer.Position;
-        if (_buildContainer != null)      _buildInitialPos      = _buildContainer.Position;
-        if (_orderContainer != null)      _orderInitialPos      = _orderContainer.Position;
-        if (_wallContainer != null)       _wallInitialPos       = _wallContainer.Position;
-        if (_zoneContainer != null)       _zoneInitialPos       = _zoneContainer.Position;
-        if (_industrialContainer != null) _industrialInitialPos = _industrialContainer.Position;
 
         _buildVariantButton = FindChild("BuildVariant", true, false) as Button;
         _orderVariantButton = (FindChild("OrderVariant", true, false) as Button) ?? (FindChild("OrderVarinat", true, false) as Button);
@@ -131,19 +115,19 @@ public partial class HUDController : Control
         if (_wallVariantButton != null)
         {
             _wallVariantButton.MouseFilter = MouseFilterEnum.Stop;
-            _wallVariantButton.Pressed += () => ToggleSubContainer(_wallContainer, _wallInitialPos);
+            _wallVariantButton.Pressed += () => ToggleSubContainer(_wallContainer);
         }
 
         if (_zonesVariantButton != null)
         {
             _zonesVariantButton.MouseFilter = MouseFilterEnum.Stop;
-            _zonesVariantButton.Pressed += () => ToggleSubContainer(_zoneContainer, _zoneInitialPos);
+            _zonesVariantButton.Pressed += () => ToggleSubContainer(_zoneContainer);
         }
 
         if (_industrialItemsVariantButton != null)
         {
             _industrialItemsVariantButton.MouseFilter = MouseFilterEnum.Stop;
-            _industrialItemsVariantButton.Pressed += () => ToggleSubContainer(_industrialContainer, _industrialInitialPos);
+            _industrialItemsVariantButton.Pressed += () => ToggleSubContainer(_industrialContainer);
         }
 
         if (_woodWallButton != null)
@@ -477,7 +461,7 @@ public partial class HUDController : Control
         else
         {
             CloseAllMenus();
-            ShowContainer(_selectionContainer, _selectionInitialPos);
+            ShowContainer(_selectionContainer);
         }
     }
 
@@ -490,13 +474,8 @@ public partial class HUDController : Control
         else
         {
             CloseTier2AndSub();
-            HideContainer(_orderContainer, _orderInitialPos);
-
-            Vector2 targetPos = new Vector2(
-                _buildInitialPos.X,
-                _selectionContainer != null ? _selectionContainer.Position.Y - VerticalTierOffset : _buildInitialPos.Y - VerticalTierOffset
-            );
-            ShowContainer(_buildContainer, targetPos);
+            HideContainer(_orderContainer);
+            ShowContainer(_buildContainer);
         }
     }
 
@@ -504,68 +483,58 @@ public partial class HUDController : Control
     {
         if (_orderContainer != null && _orderContainer.Visible)
         {
-            HideContainer(_orderContainer, _orderInitialPos);
+            HideContainer(_orderContainer);
         }
         else
         {
             CloseTier2AndSub();
-            Vector2 targetPos = new Vector2(
-                _orderInitialPos.X,
-                _selectionContainer != null ? _selectionContainer.Position.Y - VerticalTierOffset : _orderInitialPos.Y - VerticalTierOffset
-            );
-            ShowContainer(_orderContainer, targetPos);
+            ShowContainer(_orderContainer);
         }
     }
 
-    private void ToggleSubContainer(Control targetSub, Vector2 baseInitialPos)
+    private void ToggleSubContainer(Control targetSub)
     {
         if (targetSub != null && targetSub.Visible)
         {
-            HideContainer(targetSub, baseInitialPos);
+            HideContainer(targetSub);
         }
         else
         {
             HideAllSubContainers();
-            Vector2 targetPos = new Vector2(
-                baseInitialPos.X,
-                _buildContainer != null ? _buildContainer.Position.Y - VerticalTierOffset : baseInitialPos.Y - VerticalTierOffset
-            );
-            ShowContainer(targetSub, targetPos);
+            ShowContainer(targetSub);
         }
     }
 
-    private static void ShowContainer(Control control, Vector2 position)
+    private static void ShowContainer(Control control)
     {
         if (control == null) return;
-        control.Position = position;
         control.Visible = true;
     }
 
-    private static void HideContainer(Control control, Vector2 baseInitialPos)
+    private static void HideContainer(Control control)
     {
         if (control == null) return;
         control.Visible = false;
-        control.Position = baseInitialPos;
     }
 
     private void CloseTier2AndSub()
     {
-        HideContainer(_buildContainer, _buildInitialPos);
+        HideContainer(_buildContainer);
         HideAllSubContainers();
     }
 
     private void HideAllSubContainers()
     {
-        HideContainer(_wallContainer, _wallInitialPos);
-        HideContainer(_zoneContainer, _zoneInitialPos);
-        HideContainer(_industrialContainer, _industrialInitialPos);
+        HideContainer(_wallContainer);
+        HideContainer(_zoneContainer);
+        HideContainer(_industrialContainer);
     }
 
     private void CloseAllMenus()
     {
-        HideContainer(_selectionContainer, _selectionInitialPos);
-        HideContainer(_buildContainer, _buildInitialPos);
-        HideContainer(_orderContainer, _orderInitialPos);
+        HideContainer(_selectionContainer);
+        HideContainer(_buildContainer);
+        HideContainer(_orderContainer);
         HideAllSubContainers();
     }
 

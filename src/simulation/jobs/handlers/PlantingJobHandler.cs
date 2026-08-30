@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Numerics;
 using Game.Core;
 
@@ -16,14 +16,15 @@ public sealed class PlantingJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
-        return GroundItemManager.Instance.HasAvailableLogs || GroundItemManager.Instance.HasItemsAt(job.SourceX, job.SourceY);
+        // Planting requires grain, not logs.
+        return GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Grain);
     }
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
         Vector2 pos = pool.GetPosition(agentIndex);
 
-        if (GroundItemManager.Instance.TryReserveGroundItems(pos, 5.0f, true, out var itemCell, out var itemId, out int resCount))
+        if (GroundItemManager.Instance.TryReserveGroundItems(pos, 5.0f, true, ItemId.Grain, out var itemCell, out var itemId, out int resCount))
         {
             pool.States[agentIndex] = AgentState.MovingToSource;
             pool.SourceCellX[agentIndex] = itemCell.X;

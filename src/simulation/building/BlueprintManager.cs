@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Godot;
 using Game.Core;
@@ -165,7 +165,12 @@ public class BlueprintManager
     {
         lock (_lock)
         {
-            return new Dictionary<(int X, int Y), BuildingType>(_blueprints.Count);
+            var result = new Dictionary<(int X, int Y), BuildingType>(_blueprints.Count);
+            foreach (var (pos, site) in _blueprints)
+            {
+                result[pos] = site.Type;
+            }
+            return result;
         }
     }
 

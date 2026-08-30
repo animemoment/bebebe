@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Numerics;
@@ -16,26 +16,41 @@ public class GroundItemManager
     private const float ChunkSizePx = ChunkSize * 64f;
     private const int MaxChunkRadius = 32;
 
+    private const int MaxItemTypes = 8;
+    private const int MaxSnapshotItemsPerType = 4096;
+    private const int RingSize = 4;
+
     private readonly object _lock = new();
     private readonly Dictionary<(int X, int Y), (ItemId Item, int Count, int Reserved)> _groundItems = new(2048);
     private readonly HashSet<(int X, int Y)>[,] _itemChunks = new HashSet<(int X, int Y)>[ChunkDim, ChunkDim];
 
-    private int _totalAvailableLogs = 0;
-    public bool HasAvailableLogs { get { lock (_lock) return _totalAvailableLogs > 0; } }
+    private readonly int[] _totalAvailableByType = new int[MaxItemTypes];
+    public bool HasAvailableLogs { get { lock (_lock) return GetAvailableCount(ItemId.Log) > 0; } }
+    public bool HasAvailableItemsOfType(ItemId id) { lock (_lock) return GetAvailableCount(id) > 0; }
 
-    private const int MaxSnapshotItems = 8192;
-    private const int RingSize = 4;
-    private readonly Vector2[][] _snapshotRing = new Vector2[RingSize][];
+    private int GetAvailableCount(ItemId id)
+    {
+        int idx = (int)id;
+        return idx >= 0 && idx < MaxItemTypes ? _totalAvailableByType[idx] : 0;
+    }
+
+    private readonly Vector2[][][] _snapshotRing = new Vector2[RingSize][][];
+    private readonly int[][] _countsRing = new int[RingSize][];
     private int _ringIndex = 0;
     private bool _isDirty = true;
 
-    public ConcurrentQueue<(Vector2[] Buffer, int Count)> ItemPositionsQueue { get; } = new();
+    public ConcurrentQueue<(Vector2[][] PositionsByItem, int[] Counts)> SnapshotQueue { get; } = new();
 
     public GroundItemManager()
     {
-        for (int i = 0; i < RingSize; i++)
+        for (int r = 0; r < RingSize; r++)
         {
-            _snapshotRing[i] = new Vector2[MaxSnapshotItems];
+            _snapshotRing[r] = new Vector2[MaxItemTypes][];
+            _countsRing[r] = new int[MaxItemTypes];
+            for (int t = 0; t < MaxItemTypes; t++)
+            {
+                _snapshotRing[r][t] = new Vector2[MaxSnapshotItemsPerType];
+            }
         }
 
         for (int cx = 0; cx < ChunkDim; cx++)
@@ -71,9 +86,10 @@ public class GroundItemManager
                 _itemChunks[cx, cy].Add((x, y));
             }
 
-            if (id == ItemId.Log)
+            int itemIdx = (int)id;
+            if (itemIdx > 0 && itemIdx < MaxItemTypes)
             {
-                _totalAvailableLogs += count;
+                _totalAvailableByType[itemIdx] += count;
             }
 
             _isDirty = true;
@@ -104,13 +120,18 @@ public class GroundItemManager
 
     public bool TryReserveGroundItems(Vector2 agentPos, float maxWeightCapacity, bool allowFromStockpile, out (int X, int Y) cell, out ItemId id, out int reservedCount)
     {
+        return TryReserveGroundItems(agentPos, maxWeightCapacity, allowFromStockpile, ItemId.None, out cell, out id, out reservedCount);
+    }
+
+    public bool TryReserveGroundItems(Vector2 agentPos, float maxWeightCapacity, bool allowFromStockpile, ItemId preferredId, out (int X, int Y) cell, out ItemId id, out int reservedCount)
+    {
         lock (_lock)
         {
             cell = (-1, -1);
             id = ItemId.None;
             reservedCount = 0;
 
-            if (_totalAvailableLogs <= 0 || _groundItems.Count == 0)
+            if (_groundItems.Count == 0)
                 return false;
 
             int startCx = Math.Clamp((int)(agentPos.X / ChunkSizePx), 0, ChunkDim - 1);
@@ -145,6 +166,8 @@ public class GroundItemManager
                             bool isStockpile = StockpileManager.Instance.IsZoneTile(pos.X, pos.Y);
                             if (!allowFromStockpile && isStockpile) continue;
 
+                            if (preferredId != ItemId.None && entry.Item != preferredId) continue;
+
                             int available = entry.Count - entry.Reserved;
                             if (available <= 0) continue;
 
@@ -167,7 +190,6 @@ public class GroundItemManager
                     }
                 }
 
-                // Ранний выход как только нашли ресурс в текущем радиусе
                 if (cell.X != -1 && reservedCount > 0)
                     break;
             }
@@ -176,9 +198,10 @@ public class GroundItemManager
             {
                 var entry = _groundItems[cell];
                 _groundItems[cell] = (entry.Item, entry.Count, entry.Reserved + reservedCount);
-                if (entry.Item == ItemId.Log)
+                int resIdx = (int)entry.Item;
+                if (resIdx > 0 && resIdx < MaxItemTypes)
                 {
-                    _totalAvailableLogs = Math.Max(0, _totalAvailableLogs - reservedCount);
+                    _totalAvailableByType[resIdx] = Math.Max(0, _totalAvailableByType[resIdx] - reservedCount);
                 }
                 return true;
             }
@@ -206,9 +229,10 @@ public class GroundItemManager
                 id = entry.Item;
                 reservedCount = Math.Min(available, maxCanTake);
                 _groundItems[(x, y)] = (entry.Item, entry.Count, entry.Reserved + reservedCount);
-                if (entry.Item == ItemId.Log)
+                int resIdx = (int)entry.Item;
+                if (resIdx > 0 && resIdx < MaxItemTypes)
                 {
-                    _totalAvailableLogs = Math.Max(0, _totalAvailableLogs - reservedCount);
+                    _totalAvailableByType[resIdx] = Math.Max(0, _totalAvailableByType[resIdx] - reservedCount);
                 }
                 return true;
             }
@@ -258,9 +282,10 @@ public class GroundItemManager
             {
                 int newReserved = Math.Max(0, entry.Reserved - count);
                 _groundItems[(x, y)] = (entry.Item, entry.Count, newReserved);
-                if (entry.Item == ItemId.Log)
+                int relIdx = (int)entry.Item;
+                if (relIdx > 0 && relIdx < MaxItemTypes)
                 {
-                    _totalAvailableLogs += count;
+                    _totalAvailableByType[relIdx] += count;
                 }
             }
         }
@@ -273,22 +298,32 @@ public class GroundItemManager
             if (!_isDirty) return;
             _isDirty = false;
 
-            var buffer = _snapshotRing[_ringIndex];
-            int count = 0;
+            var currentSnap = _snapshotRing[_ringIndex];
+            var currentCounts = _countsRing[_ringIndex];
+            Array.Clear(currentCounts, 0, currentCounts.Length);
 
             foreach (var (pos, entry) in _groundItems)
             {
-                if (entry.Count > 0 && count < MaxSnapshotItems)
+                if (entry.Count > 0)
                 {
-                    buffer[count++] = new Vector2(pos.X * 64f + 32f, pos.Y * 64f + 32f);
+                    int itemIdx = (int)entry.Item;
+                    if (itemIdx >= 0 && itemIdx < MaxItemTypes)
+                    {
+                        int count = currentCounts[itemIdx];
+                        if (count < MaxSnapshotItemsPerType)
+                        {
+                            currentSnap[itemIdx][count] = new Vector2(pos.X * 64f + 32f, pos.Y * 64f + 32f);
+                            currentCounts[itemIdx]++;
+                        }
+                    }
                 }
             }
 
             _ringIndex = (_ringIndex + 1) % RingSize;
-            ItemPositionsQueue.Enqueue((buffer, count));
+            SnapshotQueue.Enqueue((currentSnap, currentCounts));
 
-            while (ItemPositionsQueue.Count > 2)
-                ItemPositionsQueue.TryDequeue(out _);
+            while (SnapshotQueue.Count > 2)
+                SnapshotQueue.TryDequeue(out _);
         }
     }
 }
