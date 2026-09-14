@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dwfglghab3j3c"
+path="res://.godot/imported/agent_movement.glsl-4dce04c0a0af0b21eb2b67f82c88355d.res"
+
+[deps]
+
+source_file="res://src/simulation/gpu/agent_movement.glsl"
+dest_files=["res://.godot/imported/agent_movement.glsl-4dce04c0a0af0b21eb2b67f82c88355d.res"]
+
+[params]
+

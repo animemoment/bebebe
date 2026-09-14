@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://d0plyj3rq3abx"
+path="res://.godot/imported/fbm_noise.glsl-b95b271ad891df8fc32bf7c44f6328c2.res"
+
+[deps]
+
+source_file="res://src/simulation/gpu/fbm_noise.glsl"
+dest_files=["res://.godot/imported/fbm_noise.glsl-b95b271ad891df8fc32bf7c44f6328c2.res"]
+
+[params]
+

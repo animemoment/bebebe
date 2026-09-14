@@ -1,0 +1,10 @@
+﻿# Godot 4 & C# ignores
+.godot/
+.mono/
+bin/
+obj/
+*.sln.DotSettings.user
+.vs/
+.idea/
+*.tmp
+*.log

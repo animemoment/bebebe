@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://858l2c8kcvtf"
+path="res://.godot/imported/crop_diffuse.glsl-d18e9eb22837ac0b18f5129a410bd360.res"
+
+[deps]
+
+source_file="res://src/simulation/gpu/crop_diffuse.glsl"
+dest_files=["res://.godot/imported/crop_diffuse.glsl-d18e9eb22837ac0b18f5129a410bd360.res"]
+
+[params]
+

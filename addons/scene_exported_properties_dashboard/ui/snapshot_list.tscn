@@ -1,0 +1,34 @@
+[gd_scene format=3 uid="uid://tsgeamykefv2"]
+
+[ext_resource type="Script" path="res://addons/scene_exported_properties_dashboard/ui/snapshot_list.gd" id="1_edt56"]
+
+[node name="SnapshotList" type="AcceptDialog" unique_id=1671271566]
+oversampling_override = 1.0
+title = "Snapshot list"
+position = Vector2i(0, 36)
+size = Vector2i(147, 100)
+visible = true
+script = ExtResource("1_edt56")
+
+[node name="VBox" type="VBoxContainer" parent="." unique_id=399540587]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 139.0
+offset_bottom = 51.0
+
+[node name="List" type="ItemList" parent="VBox" unique_id=445140906]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="HBox" type="HBoxContainer" parent="VBox" unique_id=1803229839]
+layout_mode = 2
+
+[node name="BtnRestore" type="Button" parent="VBox/HBox" unique_id=844107363]
+layout_mode = 2
+disabled = true
+text = "Restore"
+
+[node name="BtnDelete" type="Button" parent="VBox/HBox" unique_id=558982430]
+layout_mode = 2
+disabled = true
+text = "Delete"

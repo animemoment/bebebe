@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://b0ihuiuvnsty5"
+path="res://.godot/imported/flowfield_vec.glsl-f685162649ba062749db492b5e0190cd.res"
+
+[deps]
+
+source_file="res://src/simulation/gpu/flowfield_vec.glsl"
+dest_files=["res://.godot/imported/flowfield_vec.glsl-f685162649ba062749db492b5e0190cd.res"]
+
+[params]
+
