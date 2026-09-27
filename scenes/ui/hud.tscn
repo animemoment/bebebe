@@ -8,7 +8,7 @@
 [ext_resource type="Texture2D" uid="uid://wxsfnv0yq7ot" path="res://ui/assets/textures/icons/people_icon.png" id="4_136eg"]
 [ext_resource type="Texture2D" uid="uid://d1xq2yj0yy17c" path="res://ui/assets/textures/icons/WallIcon.png" id="6_4d46k"]
 [ext_resource type="Texture2D" uid="uid://c0th3ldvb3ab0" path="res://ui/assets/textures/icons/stop.png" id="6_o6xly"]
-[ext_resource type="Texture2D" uid="uid://by88ysblfuqqu" path="res://ui/assets/textures/objects/logs.png" id="7_4jqwt"]
+[ext_resource type="Texture2D" uid="uid://by88ysblfuqqu" path="res://ui/assets/textures/drop/logs.png" id="7_4jqwt"]
 [ext_resource type="Texture2D" uid="uid://cj4xotk0mcyx4" path="res://ui/assets/textures/icons/ZonesIcon.png" id="7_erw67"]
 [ext_resource type="Texture2D" uid="uid://cgh01o8ypbym7" path="res://ui/assets/textures/icons/order_icon.png" id="7_h022r"]
 [ext_resource type="Texture2D" uid="uid://b53x4gy4f0dd" path="res://ui/assets/textures/icons/IndustrialIcon.png" id="8_gonto"]
@@ -20,6 +20,7 @@
 [ext_resource type="Texture2D" uid="uid://cmj0eedloosxw" path="res://ui/assets/textures/icons/Bread_icon.png" id="15_gonto"]
 [ext_resource type="Texture2D" uid="uid://cnmxgbn8j1mfp" path="res://ui/assets/textures/icons/PrioritetIcons/PriorityBoardIcon.png" id="18_we3sy"]
 [ext_resource type="Texture2D" uid="uid://bnn5ajbjtibpt" path="res://ui/assets/textures/icons/humidity.png" id="20_el1dq"]
+[ext_resource type="Texture2D" uid="uid://uvfnopdt2rnp" path="res://ui/assets/textures/icons/fertility.png" id="21_gmc6u"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_el1dq"]
 bg_color = Color(0, 0, 0, 1)
@@ -54,9 +55,12 @@ bg_color = Color(0, 0, 0, 1)
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_1e6lo"]
 bg_color = Color(0, 0, 0, 1)
 
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_qt3qv"]
+bg_color = Color(0, 0, 0, 1)
+
 [sub_resource type="AtlasTexture" id="AtlasTexture_0mwgc"]
 atlas = ExtResource("1_0mwgc")
-region = Rect2(128, 0, 64, 64)
+region = Rect2(6.993791, 7.205187, 50.039406, 49.712685)
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_7iu52"]
 
@@ -292,10 +296,12 @@ offset_bottom = 876.0
 [node name="WoodWallButton" type="Button" parent="WallContainer" unique_id=1934489861]
 custom_minimum_size = Vector2(100, 100)
 layout_mode = 2
+theme_override_styles/normal = SubResource("StyleBoxFlat_qt3qv")
 icon = SubResource("AtlasTexture_0mwgc")
 expand_icon = true
 
 [node name="ZoneContainer" type="HBoxContainer" parent="." unique_id=644096561]
+visible = false
 layout_mode = 0
 offset_top = 776.0
 offset_right = 1646.0
@@ -316,6 +322,7 @@ icon = ExtResource("14_we3sy")
 expand_icon = true
 
 [node name="IndustrialContainer" type="HBoxContainer" parent="." unique_id=668805200]
+visible = false
 custom_minimum_size = Vector2(75, 75)
 layout_mode = 0
 offset_left = 1.0
@@ -427,7 +434,9 @@ theme_override_styles/normal = SubResource("StyleBoxFlat_4pfqy")
 icon = ExtResource("20_el1dq")
 expand_icon = true
 
-[node name="Button2" type="Button" parent="additionally/VBoxContainer" unique_id=1563105985]
+[node name="fertility" type="Button" parent="additionally/VBoxContainer" unique_id=1563105985]
 custom_minimum_size = Vector2(50, 50)
 layout_mode = 2
 theme_override_styles/normal = SubResource("StyleBoxFlat_4pfqy")
+icon = ExtResource("21_gmc6u")
+expand_icon = true

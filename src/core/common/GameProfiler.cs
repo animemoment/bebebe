@@ -139,7 +139,10 @@ public static class GameProfiler
             int imb = 0;
             if (wall > 0.001 && cpu > 0.001)
             {
-                double ideal = cpu / Math.Max(1, Environment.ProcessorCount);
+                // PERF F1: идеал считается от эффективного DOP (P-1), а не от
+                // ProcessorCount — иначе на урезанном пуле imbalance всегда > 0.
+                int effDop = Game.Simulation.Scheduling.DynamicWorkScheduler.ComputeEffectiveDop(Environment.ProcessorCount);
+                double ideal = cpu / Math.Max(1, effDop);
                 imb = (int)Math.Round(Math.Max(0.0, (wall - ideal) / wall) * 100.0);
                 imb = Math.Clamp(imb, 0, 100);
             }
@@ -161,18 +164,28 @@ public static class GameProfiler
     {
         private readonly string _name;
         private readonly long _startTimestamp;
+        // A1+A5+A7: иерархия + alloc на скоуп. Путь/alloc пишутся в SimEvents
+        // только для значимых (там фильтр), сюда — как было (без overhead).
+        private readonly long _alloc0;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ProfileScope(string name)
         {
             _name = name;
+            SimEvents.PushScope(name);
             _startTimestamp = Stopwatch.GetTimestamp();
+            _alloc0 = GC.GetAllocatedBytesForCurrentThread();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Dispose()
         {
             long elapsedTicks = Stopwatch.GetTimestamp() - _startTimestamp;
+            long alloc = GC.GetAllocatedBytesForCurrentThread() - _alloc0;
+            SimEvents.PopScope();
+            // A7: alloc>64КБ на один скоуп — сразу в канал (видно жирные места).
+            if (alloc > 65536)
+                SimEvents.Record("scope", SimEvents.CurrentPath + ">" + _name, 0, alloc, 0, "big_alloc");
             RecordElapsedTicks(_name, elapsedTicks);
         }
     }

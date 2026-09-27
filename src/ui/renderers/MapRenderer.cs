@@ -1,7 +1,6 @@
 using Godot;
 using Game.Core;
 using Game.Simulation;
-using Game.Simulation.Gpu;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -13,7 +12,8 @@ namespace Game.UI;
 public enum MapMode
 {
     Normal,
-    Humidity
+    Humidity,
+    Fertility
 }
 
 public partial class MapRenderer : Node2D
@@ -34,6 +34,27 @@ public partial class MapRenderer : Node2D
     public const int SourceTree2     = 7;
     public const int SourceTree3     = 8;
     public const int SourceMountain  = 9;
+    // Камень-россыпь: 4 отдельных Source (по одному квадранту 64x64 из
+    // stone.png 128x128) — как 4 варианта деревьев (SourceTree0..3).
+    public const int SourceStone0    = 10;
+    public const int SourceStone1    = 11;
+    public const int SourceStone2    = 12;
+    public const int SourceStone3    = 13;
+    // Мебель: одиночные спрайты 64x64 (как WorkTable).
+    public const int SourceBed        = 14;
+    public const int SourceBench      = 15;
+    public const int SourceNightstand = 16;
+    // Ghost-призрак: TileSet _ghostLayer — ДУБЛЬ сценового wall-набора с
+    // добавленными одиночными Source (трава/грядка/мебель). Id взяты с запасом
+    // от сценовых (там максимум ~16), чтобы не пересекаться с terrain-источниками.
+    // Зону рисуем ТОЛЬКО этими константами (НЕ SourceGrass/SourceGardenBed —
+    // их номера в ghost-наборе заняты стенами, иначе призрак = стены).
+    public const int GhostGrassSource      = 100;
+    public const int GhostGardenBedSource  = 101;
+    public const int GhostWorkTableSource  = 105;
+    public const int GhostBedSource        = 114;
+    public const int GhostBenchSource      = 115;
+    public const int GhostNightstandSource = 116;
 
     /// <summary>
     /// Сид карты. 0 = случайный каждый запуск, иначе фиксированный (для дебага/повторов).
@@ -53,6 +74,11 @@ public partial class MapRenderer : Node2D
     private const string TextureWorkTable = "uid://rp2bpb5c7k2y";
     private const string TextureGardenBed = "uid://47god8qachvh"; // <-- Исправлен правильный UID грядки
     private const string TextureMountain = "uid://de7mit41ukuoq";
+    private const string TextureProcessOfWork = "uid://qqhtvxqngv4a";
+    private const string TextureStone = "uid://du6ur8mvtu3le";
+    private const string TextureBed = "uid://0uf8ok6dxhyi";
+    private const string TextureBench = "uid://bi667xckuklur";
+    private const string TextureNightstand = "uid://ir5jk74j01fg";
 
     private const int WallAtlasColumns = 7;
     private const int WallAtlasRows = 7;
@@ -64,6 +90,7 @@ public partial class MapRenderer : Node2D
     private TileMapLayer _mountainLayer;
     private TileMapLayer _farmLayer;
     private HumidityOverlayRenderer _humidityOverlay;
+    private FertilityOverlayRenderer _fertilityOverlay;
     private TileMapLayer _stockpileLayer;
     private TileMapLayer _objectLayer;
     private TileMapLayer _wallLayer;
@@ -96,19 +123,33 @@ public partial class MapRenderer : Node2D
     private readonly ConcurrentQueue<PendingCell> _pendingCells = new();
     private const int MaxCellsPerFrame = 2048;
     private bool _blueprintRefreshQueued;
+    private long _lastBlueprintRefreshMs;
     // Стандарт слоёв: движковый автотайлинг через TerrainTileLayer
     // (SetCellsTerrainConnect нельзя звать из фоновых потоков — копим грязные
     // клетки и пересчитываем одним вызовом на слой в _Process).
-    private TerrainTileLayer _blueprintWalls;
+    private TileMapLayer _wallBlueprintLayer;
     private TerrainTileLayer _builtWalls;
+    private TerrainTileLayer _wallBlueprints;
     private TerrainTileLayer _mountains;
     private const int WallTerrainSetId = 0;
     private const int WallTerrainId = 0;
     private const int MountainTerrainSetId = 0;
     private const int MountainTerrainId = 0;
 
+    // Прогресс ломки/стройки: отдельный слой поверх всего (атлас ProcessOfWork
+    // 3×2 = 6 стадий). Источник данных — WorkProgressTracker (хендлеры пишут
+    // стадии, здесь DrainDirty в _Process). Сцену не трогаем — TileSet строим
+    // кодом из uid://qqhtvxqngv4a.
+    public const int SourceWorkProgress = 200;
+    private TileMapLayer _workProgressLayer;
+    private readonly List<(int X, int Y, int Stage)> _progressDrain = new(256);
+    private readonly List<(int X, int Y)> _progressStale = new(128);
+    private float _progressSweepTimer;
+
     private Action<(int X, int Y)> _onZoneTileAdded;
     private Action<(int X, int Y)> _onZoneTileRemoved;
+    private Action<(int X, int Y)[]> _onZoneTilesBatchAdded;
+    private Action<(int X, int Y)[]> _onZoneTilesBatchRemoved;
 
     private Action<(int X, int Y), BuildingType> _onBlueprintAdded;
     private Action<List<(int X, int Y)>, BuildingType> _onBlueprintsBatchAdded;
@@ -127,12 +168,14 @@ public partial class MapRenderer : Node2D
 
     public MapData MapData => _pendingMapData;
     public HumidityMap Humidity => _pendingMapData?.Humidity;
+    public FertilityMap Fertility => _pendingMapData?.Fertility;
     public MapMode CurrentMapMode { get; private set; } = MapMode.Normal;
     public event Action<MapMode> OnMapModeChanged;
     public WallBuildManager WallBuildManager => _wallBuildManager;
     public TileMapLayer GhostLayer => _ghostLayer;
     public TileMapLayer WallLayer => _wallLayer;
     public ShadowCasterRenderer ShadowRenderer { get; private set; }
+    public StockpileItemRenderer StockpileItems { get; private set; }
 
     public event Action OnMapApplied;
 
@@ -165,6 +208,12 @@ public partial class MapRenderer : Node2D
         AddChild(_humidityOverlay);
         _humidityOverlay.Visible = false;
 
+        // Оверлей плодородия: тот же приём (один TextureRect поверх земли).
+        // Режимы взаимоисключающие — виден только один слой за раз.
+        _fertilityOverlay = new FertilityOverlayRenderer { Name = "FertilityOverlay" };
+        AddChild(_fertilityOverlay);
+        _fertilityOverlay.Visible = false;
+
         _stockpileLayer = new TileMapLayer
         {
             Name = "StockpileLayer",
@@ -185,6 +234,16 @@ public partial class MapRenderer : Node2D
         };
         AddChild(_blueprintLayer);
 
+        // Чертежи стен: отдельный полупрозрачный terrain-слой на том же
+        // сценовом наборе — движок сам считает состыковку чертёж↔чертёж
+        // через SetCellsTerrainConnect. Мебель/грядки остаются в _blueprintLayer.
+        _wallBlueprintLayer = new TileMapLayer
+        {
+            Name = "WallBlueprintLayer",
+            Modulate = new Color(1f, 1f, 1f, 0.5f)
+        };
+        AddChild(_wallBlueprintLayer);
+
         _wallLayer = new TileMapLayer { Name = "WoodWallLayer" };
         AddChild(_wallLayer);
 
@@ -198,6 +257,15 @@ public partial class MapRenderer : Node2D
         _designationRenderer = new DesignationRenderer { Name = "DesignationRenderer" };
         AddChild(_designationRenderer);
 
+        // Слой прогресса работ (ProcessOfWork 3×2): поверх стен/чертежей,
+        // полупрозрачный. TileSet — кодовый (сцену не трогаем).
+        _workProgressLayer = new TileMapLayer
+        {
+            Name = "WorkProgressLayer",
+            Modulate = new Color(1f, 1f, 1f, 0.85f)
+        };
+        AddChild(_workProgressLayer);
+
         ShadowRenderer = new ShadowCasterRenderer { Name = "ShadowCasterRenderer" };
         AddChild(ShadowRenderer);
 
@@ -208,13 +276,17 @@ public partial class MapRenderer : Node2D
         // всё равно выше StockpileLayer с Z по умолчанию).
         var stockpileItemRenderer = new StockpileItemRenderer { Name = "StockpileItemRenderer" };
         AddChild(stockpileItemRenderer);
-
+        StockpileItems = stockpileItemRenderer;
         TreeJobManager.Instance.OnTreeChopped += OnTreeChopped;
 
         _onZoneTileAdded = pos => _pendingCells.Enqueue(new PendingCell(_stockpileLayer, new Vector2I(pos.X, pos.Y), SourceGrass, AtlasOrigin, false));
         _onZoneTileRemoved = pos => _pendingCells.Enqueue(new PendingCell(_stockpileLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true));
+        _onZoneTilesBatchAdded = arr => { foreach (var pos in arr) _pendingCells.Enqueue(new PendingCell(_stockpileLayer, new Vector2I(pos.X, pos.Y), SourceGrass, AtlasOrigin, false)); };
+        _onZoneTilesBatchRemoved = arr => { foreach (var pos in arr) _pendingCells.Enqueue(new PendingCell(_stockpileLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true)); };
         StockpileManager.Instance.OnZoneTileAdded += _onZoneTileAdded;
         StockpileManager.Instance.OnZoneTileRemoved += _onZoneTileRemoved;
+        StockpileManager.Instance.OnZoneTilesBatchAdded += _onZoneTilesBatchAdded;
+        StockpileManager.Instance.OnZoneTilesBatchRemoved += _onZoneTilesBatchRemoved;
 
         _onBlueprintAdded = OnBlueprintChanged;
         _onBlueprintsBatchAdded = (list, type) => QueueBlueprintRefresh();
@@ -230,7 +302,7 @@ public partial class MapRenderer : Node2D
 
         _onBuildingPlaced = (pos, type) =>
         {
-            int sourceId = type == BuildingType.WorkTable ? SourceWorkTable : SourceWall;
+            int sourceId = SourceForBuilding(type);
             _pendingCells.Enqueue(new PendingCell(_buildingLayer, new Vector2I(pos.X, pos.Y), sourceId, AtlasOrigin, false));
             ShadowRenderer?.AddCaster(pos.X, pos.Y);
         };
@@ -265,19 +337,10 @@ public partial class MapRenderer : Node2D
                 : unchecked((uint)Random.Shared.Next(int.MinValue, int.MaxValue));
             CurrentMapSeed = seed;
 
-            // Мост fBm GPU (пункт 4): override — только на время генерации карты,
-            // сим его не видит. GPU-клампы внутри GenerateFbmMapGpu, CPU — в fallback.
-            GpuMapBridge.Enable();
-            try
-            {
-                _pendingMapData = MapGenerator.Generate(MapWidth, MapHeight, seed);
-            }
-            finally
-            {
-                GpuMapBridge.Disable();
-            }
+            // GPU-трек удалён: генерация карты — чистый CPU (NoiseGenerator fBm).
+            _pendingMapData = MapGenerator.Generate(MapWidth, MapHeight, seed);
 
-            int grass = 0, water = 0, mountains = 0, trees = 0;
+            int grass = 0, water = 0, mountains = 0, trees = 0, stones = 0;
             for (int x = 0; x < MapWidth; x++)
                 for (int y = 0; y < MapHeight; y++)
                 {
@@ -285,8 +348,9 @@ public partial class MapRenderer : Node2D
                     else if (_pendingMapData.Ground[x, y] == TileType.Mountain) mountains++;
                     else water++;
                     if (_pendingMapData.TreeOnGrass[x, y]) trees++;
+                    if (_pendingMapData.StoneOnGrass[x, y]) stones++;
                 }
-            GD.Print($"MapRenderer: карта сгенерирована, seed={seed} (SeedOverride={SeedOverride}), суша={grass}, вода={water}, горы={mountains}, деревья={trees}, озёр={_pendingMapData.LakeCount}[{string.Join(",", _pendingMapData.LakeSizes)}], река={_pendingMapData.MainRiverLength}+{_pendingMapData.RiverBranchCount}пр, связность={_pendingMapData.LandConnectivity:P1}");
+            GD.Print($"MapRenderer: карта сгенерирована, seed={seed} (SeedOverride={SeedOverride}), суша={grass}, вода={water}, горы={mountains}, деревья={trees}, камни={stones}, озёр={_pendingMapData.LakeCount}[{string.Join(",", _pendingMapData.LakeSizes)}], река={_pendingMapData.MainRiverLength}+{_pendingMapData.RiverBranchCount}пр, связность={_pendingMapData.LandConnectivity:P1}");
 
             Callable.From(ApplyMap).CallDeferred();
         });
@@ -311,26 +375,94 @@ public partial class MapRenderer : Node2D
             if (pc.Erase) pc.Layer.EraseCell(pc.Pos);
             else pc.Layer.SetCell(pc.Pos, pc.Source, pc.Atlas);
         }
-        if (_blueprintRefreshQueued)
+        // Дебаунс 200мс: при массовой стройке (1000 чертежей батчем) полный
+        // Clear+SetCell всех чертежей каждый кадр давал десятки мс фриза.
+        // Флаг лишь коалесцирует события, гейт — по wall-clock.
+        if (_blueprintRefreshQueued
+            && (System.Environment.TickCount64 - _lastBlueprintRefreshMs) >= 200)
         {
             _blueprintRefreshQueued = false;
+            _lastBlueprintRefreshMs = System.Environment.TickCount64;
             RefreshAllBlueprints();
         }
         // Оверлей влажности обновляется сам по таймеру (троттлинг внутри Refresh):
         // тик влажности раз в 30с игрового, текстуру чаще дёргать незачем.
         if (CurrentMapMode == MapMode.Humidity && _humidityOverlay != null)
             _humidityOverlay.RefreshThrottled(Humidity, delta);
+        else if (CurrentMapMode == MapMode.Fertility && _fertilityOverlay != null)
+            _fertilityOverlay.RefreshThrottled(Fertility, delta);
         // Стандарт: terrain-слои флашатся через TerrainTileLayer.
-        _blueprintWalls?.Flush(c => BlueprintManager.Instance.IsBlueprintAt(c.X, c.Y));
+        // WallBuildManager копит NotifyChanged дебаунсом 200мс — сливаем хвост
+        // здесь же (главный поток, _Process), иначе пачка стен висела бы в
+        // _pending до следующей одиночной стены.
+        _wallBuildManager?.FlushPending();
+        // Terrain-флаш обоих слоёв стен: построенные — по IsWallAt, чертежи —
+        // только WoodWall-чертежи (мебель в этот слой не попадает).
         _builtWalls?.Flush(c => _wallBuildManager != null && _wallBuildManager.IsWallAt(c.X, c.Y));
+        _wallBlueprints?.Flush(c => BlueprintManager.Instance.IsWallBlueprintAt(c.X, c.Y));
         _mountains?.Flush(c => _pendingMapData != null && (uint)c.X < (uint)_pendingMapData.Width && (uint)c.Y < (uint)_pendingMapData.Height && _pendingMapData.Ground[c.X, c.Y] == TileType.Mountain);
+        FlushWorkProgress(delta);
+    }
+
+    /// <summary>
+    /// Слой прогресса работ: DrainDirty трекера → SetCell/EraseCell бюджетом
+    /// 256/кадр + SweepStale раз в 2с (протухшие без Clear стираем).
+    /// Стадия -1 = стереть спрайт (работа завершена/отменена).
+    /// </summary>
+    private void FlushWorkProgress(double delta)
+    {
+        if (_workProgressLayer?.TileSet == null)
+            return;
+        WorkProgressTracker.Instance.DrainDirty(_progressDrain, 256);
+        foreach (var (x, y, stage) in _progressDrain)
+        {
+            var pos = new Vector2I(x, y);
+            if (stage < 0)
+            {
+                _workProgressLayer.EraseCell(pos);
+                continue;
+            }
+            var (ax, ay) = WorkProgressTracker.AtlasForStage(stage);
+            _workProgressLayer.SetCell(pos, SourceWorkProgress, new Vector2I(ax, ay));
+        }
+        _progressSweepTimer += (float)delta;
+        if (_progressSweepTimer >= 2.0f)
+        {
+            _progressSweepTimer = 0f;
+            WorkProgressTracker.Instance.SweepStale(_progressStale, System.TimeSpan.FromSeconds(10));
+            foreach (var (x, y) in _progressStale)
+                _workProgressLayer.EraseCell(new Vector2I(x, y));
+        }
+    }
+
+    /// <summary>
+    /// Кодовый TileSet прогресса из uid://qqhtvxqngv4a (атлас 3×2, тайл 64).
+    /// Одиночный Source без terrain — стадии выбираем атлас-координатой.
+    /// Null — текстура не загрузилась (слой молча пуст, игра идёт).
+    /// </summary>
+    private TileSet CreateWorkProgressTileSet()
+    {
+        var tileSet = new TileSet { TileSize = new Vector2I(TileSizePx, TileSizePx) };
+        var tex = LoadTexture(TextureProcessOfWork, "process_of_work");
+        if (tex == null)
+        {
+            GD.PrintErr("MapRenderer: текстура прогресса (uid://qqhtvxqngv4a) не найдена!");
+            return tileSet;
+        }
+        var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+        for (int ty = 0; ty < 2; ty++)
+            for (int tx = 0; tx < 3; tx++)
+                src.CreateTile(new Vector2I(tx, ty));
+        tileSet.AddSource(src, SourceWorkProgress);
+        return tileSet;
     }
 
     private void QueueBlueprintRefresh() => _blueprintRefreshQueued = true;
 
     /// <summary>
-    /// Переключить режим карты. Humidity — показать синий слой влажности,
-    /// Normal — спрятать. Слой обновляется раз в кадр троттлингом внутри.
+    /// Переключить режим карты. Humidity — синий слой влажности, Fertility —
+    /// зелёный слой плодородия, Normal — спрятать всё. Режимы взаимоисключающие.
+    /// Слой обновляется раз в кадр троттлингом внутри.
     /// </summary>
     public void SetMapMode(MapMode mode)
     {
@@ -342,6 +474,12 @@ public partial class MapRenderer : Node2D
             if (mode == MapMode.Humidity)
                 _humidityOverlay.Refresh(Humidity);
         }
+        if (_fertilityOverlay != null)
+        {
+            _fertilityOverlay.Visible = mode == MapMode.Fertility;
+            if (mode == MapMode.Fertility)
+                _fertilityOverlay.Refresh(Fertility);
+        }
         OnMapModeChanged?.Invoke(mode);
     }
 
@@ -350,6 +488,13 @@ public partial class MapRenderer : Node2D
     {
         if (CurrentMapMode == MapMode.Humidity && _humidityOverlay != null)
             _humidityOverlay.Refresh(Humidity);
+    }
+
+    /// <summary>Дёрнуть обновление оверлея (после тика плодородия раз в 60с).</summary>
+    public void RefreshFertilityOverlay()
+    {
+        if (CurrentMapMode == MapMode.Fertility && _fertilityOverlay != null)
+            _fertilityOverlay.Refresh(Fertility);
     }
 
     private void ApplyMap()
@@ -365,6 +510,10 @@ public partial class MapRenderer : Node2D
 
             TileSet objectTileSet = CreateObjectTileSet();
             _objectLayer.TileSet = objectTileSet;
+
+            // Россыпи камня стираем из object-слоя по событию добычи
+            // (близнец OnTreeChopped) — клетки копим в тот же батч-очередь.
+            StoneJobManager.Instance.OnStoneMined += OnStoneMined;
 
             // Горы — terrain-слой (стандарт): TileSet с разметкой из сцены
             // (mountains_tile в Main.tscn), атлас подбирает движок.
@@ -391,6 +540,13 @@ public partial class MapRenderer : Node2D
                             int sourceId = GetTreeSourceId(mapData.GetTreeVariant(x, y));
                             _objectLayer.SetCell(pos, sourceId, AtlasOrigin);
                         }
+                        else if (mapData.StoneOnGrass[x, y])
+                        {
+                            // Россыпь камня: вариант 0..3 из stone.png 128x128,
+                            // детерминирован сидом карты (тот же при перезапуске).
+                            int variant = MapGenerator.StoneVariantFor(x, y, mapData.Seed);
+                            _objectLayer.SetCell(pos, GetStoneSourceId(variant), AtlasOrigin);
+                        }
                     }
                     else
                     {
@@ -406,15 +562,27 @@ public partial class MapRenderer : Node2D
             // больше не используется для стен (там нет terrain-битов).
             TileSet wallTerrainTileSet = GetWallTerrainTileSet() ?? CreateBuildingTileSet();
             TileSet buildingTileSet = CreateBuildingTileSet();
-            _ghostLayer.TileSet = wallTerrainTileSet;
+            // Слой прогресса: TileSet кодом из ProcessOfWork (атлас 3×2).
+            _workProgressLayer.TileSet = CreateWorkProgressTileSet();
+            // Ghost — ДУБЛЬ сценового terrain-набора + одиночные Source травы/
+            // грядки/мебели (Ghost*Source). Исходный сценовый набор содержит
+            // ТОЛЬКО стены: рисовать зону его SourceGrass/SourceGardenBed (=0)
+            // НЕЛЬЗЯ — там стены, призрак заливался стенами (баг склада).
+            // Дубликат никому не мешает: wall/blueprint-слои сидят на оригинале.
+            TileSet ghostTileSet = CloneTileSetWithGhostSources(wallTerrainTileSet);
+            _ghostLayer.TileSet = ghostTileSet ?? wallTerrainTileSet;
             _wallLayer.TileSet = wallTerrainTileSet;
-            _blueprintLayer.TileSet = wallTerrainTileSet;
+            // Чертежи стен — сценовый terrain-набор (состыковка считает движок),
+            // мебель/грядки — кодовый building-набор (одиночные спрайты).
+            _wallBlueprintLayer.TileSet = wallTerrainTileSet;
+            _blueprintLayer.TileSet = buildingTileSet;
             _buildingLayer.TileSet = buildingTileSet;
             _farmLayer.TileSet = buildingTileSet;
 
-            // Стандарт: стены и чертежи стен — terrain-слои (автотайлинг считает движок).
-            _blueprintWalls = new TerrainTileLayer(_blueprintLayer, WallTerrainSetId, WallTerrainId);
-            _builtWalls = new TerrainTileLayer(_wallLayer, WallTerrainSetId, WallTerrainId);
+        // Стандарт: построенные стены и чертежи стен — terrain-слои
+        // (автотайлинг считает движок). Мебель — одиночные тайлы в building-наборе.
+        _builtWalls = new TerrainTileLayer(_wallLayer, WallTerrainSetId, WallTerrainId);
+        _wallBlueprints = new TerrainTileLayer(_wallBlueprintLayer, WallTerrainSetId, WallTerrainId);
 
             _wallBuildManager = new WallBuildManager();
             _wallBuildManager.OnTilesUpdated += OnWallTilesUpdated;
@@ -435,7 +603,10 @@ public partial class MapRenderer : Node2D
 
     private void OnBlueprintChanged((int X, int Y) pos, BuildingType type)
     {
-        QueueBlueprintRefresh();
+        if (type == BuildingType.WoodWall)
+            _wallBlueprints?.MarkDirty(new Vector2I(pos.X, pos.Y));
+        else
+            QueueBlueprintRefresh();
     }
 
     private void RefreshAllBlueprints()
@@ -447,21 +618,19 @@ public partial class MapRenderer : Node2D
 
         _blueprintLayer.Clear();
 
-        // Чертежи стен — через terrain-слой (стандарт): движок подберёт атлас сам.
+        // Мебель — одиночные SetCell в building-слое. Стены идут только
+        // через terrain-слой чертежей (_wallBlueprints.RebuildAll ниже):
+        // движок сам считает состыковку чертёж↔чертёж.
         var wallCells = new List<Vector2I>();
         foreach (var (cell, bType) in blueprints)
         {
             Vector2I mapPos = new Vector2I(cell.X, cell.Y);
             if (bType == BuildingType.WoodWall)
-            {
                 wallCells.Add(mapPos);
-            }
-            else if (bType == BuildingType.WorkTable)
-            {
-                _blueprintLayer.SetCell(mapPos, SourceWorkTable, AtlasOrigin);
-            }
+            else
+                _blueprintLayer.SetCell(mapPos, SourceForBuilding(bType), AtlasOrigin);
         }
-        _blueprintWalls?.RebuildAll(wallCells);
+        _wallBlueprints?.RebuildAll(wallCells);
 
         foreach (var plot in farmPlots)
         {
@@ -471,15 +640,26 @@ public partial class MapRenderer : Node2D
 
     private void OnBlueprintCompleted((int X, int Y) pos, BuildingType type)
     {
-        // Завершённый чертёж стены: грязная клетка, соседей пересчитает флаш слоя.
-        _blueprintWalls?.MarkDirty(new Vector2I(pos.X, pos.Y));
         if (type == BuildingType.WoodWall)
         {
+            // Чертёж убран из terrain-слоя (соседние чертежи пересчитаются
+            // сами через exists-флаш), построенная стена — в _builtWalls.
+            _wallBlueprints?.MarkDirty(new Vector2I(pos.X, pos.Y));
+            _wallBlueprints?.MarkDirty(new Vector2I(pos.X + 1, pos.Y));
+            _wallBlueprints?.MarkDirty(new Vector2I(pos.X - 1, pos.Y));
+            _wallBlueprints?.MarkDirty(new Vector2I(pos.X, pos.Y + 1));
+            _wallBlueprints?.MarkDirty(new Vector2I(pos.X, pos.Y - 1));
             _wallBuildManager.AddWall(pos.X, pos.Y);
+            _builtWalls?.MarkDirty(new Vector2I(pos.X + 1, pos.Y - 1));
+            _builtWalls?.MarkDirty(new Vector2I(pos.X - 1, pos.Y - 1));
+            _builtWalls?.MarkDirty(new Vector2I(pos.X + 1, pos.Y + 1));
+            _builtWalls?.MarkDirty(new Vector2I(pos.X - 1, pos.Y + 1));
         }
-        else if (type == BuildingType.WorkTable)
+        else
         {
-            BuildingManager.Instance.AddBuilding(pos.X, pos.Y, BuildingType.WorkTable);
+            // Мебель и верстак: стираем одиночное превью + один спрайт в building-слой.
+            _pendingCells.Enqueue(new PendingCell(_blueprintLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true));
+            BuildingManager.Instance.AddBuilding(pos.X, pos.Y, type);
         }
     }
 
@@ -488,6 +668,20 @@ public partial class MapRenderer : Node2D
         if (_pendingMapData?.TreeOnGrass != null)
         {
             _pendingMapData.TreeOnGrass[pos.X, pos.Y] = false;
+        }
+
+        ShadowRenderer?.RemoveCaster(pos.X, pos.Y);
+        _choppedTreesQueue.Enqueue(new Vector2I(pos.X, pos.Y));
+    }
+
+    private void OnStoneMined((int X, int Y) pos)
+    {
+        // Россыпь добыта: гасим и симуляционный флаг (чтобы вскопка/валидатор
+        // не считали клетку занятой), и стираем спрайт из object-слоя.
+        if (_pendingMapData?.StoneOnGrass != null)
+        {
+            if ((uint)pos.X < (uint)_pendingMapData.Width && (uint)pos.Y < (uint)_pendingMapData.Height)
+                _pendingMapData.StoneOnGrass[pos.X, pos.Y] = false;
         }
 
         ShadowRenderer?.RemoveCaster(pos.X, pos.Y);
@@ -553,6 +747,34 @@ public partial class MapRenderer : Node2D
         {
             GD.PrintErr("MapRenderer: текстура tree_3 (uid://n3xkro0lffbt) не найдена!");
         }
+        // Камень stone.png 128x128: 4 квадранта 2x2 по 64px — каждый своим Source
+        // (как 4 варианта деревьев). Режем через AtlasTexture с регионом
+        // квадранта: движок сам нарежет Source по 64 из этой 64-картинки.
+        var stoneTex = LoadTexture(TextureStone, "stone");
+        if (stoneTex != null)
+        {
+            int[] stoneSources = { SourceStone0, SourceStone1, SourceStone2, SourceStone3 };
+            for (int v = 0; v < 4; v++)
+            {
+                var (qx, qy) = MapGenerator.StoneAtlasFor(v);
+                var quadrant = new AtlasTexture
+                {
+                    Atlas = stoneTex,
+                    Region = new Rect2(qx * TileSizePx, qy * TileSizePx, TileSizePx, TileSizePx)
+                };
+                var s = new TileSetAtlasSource
+                {
+                    Texture = quadrant,
+                    TextureRegionSize = new Vector2I(TileSizePx, TileSizePx)
+                };
+                s.CreateTile(Vector2I.Zero);
+                tileSet.AddSource(s, stoneSources[v]);
+            }
+        }
+        else
+        {
+            GD.PrintErr("MapRenderer: текстура камня (uid://du6ur8mvtu3le) не найдена!");
+        }
         return tileSet;
     }
 
@@ -567,6 +789,36 @@ public partial class MapRenderer : Node2D
             2 => SourceTree2,
             3 => SourceTree3,
             _ => SourceTree0,
+        };
+    }
+
+    /// <summary>
+    /// SourceId спрайта камня по варианту 0..3 (квадранты stone.png 2x2).
+    /// </summary>
+    public static int GetStoneSourceId(int variant)
+    {
+        return (variant & 3) switch
+        {
+            1 => SourceStone1,
+            2 => SourceStone2,
+            3 => SourceStone3,
+            _ => SourceStone0,
+        };
+    }
+
+    /// <summary>
+    /// SourceId слоя зданий по типу постройки. Стены идут terrain-слоем
+    /// (этот Source здесь не используется — для единообразия маппинга).
+    /// </summary>
+    public static int SourceForBuilding(BuildingType type)
+    {
+        return type switch
+        {
+            BuildingType.WorkTable => SourceWorkTable,
+            BuildingType.Bed => SourceBed,
+            BuildingType.Bench => SourceBench,
+            BuildingType.Nightstand => SourceNightstand,
+            _ => SourceWall,
         };
     }
 
@@ -616,6 +868,11 @@ public partial class MapRenderer : Node2D
             tileSet.AddSource(tableSource, SourceWorkTable);
         }
 
+        // Мебель 64x64 одиночными спрайтами (кровать/скамья/тумбочка).
+        AddSingleTile(tileSet, TextureBed, "bed", SourceBed);
+        AddSingleTile(tileSet, TextureBench, "bench", SourceBench);
+        AddSingleTile(tileSet, TextureNightstand, "nightstand", SourceNightstand);
+
         var gardenBedTexture = LoadTexture(TextureGardenBed, "garden_beds");
         if (gardenBedTexture != null)
         {
@@ -625,6 +882,81 @@ public partial class MapRenderer : Node2D
         }
 
         return tileSet;
+    }
+
+    /// <summary>
+    /// Один спрайт 64x64 отдельным Source (мебель). Молча пропускает,
+    /// если текстура не загрузилась — слой просто не отрисует этот тип.
+    /// </summary>
+    private void AddSingleTile(TileSet tileSet, string textureUid, string name, int sourceId)
+    {
+        var tex = LoadTexture(textureUid, name);
+        if (tex == null)
+        {
+            GD.PrintErr($"MapRenderer: текстура '{name}' ({textureUid}) не найдена!");
+            return;
+        }
+        var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+        src.CreateTile(Vector2I.Zero);
+        tileSet.AddSource(src, sourceId);
+    }
+
+    /// <summary>
+    /// Дубликат сценового wall-TileSet + одиночные ghost-Source (трава/грядка/
+    /// мебель) под константами Ghost*Source. Клон нужен, т.к. исходный набор
+    /// из сцены AddSource не принимает (чужой ресурс), а номера 0/6 в нём
+    /// уже заняты стенами. Null — клонировать нечего (нет сценового набора).
+    /// </summary>
+    private TileSet CloneTileSetWithGhostSources(TileSet wallTerrainTileSet)
+    {
+        if (wallTerrainTileSet == null)
+            return null;
+        var ghost = wallTerrainTileSet.Duplicate() as TileSet;
+        if (ghost == null)
+            return null;
+        ghost.TileSize = new Vector2I(TileSizePx, TileSizePx);
+        AddGhostSingleTile(ghost, TextureGrass, "ghost_grass", GhostGrassSource);
+        AddGhostSingleTile(ghost, TextureGardenBed, "ghost_garden", GhostGardenBedSource);
+        AddGhostSingleTile(ghost, TextureWorkTable, "ghost_table", GhostWorkTableSource);
+        AddGhostSingleTile(ghost, TextureBed, "ghost_bed", GhostBedSource);
+        AddGhostSingleTile(ghost, TextureBench, "ghost_bench", GhostBenchSource);
+        AddGhostSingleTile(ghost, TextureNightstand, "ghost_nightstand", GhostNightstandSource);
+        return ghost;
+    }
+
+    private void AddGhostSingleTile(TileSet tileSet, string textureUid, string name, int sourceId)
+    {
+        if (tileSet.HasSource(sourceId))
+            return;
+        var tex = LoadTexture(textureUid, name);
+        if (tex == null)
+            return;
+        var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+        src.CreateTile(Vector2I.Zero);
+        tileSet.AddSource(src, sourceId);
+    }
+
+    /// <summary>
+    /// SourceId ghost-призрака для зоны ("warehouse" — трава, остальное — грядка).
+    /// </summary>
+    public static int GhostSourceForZone(string zoneKind) =>
+        zoneKind == "warehouse" ? GhostGrassSource : GhostGardenBedSource;
+
+    /// <summary>
+    /// SourceId ghost-призрака для постройки (стены идут terrain'ом и здесь
+    /// не нужны — для них PaintWallGhost; мебель — одиночные Ghost*Source).
+    /// -1 — рисовать нечем (стены/неизвестное).
+    /// </summary>
+    public static int GhostSourceForBuilding(BuildingType type)
+    {
+        return type switch
+        {
+            BuildingType.WorkTable => GhostWorkTableSource,
+            BuildingType.Bed => GhostBedSource,
+            BuildingType.Bench => GhostBenchSource,
+            BuildingType.Nightstand => GhostNightstandSource,
+            _ => -1,
+        };
     }
 
     /// <summary>
@@ -654,6 +986,8 @@ public partial class MapRenderer : Node2D
         if (_wallLayer?.TileSet == null) return;
 
         // Построенные стены — через terrain-слой (стандарт). Тени сразу (дешёвый dirty-флаг).
+        // exists=IsWallAt: соседние пустые клетки движок использует только как контекст,
+        // SetCellsTerrainConnect сам решит что стереть/оставить — EraseCell здесь НЕ зовём.
         foreach (var (x, y) in changedTiles)
         {
             _builtWalls?.MarkDirty(new Vector2I(x, y));
@@ -680,8 +1014,11 @@ public partial class MapRenderer : Node2D
     public override void _ExitTree()
     {
         TreeJobManager.Instance.OnTreeChopped -= OnTreeChopped;
+        StoneJobManager.Instance.OnStoneMined -= OnStoneMined;
         StockpileManager.Instance.OnZoneTileAdded -= _onZoneTileAdded;
         StockpileManager.Instance.OnZoneTileRemoved -= _onZoneTileRemoved;
+        StockpileManager.Instance.OnZoneTilesBatchAdded -= _onZoneTilesBatchAdded;
+        StockpileManager.Instance.OnZoneTilesBatchRemoved -= _onZoneTilesBatchRemoved;
 
         BlueprintManager.Instance.OnBlueprintAdded -= _onBlueprintAdded;
         BlueprintManager.Instance.OnBlueprintsBatchAdded -= _onBlueprintsBatchAdded;

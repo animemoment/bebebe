@@ -82,11 +82,18 @@ public sealed class AgentDataPool
     /// <summary>Общее настроение: вычисляется из всех факторов, 0 = депрессия, 100 = счастлив.</summary>
     public readonly float[] Mood;
     /// <summary>
+    /// <summary>
     /// Текущая поведенческая реакция на потребности (лёгкий NeedsJobSystem).
     /// None = обычное поведение (работа/блуждание). Остальное — агент занят нуждой
     /// (движется в состоянии Evacuating, диспетчер его не трогает).
     /// </summary>
     public readonly NeedBehavior[] NeedsBehavior;
+    /// <summary>
+    /// Еда берётся со склада (а не с земли): CommitEating делает WithdrawItems
+    /// вместо TakeItems. Ставится в TryStartSeekingFood (#1: DepositItems пишет
+    /// только в Stockpile._storage, GroundItemManager складскую еду не видит).
+    /// </summary>
+    public readonly bool[] FoodFromStockpile;
 
     public AgentDataPool(int capacity)
     {
@@ -148,6 +155,7 @@ public sealed class AgentDataPool
         Mood = new float[capacity];
         Array.Fill(Mood, AgentNeedsConfig.InitialMood);
         NeedsBehavior = new NeedBehavior[capacity];
+        FoodFromStockpile = new bool[capacity];
     }
 
     public Vector2 GetPosition(int index) => new(PositionX[index], PositionY[index]);
@@ -184,16 +192,19 @@ public static class AgentPathConfig
 /// симуляции уже включает скорость через accumulator, отдельно на _speedMultiplier
 /// домножать НЕ нужно).
 /// Диапазоны всех потребностей: 0–100.
+/// #5: «игровая минута» здесь = 60 игровых секунд (НЕ календарная минута мира:
+/// 1 игровой час = 500 геймсек, т.е. календарная минута = 8.33 геймсек).
+/// Комментарии ниже фиксируют оба смысла, чтобы не было расхождения в ~7×.
 /// </summary>
 public static class AgentNeedsConfig
 {
-    /// <summary>Прирост голода за игровую секунду (+0.5/игровую минуту).</summary>
+    /// <summary>Прирост голода за игровую секунду (+0.5 за 60 игровых секунд).</summary>
     public const float HungerPerGameSec = 0.5f / 60f;
-    /// <summary>Прирост сонливости за игровую секунду (+0.3/мин, пока нет состояния сна — всегда).</summary>
+    /// <summary>Прирост сонливости за игровую секунду (+0.3 за 60 геймсек, пока нет состояния сна — всегда).</summary>
     public const float SleepPerGameSec = 0.3f / 60f;
-    /// <summary>Прирост усталости за игровую секунду работы (+0.2/мин в Working).</summary>
+    /// <summary>Прирост усталости за игровую секунду работы (+0.2 за 60 геймсек в Working).</summary>
     public const float FatigueWorkPerGameSec = 0.2f / 60f;
-    /// <summary>Восстановление усталости за игровую секунду безделья (-0.4/мин в Idle).</summary>
+    /// <summary>Восстановление усталости за игровую секунду безделья (-0.4 за 60 геймсек в Idle).</summary>
     public const float FatigueIdleRecoveryPerGameSec = 0.4f / 60f;
     /// <summary>Замедление движения от усталости: Fatigue &gt; 80 → скорость x0.85.</summary>
     public const float FatigueSlowThreshold = 80f;
@@ -206,9 +217,15 @@ public static class AgentNeedsConfig
     /// <summary>Съеденное зерно снимает голода: единиц зерна за приём пищи.</summary>
     public const int FoodEatGrainCount = 2;
     public const float FoodEatHungerRestore = 60f;
-    /// <summary>Скорость отдыха на месте (сон/усталость в секунду): 10/сон, 15/усталость.</summary>
-    public const float RestSleepRecoveryPerGameSec = 10f;
-    public const float RestFatigueRecoveryPerGameSec = 15f;
+    /// <summary>
+    /// Скорость отдыха на месте (сон/усталость в секунду).
+    /// #6: было 10/сон и 15/усталость — сон 80→0 сбрасывался за 8 геймсек
+    /// (на 100x — 0.08 реальной секунды, механика сна отсутствовала).
+    /// Теперь сопоставимо с набором: полный отдых занимает ~7 игровых часов
+    /// (80/0.2 за 400 геймсек сон + усталость), а не телепорт.
+    /// </summary>
+    public const float RestSleepRecoveryPerGameSec = 0.2f;
+    public const float RestFatigueRecoveryPerGameSec = 0.3f;
     /// <summary>Радиус поиска еды/миграции в тайлах (вокруг агента).</summary>
     public const int FoodSearchRadiusTiles = 40;
     public const int MigrateRadiusTiles = 24;

@@ -43,8 +43,12 @@ public partial class PlayerInteractionManager : Node2D
 
     public void SetTool(ITool tool)
     {
+        // F69: момент «нажали инструмент» — видно на графике.
+        var next = tool ?? _defaultTool;
+        Game.Core.SimEvents.Mark("TOOL", next.GetType().Name);
+        Game.Core.SimEvents.Count("tool." + next.GetType().Name);
         _currentTool?.Cancel();
-        _currentTool = tool ?? _defaultTool;
+        _currentTool = next;
     }
 
     public override void _UnhandledKeyInput(InputEvent @event)
@@ -95,6 +99,7 @@ public partial class PlayerInteractionManager : Node2D
                     if (x < 0 || y < 0 || x >= map.Width || y >= map.Height) continue;
                     if (map.Ground[x, y] != TileType.Grass) continue;
                     if (map.TreeOnGrass[x, y]) continue;
+                    if (map.StoneOnGrass[x, y]) continue;
                     plots.Add((x, y));
                 }
             GD.Print($"[Stress] грядок к созданию: {plots.Count}");

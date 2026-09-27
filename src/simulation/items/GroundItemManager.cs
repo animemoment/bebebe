@@ -21,6 +21,12 @@ public class GroundItemManager
     private const int MaxSnapshotItemsPerType = 4096;
 
     private readonly object _lock = new();
+    // Finding 4 (вариант 2, безопасный компромисс): вес предметов кэшируется
+    // в массив float (индекс = (int)ItemId) — ItemRegistry.Get внутри скана
+    // под lock делал dictionary-lookup на КАЖДОГО кандидата. Веса статичны
+    // (Log 0.85 / Grain 0.15 / Stone 1.5), кэш заполняется лениво один раз.
+    private readonly float[] _weightCache = new float[MaxItemTypes];
+    private int _weightCacheReady;
     private readonly Dictionary<(int X, int Y), (ItemId Item, int Count, int Reserved)> _groundItems = new(2048);
     private readonly HashSet<(int X, int Y)>[,] _itemChunks = new HashSet<(int X, int Y)>[ChunkDim, ChunkDim];
 
@@ -41,6 +47,18 @@ public class GroundItemManager
 
     private bool _isDirty = true;
 
+    // Finding 6: ring из 3 снапшот-буферов вместо fresh-аллокации каждые 33 мс
+    // (~256 КБ × 3 менеджера × 30 Гц ≈ 23 МБ/с мусора). Рендерер drain'ит очередь
+    // сразу (TryDequeue до последнего), cap очереди = 2, ротация ring = 3 —
+    // продюсер не перезаписывает буфер, который читает рендерер. _isDirty-гейт
+    // уже есть: без изменений снапшот не строится вообще. Заполнение — только
+    // counts-префикс, остаток массива — stale, рендерер его не читает.
+    private readonly System.Numerics.Vector2[][][] _snapRing = new System.Numerics.Vector2[3][][];
+    private readonly int[][] _snapCountsRing = new int[3][];
+    private int _snapCursor;
+    // P0-1: гейт секундных рядов ресурсов (Series = lock, снапшоты 30/с).
+    private long _resSeriesWallTicks;
+
     public ConcurrentQueue<(Vector2[][] PositionsByItem, int[] Counts)> SnapshotQueue { get; } = new();
 
     public GroundItemManager()
@@ -54,6 +72,30 @@ public class GroundItemManager
         }
     }
 
+    private float GetWeightCached(ItemId id)
+    {
+        int idx = (int)id;
+        if ((uint)idx >= (uint)MaxItemTypes)
+            return 1f;
+        if (Volatile.Read(ref _weightCacheReady) == 0)
+        {
+            lock (_lock)
+            {
+                if (_weightCacheReady == 0)
+                {
+                    for (int t = 0; t < MaxItemTypes; t++)
+                    {
+                        try { _weightCache[t] = ItemRegistry.Get((ItemId)t).Weight; }
+                        catch { _weightCache[t] = 1f; }
+                    }
+                    Volatile.Write(ref _weightCacheReady, 1);
+                }
+            }
+        }
+        float w = Volatile.Read(ref _weightCache[idx]);
+        return w > 0f ? w : 1f;
+    }
+
     private static (int CX, int CY) GetChunkCoord(int x, int y)
     {
         int cx = Math.Clamp(x >> ChunkShift, 0, ChunkDim - 1);
@@ -63,6 +105,10 @@ public class GroundItemManager
 
     public void SpawnItems(int x, int y, ItemId id, int count)
     {
+        // Нулевой/отрицательный спавн не создаёт «нулевых стаков»:
+        // инвариант _groundItems — Count > 0 всегда (см. проверки ниже).
+        if (count <= 0 || id == ItemId.None)
+            return;
         bool isOutsideStockpile;
         int placedX = x, placedY = y;
 
@@ -70,7 +116,17 @@ public class GroundItemManager
         {
             if (_groundItems.TryGetValue((x, y), out var entry) && entry.Item == id)
             {
-                _groundItems[(x, y)] = (id, entry.Count + count, entry.Reserved);
+                if (entry.Count <= 0)
+                {
+                    // Битый нулевой стак (не должен существовать) — чиним на месте.
+                    _groundItems[(x, y)] = (id, count, 0);
+                    var (rcx, rcy) = GetChunkCoord(x, y);
+                    _itemChunks[rcx, rcy].Add((x, y));
+                }
+                else
+                {
+                    _groundItems[(x, y)] = (id, entry.Count + count, entry.Reserved);
+                }
             }
             else if (_groundItems.TryGetValue((x, y), out var other) && other.Count > 0)
             {
@@ -85,10 +141,26 @@ public class GroundItemManager
                     {
                         if (ox == 0 && oy == 0) continue;
                         var key = (x + ox, y + oy);
-                        if (_groundItems.TryGetValue(key, out var n) && (n.Item != id || n.Count <= 0))
-                            continue;
-                        if (_groundItems.TryGetValue(key, out var same) && same.Item == id)
-                            _groundItems[key] = (id, same.Count + count, same.Reserved);
+                        // Сосед годен только если пуст или однотипный ненулевой стак.
+                        // Нулевые стаки (Count <= 0) — битое состояние, их не
+                        // переиспользуем, а чистим при встрече (см. инвариант выше).
+                        if (_groundItems.TryGetValue(key, out var n))
+                        {
+                            if (n.Item != id)
+                                continue;
+                            if (n.Count <= 0)
+                            {
+                                // Битый нулевой стак — чистим и кладём сюда же.
+                                _groundItems[key] = (id, count, 0);
+                                var (ccx0, ccy0) = GetChunkCoord(key.Item1, key.Item2);
+                                _itemChunks[ccx0, ccy0].Add(key);
+                                placedX = key.Item1;
+                                placedY = key.Item2;
+                                placed = true;
+                                continue;
+                            }
+                            _groundItems[key] = (id, n.Count + count, n.Reserved);
+                        }
                         else
                         {
                             _groundItems[key] = (id, count, 0);
@@ -148,6 +220,53 @@ public class GroundItemManager
             return _groundItems.TryGetValue((x, y), out var entry) && entry.Count > 0
                 ? entry.Item : ItemId.None;
         }
+    }
+
+    /// <summary>
+    /// P1: атомарно забирает до count предметов И возвращает их тип.
+    /// Сливает PeekItemAt+TakeItems (два прохода под двумя lock) в один захват
+    /// _lock: Phase3b-commit делал Peek+Take на каждого прибывшего носильщика,
+    /// два lock/acquire на одного агента = конвой при тысячах коммитов/тик.
+    /// Возвращает (тип, забрано): тип None + 0 — куча пуста/отсутствует.
+    /// </summary>
+    public (ItemId Item, int Taken) TakeItemsWithType(int x, int y, int count)
+    {
+        bool wasZoneTile;
+        ItemId item;
+        int toTake;
+        lock (_lock)
+        {
+            if (!_groundItems.TryGetValue((x, y), out var entry) || entry.Count <= 0)
+                return (ItemId.None, 0);
+            item = entry.Item;
+            toTake = Math.Min(entry.Count, count);
+            int newCount = entry.Count - toTake;
+            int newReserved = Math.Max(0, entry.Reserved - toTake);
+
+            if (newCount <= 0)
+            {
+                _groundItems.Remove((x, y));
+                var (cx, cy) = GetChunkCoord(x, y);
+                _itemChunks[cx, cy].Remove((x, y));
+            }
+            else
+            {
+                _groundItems[(x, y)] = (entry.Item, newCount, newReserved);
+            }
+
+            _isDirty = true;
+            // IsZoneTile — быстрый lock в Stockpile; читаем флаг, но Withdraw делаем ниже.
+            wasZoneTile = StockpileManager.Instance.IsZoneTile(x, y);
+        }
+
+        if (wasZoneTile)
+        {
+            StockpileManager.Instance.WithdrawItems(x, y, toTake);
+        }
+        // Тоталы _totalAvailableByType НЕ трогаем: они уже уменьшены в момент
+        // резерва (TryReserve*), а Take лишь списывает физический стак.
+        // Декремент здесь дал бы двойное списание (как в TakeItems).
+        return (item, toTake);
     }
 
     /// <summary>
@@ -215,11 +334,14 @@ public class GroundItemManager
 
         // Fast-fail: запрашиваемого типа нет вообще — не берём lock, не сканируем карту.
         // Критично при 10k голодных и 0 зерна: иначе все молотят полный скан каждый тик.
+        // P0-1: fast-fail без счётчиков (ToString+lock на каждый промах).
         if (preferredId != ItemId.None)
         {
             int pIdx = (int)preferredId;
             if (pIdx < 0 || pIdx >= MaxItemTypes || Volatile.Read(ref _totalAvailableByType[pIdx]) <= 0)
+            {
                 return false;
+            }
         }
         else if (_groundItems.Count == 0)
         {
@@ -227,6 +349,7 @@ public class GroundItemManager
         }
 
         int radius = Math.Clamp(maxChunkRadius, 1, MaxChunkRadius);
+        // P0-1: без замера lockwait — Stopwatch+Count на КАЖДЫЙ резерв.
         lock (_lock)
         {
             if (_groundItems.Count == 0)
@@ -270,8 +393,9 @@ public class GroundItemManager
                             int available = entry.Count - entry.Reserved;
                             if (available <= 0) continue;
 
-                            var def = ItemRegistry.Get(entry.Item);
-                            int maxCanTake = (int)(maxWeightCapacity / def.Weight);
+                            // Finding 4: вес из кэша (без dictionary-lookup под lock).
+                            float weight = GetWeightCached(entry.Item);
+                            int maxCanTake = (int)(maxWeightCapacity / weight);
                             if (maxCanTake <= 0) continue;
 
                             float dx = pos.X - agentTileX;
@@ -317,8 +441,11 @@ public class GroundItemManager
         // Финальный CAS резерва под коротким lock с перепроверкой доступности.
         lock (_lock)
         {
+            // P0-1: без счётчика stale (горячий путь).
             if (!_groundItems.TryGetValue(cell, out var e2) || e2.Item != id)
+            {
                 return false;
+            }
             int avail2 = e2.Count - e2.Reserved;
             if (avail2 <= 0) return false;
             int take = Math.Min(avail2, reservedCount);
@@ -327,6 +454,7 @@ public class GroundItemManager
             int resIdx = (int)e2.Item;
             if (resIdx > 0 && resIdx < MaxItemTypes)
                 Interlocked.Add(ref _totalAvailableByType[resIdx], -take);
+            // P0-1: без счётчика успеха (ToString+lock на каждый резерв).
             return true;
         }
     }
@@ -343,8 +471,8 @@ public class GroundItemManager
                 int available = entry.Count - entry.Reserved;
                 if (available <= 0) return false;
 
-                var def = ItemRegistry.Get(entry.Item);
-                int maxCanTake = (int)(maxWeightCapacity / def.Weight);
+                // Finding 4: вес из кэша (см. TryReserveGroundItems).
+                int maxCanTake = (int)(maxWeightCapacity / GetWeightCached(entry.Item));
                 if (maxCanTake <= 0) return false;
 
                 id = entry.Item;
@@ -364,44 +492,12 @@ public class GroundItemManager
 
     public int TakeItems(int x, int y, int count)
     {
-        // Не держим Ground-lock во время вызова Stockpile.WithdrawItems (порядок G->S
-        // мог собирать очередь из параллельных потоков). Сначала забираем под lock,
-        // затем один раз обращаемся к складу уже без него.
-        bool wasZoneTile;
-        int toTake;
-        lock (_lock)
-        {
-            if (!_groundItems.TryGetValue((x, y), out var entry))
-                return 0;
-            toTake = Math.Min(entry.Count, count);
-            int newCount = entry.Count - toTake;
-            int newReserved = Math.Max(0, entry.Reserved - toTake);
-
-            if (newCount <= 0)
-            {
-                _groundItems.Remove((x, y));
-                var (cx, cy) = GetChunkCoord(x, y);
-                _itemChunks[cx, cy].Remove((x, y));
-            }
-            else
-            {
-                _groundItems[(x, y)] = (entry.Item, newCount, newReserved);
-            }
-
-            _isDirty = true;
-            // IsZoneTile — быстрый lock в Stockpile; читаем флаг, но Withdraw делаем ниже.
-            wasZoneTile = StockpileManager.Instance.IsZoneTile(x, y);
-        }
-
-        if (wasZoneTile)
-        {
-            StockpileManager.Instance.WithdrawItems(x, y, toTake);
-        }
-        return toTake;
+        return TakeItemsWithType(x, y, count).Taken;
     }
 
     public void ReleaseReservation(int x, int y, int count)
     {
+        // P0-1: без счётчика (горячий путь откатов резерва).
         ItemId relItem = ItemId.None;
         lock (_lock)
         {
@@ -437,12 +533,25 @@ public class GroundItemManager
                 itemsCopy[ci++] = kvp;
         }
 
-        // Свежие буферы на снапшот: ring переиспользовался и продюсер перезаписывал
-        // массив, пока рендер его читал — tearing. 8x4096 Vector2 ~0.5МБ на 30Гц.
-        var currentSnap = new Vector2[MaxItemTypes][];
-        for (int t = 0; t < MaxItemTypes; t++)
-            currentSnap[t] = new Vector2[MaxSnapshotItemsPerType];
-        var currentCounts = new int[MaxItemTypes];
+        // Finding 6: ring-буфер вместо fresh-аллокации. Ленивая инициализация
+        // слота (первый проход) — дальше ноль аллокаций на снапшот.
+        int slot = _snapCursor % 3;
+        _snapCursor++;
+        var currentSnap = _snapRing[slot];
+        var currentCounts = _snapCountsRing[slot];
+        if (currentSnap == null)
+        {
+            currentSnap = new Vector2[MaxItemTypes][];
+            for (int t = 0; t < MaxItemTypes; t++)
+                currentSnap[t] = new Vector2[MaxSnapshotItemsPerType];
+            currentCounts = new int[MaxItemTypes];
+            _snapRing[slot] = currentSnap;
+            _snapCountsRing[slot] = currentCounts;
+        }
+        else
+        {
+            Array.Clear(currentCounts, 0, currentCounts.Length);
+        }
 
         for (int i = 0; i < itemsCopy.Length; i++)
         {
@@ -467,5 +576,29 @@ public class GroundItemManager
 
         while (SnapshotQueue.Count > 2)
             SnapshotQueue.TryDequeue(out _);
+        // P0-1: ряды ресурсов — раз в секунду wall-clock, не на каждый снапшот
+        // (ToString + lock на тип, 30 раз/с). Снапшот идёт из sim-потока.
+        long nowResTicks = DateTime.UtcNow.Ticks;
+        if (nowResTicks - _resSeriesWallTicks >= 10000000L)
+        {
+            _resSeriesWallTicks = nowResTicks;
+            for (int t = 1; t < MaxItemTypes; t++)
+                SimEvents.Series("res.available." + ((ItemId)t).ToString(), Volatile.Read(ref _totalAvailableByType[t]));
+            SimEvents.Series("res.ground_piles", _groundItems.Count);
+        }
+    }
+
+    // P0-1: гейт — ряды склада пишутся из снапшотов/коммитов, не чаще раза в секунду.
+    private static long _stockSeriesWallTicks;
+
+    /// <summary>D53: ряд свободных слотов склада — сюда же, рядом с ресурсами.</summary>
+    public static void NoteStockpileSeries(int freeSlots, int zones)
+    {
+        long now = DateTime.UtcNow.Ticks;
+        if (now - _stockSeriesWallTicks < 10000000L)
+            return;
+        _stockSeriesWallTicks = now;
+        SimEvents.Series("res.stock_free", freeSlots);
+        SimEvents.Series("res.stock_zones", zones);
     }
 }

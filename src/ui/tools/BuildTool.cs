@@ -31,7 +31,7 @@ public class BuildTool : ITool
         _sourceId = sourceId;
     }
 
-    // Ghost-превью стен: движковый автотайлинг ( TerrainSet 0 / terrain 0
+    // Ghost-превью стен: движковый автотайлинг (TerrainSet 0 / terrain 0
     // из сцены wood_wall_tile). SetCellsTerrainConnect сам пересчитывает
     // соседей — WallTileHelper здесь не нужен.
     private const int GhostTerrainSetId = 0;
@@ -61,7 +61,12 @@ public class BuildTool : ITool
         }
         else if (CanPlaceBlueprintAt(tilePos.X, tilePos.Y))
         {
-            _ghostLayer.SetCell(tilePos, _sourceId, Vector2I.Zero);
+            // Мебель — одиночный ghost-Source (в ghost-TileSet под номером
+            // Ghost*Source; исходный _sourceId из building-набора здесь
+            // указывал бы на стену/пустоту).
+            int ghostSource = MapRenderer.GhostSourceForBuilding(_buildingType);
+            if (ghostSource < 0) return;
+            _ghostLayer.SetCell(tilePos, ghostSource, Vector2I.Zero);
             _previewTiles.Add(tilePos);
         }
     }
@@ -101,7 +106,9 @@ public class BuildTool : ITool
                 if (CanPlaceBlueprintAt(x, y))
                 {
                     Vector2I pos = new Vector2I(x, y);
-                    _ghostLayer.SetCell(pos, _sourceId, Vector2I.Zero);
+                    int ghostSource = MapRenderer.GhostSourceForBuilding(_buildingType);
+                    if (ghostSource < 0) continue;
+                    _ghostLayer.SetCell(pos, ghostSource, Vector2I.Zero);
                     _previewTiles.Add(pos);
                 }
             }
@@ -140,7 +147,11 @@ public class BuildTool : ITool
 
             if (validCells.Count > 0)
             {
-                BlueprintManager.Instance.AddBlueprintsBatch(validCells, _buildingType, _mapData?.TreeOnGrass);
+                // ВСЕ постройки идут через строгий пайплайн: расчистка →
+                // поднос → стройка. Мебель — тоже пайплайном (StartSite),
+                // напрямую AddBlueprintsBatch больше не зовём: иначе агенты
+                // везут/строят на нерасчищенные клетки мимо этапов.
+                ConstructionPipeline.Instance.StartSite(validCells, _buildingType, _mapData);
             }
         }
         else
@@ -162,6 +173,10 @@ public class BuildTool : ITool
         if (_mapData != null && _mapData.Ground[x, y] != TileType.Grass)
             return false;
 
+        // На камень не строим: сначала добудь россыпь инструментом камня.
+        if (_mapData != null && _mapData.HasStone(x, y))
+            return false;
+
         if (_wallBuildManager != null && _wallBuildManager.IsWallAt(x, y))
             return false;
 
@@ -171,7 +186,35 @@ public class BuildTool : ITool
         if (BlueprintManager.Instance.IsBlueprintAt(x, y))
             return false;
 
+        // Фермерство стен не терпит: запрет на саму грядку/метку и на кольцо вокруг.
+        // Касается только стен (WoodWall), мебель можно ставить где угодно.
+        if (_buildingType == BuildingType.WoodWall && IsFarmTileOrAdjacent(x, y))
+            return false;
+
         return true;
+    }
+
+    /// <summary>
+    /// True если клетка — грядка/метка фермы или соседняя (8 соседей) с такой.
+    /// Соседство проверяем по FarmJobManager (грядки+метки) и ZoneManager (Farm-зоны).
+    /// </summary>
+    private static bool IsFarmTileOrAdjacent(int x, int y)
+    {
+        for (int oy = -1; oy <= 1; oy++)
+        {
+            for (int ox = -1; ox <= 1; ox++)
+            {
+                int nx = x + ox, ny = y + oy;
+                if (!IsValidCoord(nx, ny)) continue;
+                if (FarmJobManager.Instance.IsGardenBed(nx, ny)
+                    || FarmJobManager.Instance.IsPlotMarked(nx, ny))
+                    return true;
+                if (ZoneManager.Instance.TryGetZoneAt(nx, ny, out var zone)
+                    && zone.Kind == ZoneKind.Farm)
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static bool IsValidCoord(int x, int y) =>

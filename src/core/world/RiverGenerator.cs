@@ -26,6 +26,10 @@ public static class RiverGenerator
             float t = mainPath.Count <= 1 ? 1f : i / (float)(mainPath.Count - 1);
             int r = t < 0.4f ? 1 : t < 0.75f ? 2 : 2;
             FillDisc(ground, width, height, mainPath[i].X, mainPath[i].Y, r);
+            // Каньон-врез (п.19.1-1, эрозия-лайт): вдоль русла heightMap слегка
+            // проседает — долина реки читается даже там, где воды уже нет
+            // (старицы/сухие участки), влага потом стекает в эту ложбину.
+            CarveCanyon(heightMap, width, height, mainPath[i].X, mainPath[i].Y, r);
         }
 
         int branches = 0;
@@ -101,12 +105,19 @@ public static class RiverGenerator
         return false;
     }
 
+    /// <summary>Штраф входа в гору для WalkDownhill (п.19.1-2): река огибает
+    /// скалы, а не течёт сквозь них. FillDisc горы тоже не затирает.</summary>
+    public const float MountainPenalty = 0.15f;
+
     private static List<Vec> WalkDownhill(
         float[,] heightMap, TileType[,] ground, int w, int h, Random rng,
         int sx, int sy, int maxSteps, bool canEndInWater)
     {
         var path = new List<Vec>(256);
-        var visited = new HashSet<int>();
+        // Stamp-посещения вместо HashSet (п.19.3-10): ноль хеширования,
+        // один массив на вызов реки, O(1) проверка.
+        var visitedStamp = new int[w * h];
+        int stamp = 1;
         int x = sx, y = sy;
         int dx = 0, dy = 1;
         int uphill = 0;
@@ -115,7 +126,8 @@ public static class RiverGenerator
         {
             if ((uint)x >= (uint)w || (uint)y >= (uint)h) break;
             int key = y * w + x;
-            if (!visited.Add(key)) break;
+            if (visitedStamp[key] == stamp) break;
+            visitedStamp[key] = stamp;
             path.Add(new Vec(x, y));
 
             if (x <= 1 || y <= 1 || x >= w - 2 || y >= h - 2) break;
@@ -136,6 +148,9 @@ public static class RiverGenerator
                     float inertia = (ox == dx && oy == dy) ? 0.012f : (ox * dx + oy * dy < 0 ? -0.02f : 0f);
                     float meander = ((float)rng.NextDouble() - 0.5f) * 0.02f;
                     float score = drop * 4f + inertia + meander;
+                    // Гора отталкивает реку: огибаем скалу стороной (п.19.1-2).
+                    if (ground[nx, ny] == TileType.Mountain)
+                        score -= MountainPenalty;
                     if (score > bestScore) { bestScore = score; bestX = nx; bestY = ny; }
                 }
             }
@@ -162,8 +177,26 @@ public static class RiverGenerator
             for (int y = yStart; y <= yEnd; y++)
             {
                 int ddx = x - cx, ddy = y - cy;
-                if (ddx * ddx + ddy * ddy <= r2)
-                    ground[x, y] = TileType.Water;
+                if (ddx * ddx + ddy * ddy > r2) continue;
+                // Горы река не прорезает (п.19.1-2): вода огибает скалу.
+                if (ground[x, y] == TileType.Mountain) continue;
+                ground[x, y] = TileType.Water;
+            }
+    }
+
+    /// <summary>
+    /// Каньон-врез вдоль русла (эрозия-лайт, п.19.1-1): heightMap проседает
+    /// на 0.05 в центре русла с затуханием к краям. Долина читается рельефом.
+    /// Горы не врезаем (скала держит форму).
+    /// </summary>
+    private static void CarveCanyon(float[,] heightMap, int w, int h, int cx, int cy, int radius)
+    {
+        for (int y = Math.Max(0, cy - radius); y <= Math.Min(h - 1, cy + radius); y++)
+            for (int x = Math.Max(0, cx - radius); x <= Math.Min(w - 1, cx + radius); x++)
+            {
+                int ddx = x - cx, ddy = y - cy;
+                if (ddx * ddx + ddy * ddy > radius * radius) continue;
+                heightMap[x, y] -= 0.05f * (1f - MathF.Sqrt(ddx * ddx + ddy * ddy) / (radius + 1f));
             }
     }
 

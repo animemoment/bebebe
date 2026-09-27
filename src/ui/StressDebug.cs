@@ -27,6 +27,7 @@ public static class StressDebug
                     if (x < 0 || y < 0 || x >= map.Width || y >= map.Height) continue;
                     if (map.Ground[x, y] != TileType.Grass) continue;
                     if (map.TreeOnGrass[x, y]) continue;
+                    if (map.StoneOnGrass[x, y]) continue;
                     plots.Add((x, y));
                 }
             GD.Print($"[StressDebug] грядок к созданию: {plots.Count}");

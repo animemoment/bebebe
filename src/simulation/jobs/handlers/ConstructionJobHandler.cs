@@ -1,13 +1,12 @@
-﻿using System.Numerics;
+using System.Numerics;
 using Game.Core;
-using Game.Simulation.Gpu;
 
 namespace Game.Simulation.Jobs;
 
 public sealed class ConstructionJobHandler : IJobHandler
 {
-    private const float BuildDuration = WorldTime.SecondsPerHour * 4f; // 4 игровых часа = 2000 гейм-секунд
-    private const float ReachDist = 48.0f;
+    private static float BuildDuration => BuildConfig.BuildDurationSec;
+    private static float ReachDist => BuildConfig.ReachDist;
 
     public JobTypeId TypeId => JobTypeId.Construction;
     public JobExecutionType ExecutionType => JobExecutionType.Stationary;
@@ -16,7 +15,26 @@ public sealed class ConstructionJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
-        return !GroundItemManager.Instance.HasItemsAt(job.TargetX, job.TargetY);
+        if (GroundItemManager.Instance.HasItemsAt(job.TargetX, job.TargetY))
+            return false;
+        // ЖЁСТКИЙ ЭТАП 3: стройка — только клетки в стадии Building
+        // (чертёж полностью снабжён). Вне стройки IsStageAllowed=true.
+        if (!ConstructionPipeline.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.Construction))
+            return false;
+        // ������� ������� �������: ������� ����� ������ �� ������ ������.
+        // ������/������ ��� ����� � ������� �����/������, ������� ���.
+        if (ctx != null
+            && (uint)job.TargetX < (uint)ctx.MapWidth && (uint)job.TargetY < (uint)ctx.MapHeight)
+        {
+            if (ctx.TreeOnGrass[job.TargetX, job.TargetY])
+                return false;
+            if (ctx.StoneOnGrass != null && ctx.StoneOnGrass[job.TargetX, job.TargetY])
+                return false;
+            // �������� �� ��������� � ������� ��� � ���������, ������� ������.
+            if (!BlueprintManager.Instance.IsBlueprintAt(job.TargetX, job.TargetY))
+                return false;
+        }
+        return true;
     }
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
@@ -44,6 +62,10 @@ public sealed class ConstructionJobHandler : IJobHandler
         else if (state == AgentState.Working)
         {
             pool.WorkProgress[agentIndex] += deltaTime;
+            // Визуал стройки: 6 стадий ProcessOfWork по доле стройки.
+            // Единый финиш — через WorkProgressTracker.Finish (гасит спрайт везде).
+            WorkProgressTracker.Instance.ReportFraction(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex],
+                pool.WorkProgress[agentIndex] / BuildDuration);
         }
     }
 
@@ -63,41 +85,47 @@ public sealed class ConstructionJobHandler : IJobHandler
             }
             else if (pool.StuckTimer[agentIndex] >= 3.0f)
             {
-                // Рабочий не может добраться до стройплощадки (заблокирован стеной/толпой)
-                // — освобождаем его, чтобы он не висел вечно у стены.
+                // ������� �� ����� ��������� �� ������������� (������������ ������/������)
+                // � ����������� ���, ����� �� �� ����� ����� � �����.
                 JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
-                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ctx.Random.NextDouble() * 4.0f;
+                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
             }
         }
         else if (state == AgentState.Working && pool.WorkProgress[agentIndex] >= BuildDuration)
         {
-            if (BlueprintManager.Instance.CompleteConstruction(sx, sy, out _))
+            // #3: тип постройки НЕ выбрасываем — стены ставят SolidWalls и
+            // выкидывают клетку из сайта, мебель/верстак идут в BuildingManager.
+            // Раньше всё (включая WorkTable/Bed) становилось невидимой
+            // непроходимой стеной + NotifyWallBuilt портил сайт.
+            if (BlueprintManager.Instance.CompleteConstruction(sx, sy, out var builtType))
             {
-                ctx.SolidWalls[sx, sy] = true;
-                FlowFieldManager.Instance.ClearCache();
-                HierarchicalPathfinder.Instance.Invalidate();
-                // Карта блоков сменилась — GPU-поле протухает, следующий TryCompute
-                // посчитает заново (Invalidate — атомарная запись ссылки, потокобезопасен).
-                // БАГ B (#5): дубль НЕ убираем. CompleteConstruction шлёт
-                // OnBlueprintCompleted через CallDeferred (главный поток), поэтому
-                // WallBuildManager.AddWall вызывается позже и тоже инвалидирует поле.
-                // Но не-стены (WorkTable через BuildingManager) вообще НЕ идут через
-                // AddWall — без этого вызова их блокировка осталась бы в свежем поле.
-                // Node API цепочка (TileSet/MarkDirty/AddCaster) трогается только
-                // из главного потока через CallDeferred — из sim-потока идёт лишь
-                // Invalidate (чистый C#, без Godot-нод) — безопасно.
-                GpuFlowField.Instance.Invalidate();
-
-                int insideAgent = ctx.SpatialGrid.GetFirstAgent(sx, sy);
-                while (insideAgent != -1)
+                if (builtType == Game.Core.BuildingType.WoodWall)
                 {
-                    ctx.Movement.EjectFromWall(insideAgent, sx, sy, pool, ctx);
-                    insideAgent = ctx.SpatialGrid.GetNextAgent(insideAgent, pool);
+                    ctx.SolidWalls[sx, sy] = true;
+                    FlowFieldManager.Instance.ClearCache();
+                    HierarchicalPathfinder.Instance.Invalidate();
+                    // Этап 3 закрыт: NotifyWallBuilt сам гасит прогресс-спрайт.
+                    ConstructionPipeline.Instance.NotifyWallBuilt(sx, sy);
+                    // GPU-���� �����. Node API ������� (TileSet/MarkDirty/AddCaster)
+                    // ��������� ������ �� �������� ������ ����� CallDeferred.
+
+                    int insideAgent = ctx.SpatialGrid.GetFirstAgent(sx, sy);
+                    while (insideAgent != -1)
+                    {
+                        ctx.Movement.EjectFromWall(insideAgent, sx, sy, pool, ctx);
+                        insideAgent = ctx.SpatialGrid.GetNextAgent(insideAgent, pool);
+                    }
+                }
+                else
+                {
+                    // Мебель/верстак — проходимый объект, а не стена.
+                    BuildingManager.Instance.AddBuilding(sx, sy, builtType);
+                    WorkProgressTracker.Instance.Finish(sx, sy);
                 }
             }
 
             JobDispatcher.Instance.TryUnregisterJob(pool.CurrentJobId[agentIndex]);
-            // Claim НЕ освобождаем отдельно: RemoveJob уже поправил _unclaimedCount.
+            // Claim �� ����������� ��������: RemoveJob ��� �������� _unclaimedCount.
             pool.CurrentJobId[agentIndex] = -1;
             pool.CurrentJobType[agentIndex] = JobTypeId.None;
             pool.States[agentIndex] = AgentState.Idle;
@@ -105,5 +133,9 @@ public sealed class ConstructionJobHandler : IJobHandler
         }
     }
 
-    public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx) { }
+    public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx)
+    {
+        // Единый финиш прогресса: агент ушёл — спрайт гаснет, залипаний нет.
+        WorkProgressTracker.Instance.Finish(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex]);
+    }
 }

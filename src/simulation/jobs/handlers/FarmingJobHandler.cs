@@ -1,13 +1,13 @@
-﻿using System.Numerics;
+using System.Numerics;
 using Game.Core;
 
 namespace Game.Simulation.Jobs;
 
 public sealed class FarmingJobHandler : IJobHandler
 {
-    /// <summary>Длительность вспашки грядки (игровые секунды). ~1/4 игрового часа = 125 геймсек.</summary>
+    /// <summary>������������ ������� ������ (������� �������). ~1/4 �������� ���� = 125 �������.</summary>
     public const float TillDuration = WorldTime.SecondsPerHour * 0.25f;
-    private const float ReachDist = 48.0f;
+    private const float ReachDist = 20.0f;
 
     public JobTypeId TypeId => JobTypeId.Farming;
     public JobExecutionType ExecutionType => JobExecutionType.Stationary;
@@ -16,6 +16,18 @@ public sealed class FarmingJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        // �������-����: ������ �� ����/���� ����������� � ��������.
+        // ���� ��� ���������� ����������� (FarmingTool/StressDebug), �� �����
+        // ����� ���������� (������������/���� ����� ��������) � ��� ����� �����
+        // ��������� ����� claim'�� �� ������ ������ �� �����.
+        if ((uint)job.TargetX >= (uint)ctx.MapWidth || (uint)job.TargetY >= (uint)ctx.MapHeight)
+            return false;
+        if (ctx.Ground[job.TargetX, job.TargetY] != TileType.Grass)
+            return false;
+        // ������� �� ����� ���������: ������� ������ ������� (Mining),
+        // ����� ����. ����� ���� ���������� �� ������ ��� ������.
+        if (ctx.StoneOnGrass != null && ctx.StoneOnGrass[job.TargetX, job.TargetY])
+            return false;
         return !ctx.TreeOnGrass[job.TargetX, job.TargetY] && !ctx.SolidWalls[job.TargetX, job.TargetY];
     }
 
@@ -44,6 +56,9 @@ public sealed class FarmingJobHandler : IJobHandler
         else if (state == AgentState.Working)
         {
             pool.WorkProgress[agentIndex] += deltaTime;
+            // Визуал вскопки: 6 стадий ProcessOfWork.
+            WorkProgressTracker.Instance.ReportFraction(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex],
+                pool.WorkProgress[agentIndex] / TillDuration);
         }
     }
 
@@ -63,16 +78,17 @@ public sealed class FarmingJobHandler : IJobHandler
             else if (pool.StuckTimer[agentIndex] >= 3.0f)
             {
                 JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
-                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ctx.Random.NextDouble() * 4.0f;
+                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
             }
         }
         else if (state == AgentState.Working && pool.WorkProgress[agentIndex] >= TillDuration)
         {
             FarmJobManager.Instance.CompletePlot(px, py);
-            // RemoveJob под _registerLock уже уменьшает _unclaimedCount, если
-            // работа была небоевой (assigned < max): дополнительный
-            // ReleaseWorkerClaim после удачного Unregister УДВОИЛ бы
-            // восстановление счётчика (разбалансировка вверх).
+            WorkProgressTracker.Instance.Clear(px, py);
+            // RemoveJob ��� _registerLock ��� ��������� _unclaimedCount, ����
+            // ������ ���� �������� (assigned < max): ��������������
+            // ReleaseWorkerClaim ����� �������� Unregister ������ ��
+            // �������������� �������� (��������������� �����).
             int jobId = pool.CurrentJobId[agentIndex];
             if (jobId != -1)
             {
@@ -86,5 +102,8 @@ public sealed class FarmingJobHandler : IJobHandler
         }
     }
 
-    public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx) { }
+    public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx)
+    {
+        WorkProgressTracker.Instance.Clear(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex]);
+    }
 }

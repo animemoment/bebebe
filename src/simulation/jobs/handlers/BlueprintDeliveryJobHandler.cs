@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Numerics;
 using Game.Core;
 
@@ -6,7 +6,7 @@ namespace Game.Simulation.Jobs;
 
 public sealed class BlueprintDeliveryJobHandler : IJobHandler
 {
-    private const float ReachDist = 48.0f;
+    private const float ReachDist = 20.0f;
     private const float MaxCarryWeight = 25.0f;
 
     public JobTypeId TypeId => JobTypeId.BlueprintDelivery;
@@ -16,15 +16,54 @@ public sealed class BlueprintDeliveryJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
-        return GroundItemManager.Instance.HasAvailableLogs;
+        if (!GroundItemManager.Instance.HasAvailableLogs)
+            return false;
+        // ЖЁСТКИЙ ЭТАП 2: поднос — только на клетках в стадии Supply.
+        // (вне стройки IsStageAllowed=true — обычные чертежи мебели не страдают).
+        if (!ConstructionPipeline.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.BlueprintDelivery))
+            return false;
+        // ������� ������� �������: ���� ������ �� ��������� (������/������/��������
+        // �� �����) � �������� �� ��������, ����� ����� �������� ����� �� �����.
+        if (ctx != null
+            && (uint)job.TargetX < (uint)ctx.MapWidth && (uint)job.TargetY < (uint)ctx.MapHeight)
+        {
+            if (ctx.TreeOnGrass[job.TargetX, job.TargetY])
+                return false;
+            if (ctx.StoneOnGrass != null && ctx.StoneOnGrass[job.TargetX, job.TargetY])
+                return false;
+            if (GroundItemManager.Instance.HasItemsAt(job.TargetX, job.TargetY))
+                return false;
+        }
+        return true;
     }
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
         Vector2 pos = pool.GetPosition(agentIndex);
-        // P0.3: лимит радиуса 4 чанка (~64 тайла) вместо полного 32: Dispatcher и так
-        // предпочитает близких через чанки, а полный скан 1024 чанков под lock — конвой.
-        if (GroundItemManager.Instance.TryReserveGroundItems(pos, MaxCarryWeight, true, ItemId.Log, 4, out var itemCell, out var itemId, out int resCount))
+        // #2: не тащим больше, чем осталось довезти (target - delivered):
+        // носильщик вмещает до 29 брёвен, а чертежу нужно 10–25 — излишек
+        // раньше испарялся в TryAddJobProgress/AddDeliveredLogs. Второй пояс —
+        // кламп в DeliverLogsToBlueprint (снимок job мог устареть между claim и OnStart).
+        int remaining = job.TargetItemCount - job.CurrentDeliveredCount;
+        if (remaining <= 0)
+        {
+            // Снимок протух (чертёж почти довезли конкуренты) — не тащим ничего.
+            int failId = pool.CurrentJobId[agentIndex];
+            if (failId != -1)
+            {
+                JobDispatcher.Instance.JobIndex.ReleaseWorkerClaim(failId);
+                pool.CurrentJobId[agentIndex] = -1;
+                pool.CurrentJobType[agentIndex] = JobTypeId.None;
+            }
+            pool.States[agentIndex] = AgentState.Idle;
+            pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
+            JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
+            return;
+        }
+        float needWeight = Math.Min(MaxCarryWeight, remaining * ItemRegistry.Get(ItemId.Log).Weight);
+        // P0.3: ����� ������� 4 ����� (~64 �����) ������ ������� 32: Dispatcher � ���
+        // ������������ ������� ����� �����, � ������ ���� 1024 ������ ��� lock � ������.
+        if (GroundItemManager.Instance.TryReserveGroundItems(pos, needWeight, true, ItemId.Log, 4, out var itemCell, out var itemId, out int resCount))
         {
             pool.States[agentIndex] = AgentState.MovingToSource;
             pool.SourceCellX[agentIndex] = itemCell.X;
@@ -37,7 +76,7 @@ public sealed class BlueprintDeliveryJobHandler : IJobHandler
         }
         else
         {
-            // Транзиентный фейл резерва: работу оставляем + кулдаун (P0.2, как в Hauling).
+            // ������������ ���� �������: ������ ��������� + ������� (P0.2, ��� � Hauling).
             int failId = pool.CurrentJobId[agentIndex];
             if (failId != -1)
             {
@@ -87,9 +126,9 @@ public sealed class BlueprintDeliveryJobHandler : IJobHandler
                 int tx = pool.TargetCellX[agentIndex];
                 int ty = pool.TargetCellY[agentIndex];
 
-                // Без предпроверки TryGetJobByPos: между ней и Deliver чертёж мог
-                // завершиться конкурентом (TOCTOU). DeliverLogsToBlueprint сам
-                // вернёт перепоставку на землю рядом, если работы уже нет.
+                // ��� ������������ TryGetJobByPos: ����� ��� � Deliver ����� ���
+                // ����������� ����������� (TOCTOU). DeliverLogsToBlueprint ���
+                // ������ ������������ �� ����� �����, ���� ������ ��� ���.
                 int carried = pool.CarriedItemCount[agentIndex];
                 ItemId carriedId = pool.CarriedItemId[agentIndex];
                 if (carried > 0 && carriedId != ItemId.None)
@@ -104,9 +143,9 @@ public sealed class BlueprintDeliveryJobHandler : IJobHandler
         }
         else if (pool.StuckTimer[agentIndex] >= 3.0f)
         {
-            // Застрял по пути (к источнику или цели): освобождаем claim с кулдауном,
-            // иначе агент висит вечно, а брёвна/резерв не освобождаются.
-            // OnCancel вернёт резерв/выгрузит carry.
+            // ������� �� ���� (� ��������� ��� ����): ����������� claim � ���������,
+            // ����� ����� ����� �����, � �����/������ �� �������������.
+            // OnCancel ������ ������/�������� carry.
             JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
         }
     }

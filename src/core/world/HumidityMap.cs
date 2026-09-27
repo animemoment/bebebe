@@ -77,10 +77,18 @@ public sealed class HumidityMap
     }
 
     /// <summary>
-    /// Начальная заливка из MapGenerator: вода = 200, градиент от воды
-    /// (10 клеток с затуханием) поверх фона 10..110 по шуму. + строит waterFeed.
+    /// Направление ветра для rain shadow (п.19.5-П1): дует с запада на восток.
+    /// Наветренный (западный) склон мокрый, подветренный (восточный) — сухой.
     /// </summary>
-    public void Initialize(TileType[,] ground, float[,] moistureNoise)
+    public const int WindDirX = 1;
+
+    /// <summary>
+    /// Начальная заливка из MapGenerator (п.19.5-П1/П2): вода = 200, поверх фона
+    /// 10..110 по шуму — плавный sqrt-градиент от воды, орографический бонус
+    /// наветренных склонов + rain shadow за горами + сухость высокогорья.
+    /// + строит waterFeed. Требует heightMap (может быть null — тогда без орографии).
+    /// </summary>
+    public void Initialize(TileType[,] ground, float[,] moistureNoise, float[,] heightMap = null)
     {
         if (ground == null || moistureNoise == null)
             return;
@@ -105,16 +113,42 @@ public sealed class HumidityMap
 
         RebuildWaterNear(ground);
 
-        // Градиент от воды: чем ближе, тем мокрее (до +140 у берега → ~250).
+        int hw = heightMap != null ? heightMap.GetLength(0) : 0;
+        int hh = heightMap != null ? heightMap.GetLength(1) : 0;
+
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++)
             {
                 int idx = y * Width + x;
                 if (ground[x, y] == TileType.Water)
                     continue;
+                int v = _cur[idx];
+                // Плавный sqrt-градиент от воды (п.19.5-П2): у берега +60,
+                // дальше затухает корнем, без ступеньки feed².
                 int feed = _waterFeed[idx]; // 0..R
                 if (feed > 0)
-                    _cur[idx] = _cur[idx] + feed * feed * 14 / 10;
+                    v += (int)(60f * MathF.Sqrt(feed / (float)WaterSpreadRadius));
+
+                if (heightMap != null && x < hw && y < hh)
+                {
+                    // Орография (п.19.5-П1): смотрим склон вдоль ветра.
+                    // Западный (наветренный) подъём — влажный бонус, восточный
+                    // (подветренный) спад за горой — rain shadow (сухо).
+                    float west = x > 0 ? heightMap[Math.Max(0, x - 2), y] : heightMap[x, y];
+                    float east = x + 2 < hw ? heightMap[x + 2, y] : heightMap[x, y];
+                    float slopeWind = heightMap[x, y] - west; // подъём против ветра
+                    float leeDrop = heightMap[x, y] - east;   // спад по ветру
+                    if (slopeWind > 0.004f)
+                        v += (int)Math.Min(30, slopeWind * 3000f); // наветренный: до +30
+                    if (leeDrop > 0.01f && east < heightMap[x, y] - 0.01f)
+                        v -= (int)Math.Min(40, leeDrop * 2000f); // тень: до −40
+                    // Высокогорье сухое (холодный разреженный воздух).
+                    if (heightMap[x, y] > 0.68f)
+                        v -= 15;
+                }
+
+                if (v < MinMoisture) v = MinMoisture;
+                _cur[idx] = v;
             }
 
         Array.Copy(_cur, _nxt, _cur.Length);
@@ -189,17 +223,31 @@ public sealed class HumidityMap
     /// Влага есть ВЕЗДЕ (фон от шума/грунтовых вод), у воды — просто мокрее.
     /// isHigh — высота/горы, hasForest — лес удерживает, hasFarm — огород тянет.
     /// </summary>
+    /// <summary>
+    /// Тик с готовыми массивами-снапшотами вместо делегатов: Func-виртуал на каждую
+    /// из 262k клеток стоил ~800k виртуальных вызовов/тик. Лес/горы/грядки меняются
+    /// редко — вызыватель снимает снапшоты заранее (см. AgentSimulationThread).
+    /// Массивы могут быть null (= предикат false). Размеры ground кэшируются —
+    /// GetLength на клетку стоил 262k P/Invoke-вызовов/тик.
+    /// </summary>
     public void Tick(
         TileType[,] ground,
-        Func<int, int, bool> isHigh,
-        Func<int, int, bool> hasForest,
-        Func<int, int, bool> hasFarm)
+        bool[] highMask,
+        bool[] forestMask,
+        bool[] farmMask,
+        bool[] downhillMask = null,
+        float season = 0f)
     {
         int w = Width;
         int h = Height;
         int[] cur = _cur;
         int[] nxt = _nxt;
         byte[] feed = _waterFeed;
+        // Размеры ground — один раз, не на клетку.
+        int gw = ground != null ? ground.GetLength(0) : 0;
+        int gh = ground != null ? ground.GetLength(1) : 0;
+        // Сезон (п.19.5-П5): −1 = лето (суше), +1 = зима (мокрее). Карта «дышит».
+        int seasonDelta = season > 0.33f ? 1 : season < -0.33f ? -1 : 0;
 
         Parallel.For(0, h, y =>
         {
@@ -210,25 +258,34 @@ public sealed class HumidityMap
                 int me = cur[i];
 
                 // Вода — вечный источник 200 (Dirichlet), не считается.
-                // Проверяем ground ПЕРВЫМ независимо от me: иначе клетка,
-                // ставшая водой после терраформинга (или дрейфовавшая ниже 200),
-                // никогда не вернётся к 200 (у воды near=0, подпитки нет).
-                if (IsWaterCell(ground, x, y))
+                if (ground != null && (uint)x < (uint)gw && (uint)y < (uint)gh
+                    && ground[x, y] == TileType.Water)
                 {
                     nxt[i] = WaterMoisture;
                     continue;
                 }
 
-                // Среднее по 4 соседям (Von Neumann), границы — кламп на себя.
+                // Соседи (Von Neumann), границы — кламп на себя.
                 int left = x > 0 ? cur[i - 1] : me;
                 int right = x + 1 < w ? cur[i + 1] : me;
                 int up = y > 0 ? cur[i - w] : me;
                 int down = y + 1 < h ? cur[i + w] : me;
-                int avg = (left + right + up + down) >> 2;
 
-                bool high = isHigh != null && isHigh(x, y);
-                // Диффузия /32: почти стоит, выравнивание за часы/дни.
-                int v = me + ((avg - me) >> 5);
+                bool high = highMask != null && highMask[i];
+                int v;
+                if (downhillMask != null && downhillMask[i])
+                {
+                    // Анизотропия (п.19.5-П3): влага стекает вниз — нижний сосед
+                    // весит ×2, верхний ×0.5. Долины мокнут, хребты сохнут.
+                    int avg = (left + right + (down << 1) + (up >> 1) + me) / 5;
+                    v = me + ((avg - me) >> 4);
+                }
+                else
+                {
+                    int avg = (left + right + up + down) >> 2;
+                    // Диффузия /32: почти стоит, выравнивание за часы/дни.
+                    v = me + ((avg - me) >> 5);
+                }
 
                 // Подпитка от воды по градиенту 10 клеток: у берега +3,
                 // дальше затухает до +1 на краю. Верха нет — у воды копится 250+.
@@ -243,11 +300,23 @@ public sealed class HumidityMap
                     evap = 1;
                 if (high && (((x * 83492791) ^ (y * 2971215073 % 100000)) & 1) == 0)
                     evap += 1; // горки сохнут чуть быстрее
-                if (hasForest != null && hasForest(x, y))
+                if (forestMask != null && forestMask[i])
                     evap = 0; // лес держит влагу полностью
-                if (hasFarm != null && hasFarm(x, y))
+                // Транспирация (п.19.5-П4): лес подпитывает соседей — влажный
+                // ореол вокруг рощ (+1 раз в 8 тиков по хеш-гейту).
+                if ((forestMask == null || !forestMask[i]) && forestMask != null)
+                {
+                    bool nearForest = (x > 0 && forestMask[i - 1])
+                        || (x + 1 < w && forestMask[i + 1])
+                        || (y > 0 && forestMask[i - w])
+                        || (y + 1 < h && forestMask[i + w]);
+                    if (nearForest && (((x * 314159) ^ (y * 271828)) & 7) == 0)
+                        v += 1;
+                }
+                if (farmMask != null && farmMask[i])
                     v -= 1; // огород слегка тянет воду
                 v -= evap;
+                v += seasonDelta;
 
                 // Скалы плохо проводят: тянем обратно к своему значению.
                 if (high)
@@ -265,13 +334,41 @@ public sealed class HumidityMap
         _nxt = cur;
     }
 
-    private static bool IsWaterCell(TileType[,] ground, int x, int y)
+    /// <summary>Старая сигнатура с делегатами — для совместимости. Маски строятся
+    /// вызывателем один раз (262k виртуал-вызовов delegatов убраны из тика).</summary>
+    public void Tick(
+        TileType[,] ground,
+        Func<int, int, bool> isHigh,
+        Func<int, int, bool> hasForest,
+        Func<int, int, bool> hasFarm)
     {
-        if (ground == null)
-            return false;
-        if ((uint)x >= (uint)ground.GetLength(0) || (uint)y >= (uint)ground.GetLength(1))
-            return false;
-        return ground[x, y] == TileType.Water;
+        int w = Width;
+        int h = Height;
+        bool[] high = null;
+        bool[] forest = null;
+        bool[] farm = null;
+        if (isHigh != null)
+        {
+            high = new bool[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    high[y * w + x] = isHigh(x, y);
+        }
+        if (hasForest != null)
+        {
+            forest = new bool[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    forest[y * w + x] = hasForest(x, y);
+        }
+        if (hasFarm != null)
+        {
+            farm = new bool[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    farm[y * w + x] = hasFarm(x, y);
+        }
+        Tick(ground, high, forest, farm);
     }
 
     /// <summary>

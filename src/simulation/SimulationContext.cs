@@ -8,7 +8,11 @@ public sealed class SimulationContext
 {
     public TileType[,] Ground { get; }
     public HumidityMap Humidity { get; }
+    /// <summary>Плодородие почвы 0..200. Может быть null (старые вызовы) — рост тогда без множителя.</summary>
+    public FertilityMap Fertility { get; }
     public bool[,] TreeOnGrass { get; }
+    /// <summary>Каменные россыпи (добыча, Mining). Может быть null в старых тестах.</summary>
+    public bool[,] StoneOnGrass { get; }
     public bool[,] SolidWalls { get; }
     public List<(int X, int Y)> WalkableTiles { get; }
     public AgentSpatialGrid SpatialGrid { get; }
@@ -27,11 +31,15 @@ public sealed class SimulationContext
         AgentSpatialGrid spatialGrid,
         AgentMovementService movement,
         Random random,
-        int tileSize = 64)
+        int tileSize = 64,
+        bool[,] stoneOnGrass = null,
+        FertilityMap fertility = null)
     {
         Ground = ground ?? throw new ArgumentNullException(nameof(ground));
         Humidity = humidity; // может быть null (старые вызовы) — рост тогда без множителя
+        Fertility = fertility; // может быть null — рост тогда без множителя плодородия
         TreeOnGrass = treeOnGrass ?? throw new ArgumentNullException(nameof(treeOnGrass));
+        StoneOnGrass = stoneOnGrass; // null = карты без камня (старые сейвы/тесты)
         SolidWalls = solidWalls ?? throw new ArgumentNullException(nameof(solidWalls));
         WalkableTiles = walkableTiles ?? throw new ArgumentNullException(nameof(walkableTiles));
         SpatialGrid = spatialGrid ?? throw new ArgumentNullException(nameof(spatialGrid));

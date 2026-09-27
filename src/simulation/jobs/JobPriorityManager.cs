@@ -43,6 +43,7 @@ public sealed class JobPriorityManager
             JobTypeId.BlueprintDelivery => JobCategory.Logistics,
             JobTypeId.StockpileHauling  => JobCategory.Logistics,
             JobTypeId.TreeChopping      => JobCategory.Lumberjack,
+            JobTypeId.Mining            => JobCategory.Lumberjack,
             JobTypeId.Construction      => JobCategory.Construction,
             JobTypeId.Farming           => JobCategory.Farming,
             JobTypeId.Planting          => JobCategory.Farming,

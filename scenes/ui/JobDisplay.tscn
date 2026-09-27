@@ -1,0 +1,175 @@
+[gd_scene format=3 uid="uid://k3dm6gqvslrt"]
+
+[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="1_qo4mp"]
+[ext_resource type="Texture2D" uid="uid://yvw1b2pmcsfr" path="res://ui/assets/textures/icons/farming.png" id="2_ioexg"]
+[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="3_fa5b7"]
+[ext_resource type="Texture2D" uid="uid://dwnuonti5n42d" path="res://ui/assets/textures/icons/info.png" id="4_if0ky"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4pfqy"]
+bg_color = Color(0.019925633, 0.019925632, 0.019925632, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_v3bb6"]
+bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_2n86q"]
+bg_color = Color(0.08391171, 0.083911665, 0.08391165, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_raoyc"]
+bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_wnirq"]
+bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_kw3fi"]
+bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+
+[node name="Control" type="Control" unique_id=1693226911]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VScrollBar" type="VScrollBar" parent="." unique_id=1856414733]
+layout_mode = 0
+offset_right = 748.0
+offset_bottom = 1073.0
+
+[node name="MainWindow" type="Panel" parent="VScrollBar" unique_id=962857276]
+layout_mode = 0
+offset_right = 748.0
+offset_bottom = 1073.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_4pfqy")
+
+[node name="NameWork" type="Label" parent="VScrollBar/MainWindow" unique_id=387422537]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 1.0
+offset_bottom = 78.0
+grow_horizontal = 2
+theme_override_font_sizes/font_size = 52
+theme_override_styles/normal = SubResource("StyleBoxFlat_v3bb6")
+text = "Name"
+horizontal_alignment = 1
+
+[node name="Tiles" type="Label" parent="VScrollBar/MainWindow/NameWork" unique_id=834775893]
+layout_mode = 0
+offset_left = 15.0
+offset_top = 139.0
+offset_right = 181.0
+offset_bottom = 191.0
+theme_override_font_sizes/font_size = 25
+theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+text = "(N) тайлов"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="HSlider" type="HSlider" parent="VScrollBar/MainWindow/NameWork/Tiles" unique_id=694177665]
+layout_mode = 0
+offset_left = 185.0
+offset_right = 463.0
+offset_bottom = 52.0
+max_value = 2048.0
+
+[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Tiles" unique_id=576123047]
+layout_mode = 0
+offset_left = 481.0
+offset_right = 647.0
+offset_bottom = 52.0
+theme_override_font_sizes/font_size = 25
+theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+text = "число"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Worker" type="Label" parent="VScrollBar/MainWindow/NameWork" unique_id=1261497992]
+layout_mode = 0
+offset_left = 15.0
+offset_top = 233.0
+offset_right = 181.0
+offset_bottom = 285.0
+theme_override_font_sizes/font_size = 25
+theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+text = "(N) рабочих"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="HSlider" type="HSlider" parent="VScrollBar/MainWindow/NameWork/Worker" unique_id=1449598679]
+layout_mode = 0
+offset_left = 185.0
+offset_right = 463.0
+offset_bottom = 52.0
+
+[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Worker" unique_id=588472518]
+layout_mode = 0
+offset_left = 481.0
+offset_right = 647.0
+offset_bottom = 52.0
+theme_override_font_sizes/font_size = 25
+theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+text = "число"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Prioritet" type="Label" parent="VScrollBar/MainWindow/NameWork" unique_id=1862151127]
+layout_mode = 0
+offset_left = 15.0
+offset_top = 330.0
+offset_right = 181.0
+offset_bottom = 382.0
+theme_override_font_sizes/font_size = 25
+theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+text = "приоритет"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Prioritet" unique_id=1712357498]
+layout_mode = 0
+offset_left = 185.0
+offset_right = 351.0
+offset_bottom = 52.0
+theme_override_font_sizes/font_size = 25
+theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+text = "число"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="esc" type="Button" parent="VScrollBar/MainWindow" unique_id=1175255156]
+layout_mode = 0
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 44.0
+offset_bottom = 44.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_raoyc")
+icon = ExtResource("1_qo4mp")
+expand_icon = true
+
+[node name="ButtonForFarm" type="Button" parent="." unique_id=1876710184]
+visible = false
+layout_mode = 0
+offset_left = 748.0
+offset_top = 146.0
+offset_right = 821.0
+offset_bottom = 219.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_wnirq")
+icon = ExtResource("2_ioexg")
+expand_icon = true
+
+[node name="CheckMark" type="Button" parent="." unique_id=1019952105]
+layout_mode = 0
+offset_left = 748.0
+offset_right = 821.0
+offset_bottom = 73.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_kw3fi")
+icon = ExtResource("3_fa5b7")
+
+[node name="Infoormation" type="Button" parent="." unique_id=890844874]
+layout_mode = 0
+offset_left = 748.0
+offset_top = 73.0
+offset_right = 821.0
+offset_bottom = 146.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_kw3fi")
+icon = ExtResource("4_if0ky")

@@ -46,28 +46,35 @@ public sealed class LoadMonitor
     // на следующей фазе. Запись — lock-free через Volatile (флаг int 0/1).
     private int _stealContention;
 
-    /// <summary>Порог тяжёлого батча (мс). Поле, а не const — для тюнинга из overlay/тестов.</summary>
-    public double HeavyBatchMs = 1.5;
+    // Кэш порога: property EffectiveHeavyMs (2 float-сравнения) на каждый батч
+    // стоила ~5ns × 7200 батчей/тик. Сеттер редкий, чтение — прямое поле.
+    private double _heavyMs = 1.5;
 
-    private double EffectiveHeavyMs => HeavyBatchMs > 0.0 && double.IsFinite(HeavyBatchMs) ? HeavyBatchMs : 1.5;
+    /// <summary>Порог тяжёлого батча (мс). Поле, а не const — для тюнинга из overlay/тестов.</summary>
+    public double HeavyBatchMs
+    {
+        get => _heavyMs;
+        set => _heavyMs = (value > 0.0 && double.IsFinite(value)) ? value : 1.5;
+    }
 
     /// <summary>
     /// Записать время одного батча с worker-потока. Lock-free: пишет только в ThreadLocal.
     /// Сразу адаптирует размер следующего батча этого потока:
     /// ms&gt;Heavy или Ema&gt;Heavy → размер /2 до Min; ms&lt;Heavy*0.25 → +32 до Max.
+    /// workerId НЕ передаём: источник истины — ThreadLocal, а ManagedThreadId —
+    /// P/Invoke 20–40ns на батч без причины.
     /// </summary>
-    /// <param name="workerId">Информационный id потока (источник истины — ThreadLocal).</param>
     /// <param name="batchMs">Время батча в мс. Битые замеры (NaN/Inf/&lt;0) игнорируются.</param>
     /// <param name="batchSize">Размер батча, должен быть &gt; 0.</param>
     /// <exception cref="ArgumentOutOfRangeException">Если batchSize &lt;= 0.</exception>
-    public void RecordWorkerBatch(int workerId, double batchMs, int batchSize)
+    public void RecordWorkerBatch(double batchMs, int batchSize)
     {
         if (batchSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(batchSize), "Размер батча должен быть > 0.");
         if (double.IsNaN(batchMs) || double.IsInfinity(batchMs) || batchMs < 0.0)
             return; // Битый замер — игнорируем, EMA не портим.
 
-        double heavy = EffectiveHeavyMs;
+        double heavy = _heavyMs;
         var a = _local.Value;
         a.EmaMs += (batchMs - a.EmaMs) * AdaptRate;
         if (batchMs > heavy || a.EmaMs > heavy)
@@ -153,6 +160,16 @@ public sealed class LoadMonitor
     public int SuggestBatchSize(WorkKind kind, float costHint = 1.0f)
     {
         var a = _local.Value;
+        // Быстрый путь: hint==1 и нет contention — прямой clamp, без IsFinite/Volatile.
+        if (costHint == 1.0f && Volatile.Read(ref _stealContention) == 0)
+        {
+            if (kind == WorkKind.Heavy && a.Batches == 0)
+            {
+                a.CurrentSize = DynamicWorkScheduler.MinBatchSize;
+                return DynamicWorkScheduler.MinBatchSize;
+            }
+            return Math.Clamp(a.CurrentSize, DynamicWorkScheduler.MinBatchSize, DynamicWorkScheduler.MaxBatchSize);
+        }
         int size;
         if (kind == WorkKind.Heavy && a.Batches == 0)
         {

@@ -1,12 +1,12 @@
-﻿using System.Numerics;
+using System.Numerics;
 using Game.Core;
 
 namespace Game.Simulation.Jobs;
 
 public sealed class TreeChoppingJobHandler : IJobHandler
 {
-    private const float ChopDuration = WorldTime.SecondsPerHour * 6f; // 6 игровых часов = 3000 гейм-секунд
-    private const float ReachDist = 48.0f;
+    private const float ChopDuration = WorldTime.SecondsPerHour * 6f; // 6 ������� ����� = 3000 ����-������
+    private const float ReachDist = 20.0f;
 
     public JobTypeId TypeId => JobTypeId.TreeChopping;
     public JobExecutionType ExecutionType => JobExecutionType.Stationary;
@@ -15,6 +15,14 @@ public sealed class TreeChoppingJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        // Bounds-guard: ����� jobId/���� ����� �� probe ���������� � ��� ���� IndexOutOfRange.
+        if (ctx?.TreeOnGrass == null)
+            return false;
+        if ((uint)job.TargetX >= (uint)ctx.MapWidth || (uint)job.TargetY >= (uint)ctx.MapHeight)
+            return false;
+        // ЖЁСТКИЙ ЭТАП 1: расчистка идёт только на клетках в стадии Clearing.
+        if (!ConstructionPipeline.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.TreeChopping))
+            return false;
         return ctx.TreeOnGrass[job.TargetX, job.TargetY];
     }
 
@@ -40,6 +48,9 @@ public sealed class TreeChoppingJobHandler : IJobHandler
         else if (state == AgentState.Working)
         {
             pool.WorkProgress[agentIndex] += deltaTime;
+            // Визуал ломки: 6 стадий ProcessOfWork по доле рубки.
+            WorkProgressTracker.Instance.ReportFraction(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex],
+                pool.WorkProgress[agentIndex] / ChopDuration);
         }
     }
 
@@ -66,13 +77,24 @@ public sealed class TreeChoppingJobHandler : IJobHandler
         {
             ctx.TreeOnGrass[tx, ty] = false;
             TreeJobManager.Instance.CompleteTree(tx, ty);
+            WorkProgressTracker.Instance.Clear(tx, ty);
 
-            int dropCount = ctx.Random.Next(21, 39);
+            // Этап 1 пайплайна стройки: дерево убрано — снять флаг клетки
+            // (идемпотентно; reconcile добьёт пропущенное).
+            ConstructionPipeline.Instance.NotifyTreeCleared(tx, ty);
+
+            // ParallelRng: ctx.Random �� thread-safe (Commit ��� �� ���������).
+            int dropCount = ParallelRng.Next(21, 39);
             GroundItemManager.Instance.SpawnItems(tx, ty, ItemId.Log, dropCount);
 
-            JobDispatcher.Instance.TryUnregisterJob(pool.CurrentJobId[agentIndex]);
-            // Claim НЕ освобождаем отдельно: RemoveJob уже поправил _unclaimedCount.
-            // Отдельный ReleaseWorkerClaim после удачного Unregister удвоил бы счётчик.
+            // ������ Farming: stale unregister (false) > ���������� claim �������,
+            // ����� claim ����� � ������ ������ �� �������� (������ �����).
+            int treeJobId = pool.CurrentJobId[agentIndex];
+            if (treeJobId != -1)
+            {
+                if (!JobDispatcher.Instance.TryUnregisterJob(treeJobId))
+                    JobDispatcher.Instance.JobIndex.ReleaseWorkerClaim(treeJobId);
+            }
             pool.CurrentJobId[agentIndex] = -1;
             pool.CurrentJobType[agentIndex] = JobTypeId.None;
             pool.States[agentIndex] = AgentState.Idle;
@@ -80,5 +102,8 @@ public sealed class TreeChoppingJobHandler : IJobHandler
         }
     }
 
-    public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx) { }
+    public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx)
+    {
+        WorkProgressTracker.Instance.Clear(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex]);
+    }
 }

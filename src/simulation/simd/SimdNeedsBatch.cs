@@ -96,7 +96,11 @@ public static class SimdNeedsBatch
     /// <exception cref="ArgumentNullException">Массив пула Mood is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">start/end вне [0, Capacity]; end &lt; start; deltaTime &lt; 0; длина массива пула меньше end.</exception>
     /// <exception cref="ArgumentException">deltaTime — NaN или Infinity.</exception>
-    public static void UpdateNeeds(AgentDataPool pool, int start, int end, float deltaTime, bool updateEnv)
+    // Валидация пула раз на фазу (не на батч): 19 проверок × 80 батчей × 10 шагов
+    // = 1.5M проверок/с. Инварианты гарантирует конструктор AgentDataPool
+    // (массивы readonly, Capacity фиксирован) — в Release не платим.
+    [System.Diagnostics.Conditional("DEBUG")]
+    private static void ValidatePoolRange(AgentDataPool pool, int start, int end, float deltaTime)
     {
         if (pool == null)
             throw new ArgumentNullException(nameof(pool));
@@ -107,10 +111,6 @@ public static class SimdNeedsBatch
         if (end < start)
             throw new ArgumentOutOfRangeException(nameof(end), "end < start.");
         ValidateDeltaTime(deltaTime);
-
-        // G3-F3: validate-then-mutate — все массивы проверяются ДО любых записей,
-        // чтобы повреждённый пул давал fail-fast без единой записи (частичной мутации нет).
-        // Per-i try/catch здесь запрещён (убил бы векторизацию).
         if (pool.Hunger == null)
             throw new ArgumentNullException(nameof(pool.Hunger), "Массив пула Hunger is null.");
         if (pool.Sleep == null)
@@ -135,6 +135,11 @@ public static class SimdNeedsBatch
             throw new ArgumentOutOfRangeException(nameof(pool.EnvironmentSatisfaction), "Длина массива пула EnvironmentSatisfaction меньше end.");
         if (pool.Mood.Length < end)
             throw new ArgumentOutOfRangeException(nameof(pool.Mood), "Длина массива пула Mood меньше end.");
+    }
+
+    public static void UpdateNeeds(AgentDataPool pool, int start, int end, float deltaTime, bool updateEnv)
+    {
+        ValidatePoolRange(pool, start, end, deltaTime);
 
         int len = end - start;
         if (len == 0)
@@ -258,7 +263,8 @@ public static class SimdNeedsBatch
     /// <exception cref="ArgumentNullException">Массив пула CellStayTime is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException">start/end вне [0, Capacity]; end &lt; start; deltaTime &lt; 0; длина массива пула меньше end.</exception>
     /// <exception cref="ArgumentException">deltaTime — NaN или Infinity.</exception>
-    public static void UpdateCells(AgentDataPool pool, int start, int end, float deltaTime)
+    [System.Diagnostics.Conditional("DEBUG")]
+    private static void ValidateCellsRange(AgentDataPool pool, int start, int end, float deltaTime)
     {
         if (pool == null)
             throw new ArgumentNullException(nameof(pool));
@@ -269,10 +275,6 @@ public static class SimdNeedsBatch
         if (end < start)
             throw new ArgumentOutOfRangeException(nameof(end), "end < start.");
         ValidateDeltaTime(deltaTime);
-
-        // G3-F3: validate-then-mutate — все массивы проверяются ДО любых записей,
-        // чтобы повреждённый пул давал fail-fast без единой записи (частичной мутации нет).
-        // Per-i try/catch здесь запрещён (убил бы векторизацию).
         if (pool.PositionX == null)
             throw new ArgumentNullException(nameof(pool.PositionX), "Массив пула PositionX is null.");
         if (pool.PositionY == null)
@@ -293,6 +295,11 @@ public static class SimdNeedsBatch
             throw new ArgumentOutOfRangeException(nameof(pool.CurrentCellY), "Длина массива пула CurrentCellY меньше end.");
         if (pool.CellStayTime.Length < end)
             throw new ArgumentOutOfRangeException(nameof(pool.CellStayTime), "Длина массива пула CellStayTime меньше end.");
+    }
+
+    public static void UpdateCells(AgentDataPool pool, int start, int end, float deltaTime)
+    {
+        ValidateCellsRange(pool, start, end, deltaTime);
 
         if (end == start)
             return;

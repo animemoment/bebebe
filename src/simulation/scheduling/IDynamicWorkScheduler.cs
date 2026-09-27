@@ -104,4 +104,7 @@ public interface IDynamicWorkScheduler
 
     /// <summary>Сброс EMA-состояния (смена скорости симуляции).</summary>
     void Reset();
+
+    /// <summary>Мягкий сброс при смене скорости: очереди чистятся, EMA хранится.</summary>
+    void ResetForSpeedChange();
 }

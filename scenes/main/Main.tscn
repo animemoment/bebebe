@@ -1,9 +1,11 @@
-﻿[gd_scene format=3 uid="uid://di6gcaep1knur"]
+[gd_scene format=3 uid="uid://dymkrpxbq4nsm"]
 
 [ext_resource type="Script" uid="uid://casdx7mfk8xtm" path="res://scenes/main/Main.cs" id="1_u1xfj"]
 [ext_resource type="PackedScene" uid="uid://ddw8eu16j846s" path="res://scenes/ui/hud.tscn" id="2_nha0i"]
 [ext_resource type="Texture2D" uid="uid://chubmh2ufwgwp" path="res://ui/assets/textures/construction items/wooden_wall.png" id="3_q24mn"]
 [ext_resource type="Texture2D" uid="uid://de7mit41ukuoq" path="res://ui/assets/textures/tiles/mountains.png" id="4_gyg6b"]
+[ext_resource type="Texture2D" uid="uid://qqhtvxqngv4a" path="res://ui/assets/textures/sprites/ProcessOfWork.png" id="5_dc040"]
+[ext_resource type="Texture2D" uid="uid://47god8qachvh" path="res://ui/assets/textures/tiles/GardenBeds/GardenBeds.png" id="6_1rhdn"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_q24mn"]
 texture = ExtResource("3_q24mn")
@@ -340,6 +342,7 @@ texture_region_size = Vector2i(64, 64)
 6:6/0/terrain = 0
 6:6/0/terrains_peering_bit/left_side = 0
 6:6/0/terrains_peering_bit/top_side = 0
+
 [sub_resource type="TileSet" id="TileSet_4pfqy"]
 tile_size = Vector2i(64, 64)
 terrain_set_0/mode = 0
@@ -688,6 +691,43 @@ terrain_set_0/terrain_0/name = "mountain0"
 terrain_set_0/terrain_0/color = Color(0.6919898, 0.54432505, 0.64974946, 1)
 sources/0 = SubResource("TileSetAtlasSource_dc040")
 
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_1rhdn"]
+texture = ExtResource("5_dc040")
+texture_region_size = Vector2i(64, 64)
+0:0/0 = 0
+1:0/0 = 0
+2:0/0 = 0
+0:1/0 = 0
+1:1/0 = 0
+2:1/0 = 0
+
+[sub_resource type="TileSet" id="TileSet_2n86q"]
+tile_size = Vector2i(64, 64)
+terrain_set_0/mode = 0
+terrain_set_0/terrain_0/name = "Terrain 0"
+terrain_set_0/terrain_0/color = Color(0.53029317, 0.33050886, 0.2113795, 1)
+sources/0 = SubResource("TileSetAtlasSource_1rhdn")
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_sjxhf"]
+texture = ExtResource("6_1rhdn")
+texture_region_size = Vector2i(64, 64)
+0:0/0 = 0
+1:0/0 = 0
+2:0/0 = 0
+3:0/0 = 0
+0:1/0 = 0
+1:1/0 = 0
+2:1/0 = 0
+3:1/0 = 0
+0:2/0 = 0
+
+[sub_resource type="TileSet" id="TileSet_1l4ih"]
+tile_size = Vector2i(64, 64)
+terrain_set_0/mode = 0
+terrain_set_0/terrain_0/name = "Terrain 0"
+terrain_set_0/terrain_0/color = Color(0.535231, 0.33386216, 0.1027889, 1)
+sources/2 = SubResource("TileSetAtlasSource_sjxhf")
+
 [node name="Node2D" type="Node2D" unique_id=739145351]
 script = ExtResource("1_u1xfj")
 
@@ -700,3 +740,9 @@ tile_set = SubResource("TileSet_4pfqy")
 
 [node name="mountains_tile" type="TileMapLayer" parent="." unique_id=1438309993]
 tile_set = SubResource("TileSet_g8rbv")
+
+[node name="ProcessOfWork" type="TileMapLayer" parent="." unique_id=1612726969]
+tile_set = SubResource("TileSet_2n86q")
+
+[node name="GardenBeds" type="TileMapLayer" parent="." unique_id=688239962]
+tile_set = SubResource("TileSet_1l4ih")

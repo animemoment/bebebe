@@ -41,6 +41,10 @@ public sealed class TerrainTileLayer
     /// <summary>
     /// Пересчитать грязные клетки движком. exists(cell) — есть ли тайл сейчас
     /// (нет — EraseCell, иначе — в набор для SetCellsTerrainConnect).
+    /// ВАЖНО: соседние пустые клетки передавать в connect НЕЛЬЗЯ — движок в режиме
+    /// update (последний arg=true) стирает тайлы, которых нет в наборе, даже если
+    /// они помечены грязными. Поэтому стираем по exists, а в набор кладём только
+    /// существующие. Контекст соседей движок подтягивает сам из слоя.
     /// </summary>
     public void Flush(Func<Vector2I, bool> exists)
     {

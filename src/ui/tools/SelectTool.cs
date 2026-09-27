@@ -30,6 +30,7 @@ public class SelectTool : ITool
         _lastHumidityY = tilePos.Y;
         var hud = HUDController.Instance;
         hud?.ShowHumidityAt(tilePos.X, tilePos.Y);
+        hud?.ShowFertilityAt(tilePos.X, tilePos.Y);
     }
 
     public void OnClick(Vector2I tilePos, Vector2 worldPos, bool isLeftClick)
@@ -65,7 +66,10 @@ public class SelectTool : ITool
 
             if (!_hasDragged)
             {
-                FarmZoneManager.Instance.SelectZoneAt(endTile.X, endTile.Y);
+                // Единый ZoneManager: один выбор на все виды зон.
+                // SelectZoneAt сам снимает выбор при промахе; контроллеры
+                // открывают окно по OnZoneSelected (Garden — Farm, WorkZone — Work).
+                ZoneManager.Instance.SelectZoneAt(endTile.X, endTile.Y);
             }
         }
     }
@@ -73,7 +77,7 @@ public class SelectTool : ITool
     public void Cancel()
     {
         _selectionBox?.CancelSelection();
-        FarmZoneManager.Instance.SetHoveredTile(-1, -1);
-        FarmZoneManager.Instance.DeselectZone();
+        ZoneManager.Instance.SetHoveredTile(-1, -1);
+        ZoneManager.Instance.DeselectZone();
     }
 }

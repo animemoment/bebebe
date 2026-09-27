@@ -1,5 +1,6 @@
 using Godot;
 using Game.Simulation;
+using System.Collections.Generic;
 
 namespace Game.UI.Tools;
 
@@ -52,16 +53,21 @@ public class WarehouseTool : ITool
         int minY = Mathf.Clamp(Mathf.Min(startTile.Y, endTile.Y), 0, MapRenderer.MapHeight - 1);
         int maxY = Mathf.Clamp(Mathf.Max(startTile.Y, endTile.Y), 0, MapRenderer.MapHeight - 1);
 
+        // Батч: 10k клеток одним вызовом (один lock + один sweep),
+        // вместо 10k AddZoneTile (10k lock + 10k CallDeferred + 10k sweep).
+        var tiles = new System.Collections.Generic.List<(int X, int Y)>(
+            (maxX - minX + 1) * (maxY - minY + 1));
         for (int x = minX; x <= maxX; x++)
         {
             for (int y = minY; y <= maxY; y++)
             {
-                if (isLeftClick)
-                    StockpileManager.Instance.AddZoneTile(x, y);
-                else
-                    StockpileManager.Instance.RemoveZoneTile(x, y);
+                tiles.Add((x, y));
             }
         }
+        if (isLeftClick)
+            StockpileManager.Instance.AddZoneTilesBatch(tiles);
+        else
+            StockpileManager.Instance.RemoveZoneTilesBatch(tiles);
     }
 
     public void Cancel()

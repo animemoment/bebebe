@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using Game.Core;
 
 namespace Game.Simulation.Jobs;
@@ -6,7 +6,7 @@ namespace Game.Simulation.Jobs;
 public sealed class HarvestJobHandler : IJobHandler
 {
     private const float HarvestDuration = 5.0f;
-    private const float ReachDist = 48.0f;
+    private const float ReachDist = 20.0f;
 
     public JobTypeId TypeId => JobTypeId.Harvesting;
     public JobExecutionType ExecutionType => JobExecutionType.Stationary;
@@ -43,6 +43,9 @@ public sealed class HarvestJobHandler : IJobHandler
         else if (state == AgentState.Working)
         {
             pool.WorkProgress[agentIndex] += deltaTime;
+            // Визуал сбора: 6 стадий ProcessOfWork.
+            WorkProgressTracker.Instance.ReportFraction(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex],
+                pool.WorkProgress[agentIndex] / HarvestDuration);
         }
     }
 
@@ -62,15 +65,21 @@ public sealed class HarvestJobHandler : IJobHandler
             else if (pool.StuckTimer[agentIndex] >= 3.0f)
             {
                 JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
-                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ctx.Random.NextDouble() * 4.0f;
+                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
             }
         }
         else if (state == AgentState.Working && pool.WorkProgress[agentIndex] >= HarvestDuration)
         {
             CropGrowthManager.Instance.HarvestCrop(tx, ty, ctx);
+            WorkProgressTracker.Instance.Clear(tx, ty);
 
-            JobDispatcher.Instance.TryUnregisterJob(pool.CurrentJobId[agentIndex]);
-            // Claim НЕ освобождаем отдельно: RemoveJob уже поправил _unclaimedCount.
+            // ������ Farming: stale unregister > ���������� claim �������.
+            int harvJobId = pool.CurrentJobId[agentIndex];
+            if (harvJobId != -1)
+            {
+                if (!JobDispatcher.Instance.TryUnregisterJob(harvJobId))
+                    JobDispatcher.Instance.JobIndex.ReleaseWorkerClaim(harvJobId);
+            }
             pool.CurrentJobId[agentIndex] = -1;
             pool.CurrentJobType[agentIndex] = JobTypeId.None;
             pool.States[agentIndex] = AgentState.Idle;

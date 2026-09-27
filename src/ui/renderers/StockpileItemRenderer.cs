@@ -19,6 +19,9 @@ public partial class StockpileItemRenderer : Node2D
 
     private readonly Dictionary<ItemId, (MultiMesh Mesh, MultiMeshInstance2D Instance, float[] Buffer)> _renderers = new();
 
+    /// <summary>Тени ящиков на складе: общий рендерер ставит Main.</summary>
+    public ItemShadowRenderer ItemShadows { get; set; }
+
     public override void _Ready()
     {
         ZIndex = 6;
@@ -27,12 +30,26 @@ public partial class StockpileItemRenderer : Node2D
         float mapSizePx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
         var mapAabb = new Aabb(Godot.Vector3.Zero, new Godot.Vector3(mapSizePx, mapSizePx, 1000f));
 
-        ItemId[] itemTypes = { ItemId.Log, ItemId.Grain };
+        ItemId[] itemTypes = { ItemId.Log, ItemId.Grain, ItemId.Stone };
 
         foreach (var id in itemTypes)
         {
             var def = ItemRegistry.Get(id);
-            var texture = ResourceLoader.Load<Texture2D>(def.TextureUid);
+            Texture2D texture;
+            if (id == ItemId.Stone)
+            {
+                // Тот же первый квадрант, что на земле. Маленькая иконка 28px.
+                var atlas = ResourceLoader.Load<Texture2D>(def.TextureUid);
+                texture = atlas == null ? null : new AtlasTexture
+                {
+                    Atlas = atlas,
+                    Region = new Rect2(0, 0, MapRenderer.TileSizePx, MapRenderer.TileSizePx)
+                };
+            }
+            else
+            {
+                texture = ResourceLoader.Load<Texture2D>(def.TextureUid);
+            }
             if (texture == null)
             {
                 GD.PrintErr($"[StockpileItemRenderer] Внимание: текстура '{def.TextureUid}' для {def.Name} не найдена!");
@@ -103,7 +120,11 @@ public partial class StockpileItemRenderer : Node2D
                 }
 
                 mesh.Buffer = buffer;
+
+                ItemShadows?.PushSpots(positions, count, DefaultItemSize);
             }
         }
+        // Flush аккумулятора теней (земля+урожай+склад одним upload).
+        ItemShadows?.Flush();
     }
 }

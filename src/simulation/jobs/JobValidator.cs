@@ -57,6 +57,12 @@ public sealed class JobValidator
     ///    CanAgentExecute с lock'ами менеджеров). Полное удаление — только если
     ///    метки в менеджере уже нет (рассинхрон).
     /// 2) Метка в менеджере есть, а задачи в индексе нет — см. AuditMarksSlice.
+    ///
+    /// БАГ A (пиковая загрузка): если все агенты заняты, probe пустые и без
+    /// защиты ниже ВСЕ работы уходили бы на кулдаун 30с. Поэтому два гарда:
+    /// а) работа уже взята (AssignedWorkers > 0) — лениво пропускаем, значит
+    ///    кто-то может её выполнять; б) probe пустые вообще — слайс
+    ///    откладываем целиком, ничего не трогаем (судить не по кому).
     /// </summary>
     private int AuditIndexSlice(AgentDataPool pool, SimulationContext ctx)
     {
@@ -69,15 +75,58 @@ public sealed class JobValidator
         // там lock; просто линейно первые idle из пула, это дёшево).
         int[] probes = CollectProbeAgents(pool, 8);
 
+        // Гарда (б): судить не по кому — все заняты. Откладываем слайс:
+        // возвращаем курсор назад, следующий тик перепроверит при свободных.
+        if (probes.Length == 0 || probes[0] < 0)
+        {
+            _jobCursor -= jobs.Count;
+            if (_jobCursor < 0)
+                _jobCursor = 0;
+            return 0;
+        }
+
         int fixed_ = 0;
         foreach (int jobId in jobs)
         {
             if (!index.TryGetJob(jobId, out var job) || !job.IsActive)
                 continue;
 
+            // Гарда (а): ленивая проверка — работа уже взята кем-то, значит
+            // кто-то может её выполнять. Аудит её не трогает (ни кулдаун,
+            // ни удаление) — судим только бесхозные работы.
+            if (job.AssignedWorkers > 0)
+                continue;
+
             if (!JobRegistry.TryGetHandler(job.TypeId, out var handler))
             {
-                // Хендлера нет вообще — задача невыполнима никогда. Удаляем.
+                // Хендлера нет вообще — задача невыполнима никогда. Удаляем
+                // вместе с меткой (иначе AuditMarksSlice её тут же пересоздаст).
+                UnmarkJob(job);
+                index.RemoveJob(jobId, out _);
+                fixed_++;
+                continue;
+            }
+
+            // Быстрый терраин-гард БЕЗ probe: клетка цели стала непроходимой
+            // (вода/гора после разметки) — работа мертва навсегда, удаляем
+            // сразу вместе с меткой. Дешевле 8×CanAgentExecute с lock'ами.
+            if (!IsTargetWalkable(job, ctx))
+            {
+                UnmarkJob(job);
+                index.RemoveJob(jobId, out _);
+                fixed_++;
+                continue;
+            }
+
+            // Одноразовые haul-работы (бревно/зерно подобрали мимо диспетчера,
+            // кучу разобрал конкурент): предмета на земле нет — удаляем сразу.
+            // Иначе мёртвая работа вечно числится в индексе ("давнюю не берут"):
+            // claim-проходы её пропускают по CanAgentExecute, а аудит раньше
+            // ставил только кулдаун. Sweep пересоздаст при появлении предметов.
+            if ((job.TypeId == JobTypeId.StockpileHauling || job.TypeId == JobTypeId.BlueprintDelivery)
+                && !GroundItemManager.Instance.HasItemsAt(job.SourceX, job.SourceY)
+                && !GroundItemManager.Instance.HasItemsAt(job.TargetX, job.TargetY))
+            {
                 index.RemoveJob(jobId, out _);
                 fixed_++;
                 continue;
@@ -136,7 +185,7 @@ public sealed class JobValidator
     private int AuditMarksSlice()
     {
         int fixed_ = 0;
-        int phase = _markCursor % 3;
+        int phase = _markCursor % 4;
         _markCursor++;
 
         var index = JobDispatcher.Instance.JobIndex;
@@ -162,15 +211,36 @@ public sealed class JobValidator
             {
                 // Деревья: меток может быть много, идём copy-on-read под lock
                 // внутри GetAllMarkedTrees (менеджер отдаёт копию).
+                // ЖЁСТКИЙ ЭТАП: клетки стройки в стадии Clearing чинит сам
+                // Reconcile пайплайна — валидатор их пропускает, чтобы не
+                // плодить расчистку мимо IsStageAllowed.
                 var trees = TreeJobManager.Instance.GetAllMarkedTrees();
                 int n = 0;
                 foreach (var (x, y) in trees)
                 {
                     if (++n > MaxMarksPerTick)
                         break;
-                    if (!index.HasJobAt(x, y, JobTypeId.TreeChopping))
+                    if (!index.HasJobAt(x, y, JobTypeId.TreeChopping)
+                        && ConstructionPipeline.Instance.IsStageAllowed(x, y, JobTypeId.TreeChopping))
                     {
                         JobBroker.Instance.RegisterTreeChop(x, y);
+                        fixed_++;
+                    }
+                }
+                break;
+            }
+            case 2:
+            {
+                var stones = StoneJobManager.Instance.GetAllMarkedStones();
+                int n = 0;
+                foreach (var (x, y) in stones)
+                {
+                    if (++n > MaxMarksPerTick)
+                        break;
+                    if (!index.HasJobAt(x, y, JobTypeId.Mining)
+                        && ConstructionPipeline.Instance.IsStageAllowed(x, y, JobTypeId.Mining))
+                    {
+                        JobBroker.Instance.RegisterStoneMine(x, y);
                         fixed_++;
                     }
                 }
@@ -184,12 +254,23 @@ public sealed class JobValidator
                 {
                     if (++n > MaxMarksPerTick)
                         break;
-                    int target = type == BuildingType.WorkTable ? 25 : 15;
+                    int target = Game.Simulation.BlueprintManager.LogsFor(type);
+                    // ЖЁСТКИЙ ЭТАП: доставку чиним только на клетках Supply,
+                    // стройку — только на Building (иначе валидатор тащил бы
+                    // этапы назад: чертёж на нерасчищенной клетке).
                     if (!index.HasJobAt(cell.X, cell.Y, JobTypeId.BlueprintDelivery) &&
                         !index.HasJobAt(cell.X, cell.Y, JobTypeId.Construction))
                     {
-                        JobBroker.Instance.RegisterBlueprint(cell.X, cell.Y, type, target);
-                        fixed_++;
+                        if (ConstructionPipeline.Instance.IsStageAllowed(cell.X, cell.Y, JobTypeId.BlueprintDelivery))
+                        {
+                            JobBroker.Instance.RegisterBlueprint(cell.X, cell.Y, type, target);
+                            fixed_++;
+                        }
+                        else if (ConstructionPipeline.Instance.IsStageAllowed(cell.X, cell.Y, JobTypeId.Construction))
+                        {
+                            JobBroker.Instance.RegisterConstructionAt(cell.X, cell.Y);
+                            fixed_++;
+                        }
                     }
                 }
                 break;
@@ -222,11 +303,50 @@ public sealed class JobValidator
         {
             JobTypeId.Farming => FarmJobManager.Instance.IsPlotMarked(job.TargetX, job.TargetY),
             JobTypeId.TreeChopping => TreeJobManager.Instance.IsTreeMarked(job.TargetX, job.TargetY),
+            JobTypeId.Mining => StoneJobManager.Instance.IsStoneMarked(job.TargetX, job.TargetY),
             JobTypeId.BlueprintDelivery or JobTypeId.Construction =>
                 BlueprintManager.Instance.IsBlueprintAt(job.TargetX, job.TargetY),
             // Planting/Harvest/Haul — меток в менеджерах нет (одноразовые),
             // считаем метку всегда существующей, чтобы не удалять их здесь.
             _ => true
         };
+    }
+
+    /// <summary>
+    /// Быстрый терраин-гард: клетка цели вообще проходима (в карте, Grass)?
+    /// Без lock'ов и probe — чистые массивы ctx. Вода/гора после разметки
+    /// (река/терраформинг) = работа мертва навсегда, а не «временно».
+    /// </summary>
+    private static bool IsTargetWalkable(JobData job, SimulationContext ctx)
+    {
+        if (ctx?.Ground == null)
+            return true; // ctx битый — не судим, пусть решает probe-путь
+        if ((uint)job.TargetX >= (uint)ctx.MapWidth || (uint)job.TargetY >= (uint)ctx.MapHeight)
+            return false;
+        return ctx.Ground[job.TargetX, job.TargetY] == TileType.Grass;
+    }
+
+    /// <summary>
+    /// Снять метку менеджера, чтобы AuditMarksSlice не пересоздал только что
+    /// удалённую мёртвую работу (вечный цикл удалить→создать).
+    /// </summary>
+    private static void UnmarkJob(JobData job)
+    {
+        switch (job.TypeId)
+        {
+            case JobTypeId.Farming:
+                FarmJobManager.Instance.UnmarkPlot(job.TargetX, job.TargetY);
+                break;
+            case JobTypeId.TreeChopping:
+                TreeJobManager.Instance.UnmarkTree(job.TargetX, job.TargetY);
+                break;
+            case JobTypeId.Mining:
+                StoneJobManager.Instance.UnmarkStone(job.TargetX, job.TargetY);
+                break;
+            case JobTypeId.BlueprintDelivery:
+            case JobTypeId.Construction:
+                BlueprintManager.Instance.RemoveBlueprint(job.TargetX, job.TargetY, out _);
+                break;
+        }
     }
 }

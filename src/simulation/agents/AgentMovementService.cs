@@ -46,16 +46,37 @@ public sealed class AgentMovementService
                 float wpX = pool.WaypointX[wpBase + idx] * ctx.TileSize + 32f;
                 float wpY = pool.WaypointY[wpBase + idx] * ctx.TileSize + 32f;
 
-                bool reachedWp = MoveToPoint(agentIndex, new Vector2(wpX, wpY), 40f, deltaTime, pool, ctx);
+                bool reachedWp = MoveToPoint(agentIndex, new Vector2(wpX, wpY), 16f, deltaTime, pool, ctx);
 
                 if (reachedWp)
                 {
-                    pool.WaypointIndex[agentIndex] = (byte)(idx + 1);
+                    // Пропускаем цепочку близких точек сразу: иначе агент
+                    // топчется в середине пути (пошаговая остановка на каждой
+                    // точке сглаженного пути давала осцилляцию туда-обратно).
+                    int next = idx + 1;
+                    int total = pool.WaypointCount[agentIndex];
+                    int wpBase2 = agentIndex * AgentPathConfig.MaxWaypoints;
+                    float px = pool.PositionX[agentIndex];
+                    float py = pool.PositionY[agentIndex];
+                    while (next < total)
+                    {
+                        float nx = pool.WaypointX[wpBase2 + next] * ctx.TileSize + 32f;
+                        float ny = pool.WaypointY[wpBase2 + next] * ctx.TileSize + 32f;
+                        float ddx = nx - px;
+                        float ddy = ny - py;
+                        if (ddx * ddx + ddy * ddy > 24f * 24f)
+                            break;
+                        next++;
+                    }
+                    pool.WaypointIndex[agentIndex] = (byte)next;
                     pool.StuckTimer[agentIndex] = 0f;
                     if (pool.WaypointIndex[agentIndex] >= pool.WaypointCount[agentIndex])
                     {
                         pool.WaypointCount[agentIndex] = 0;
                         pool.WaypointIndex[agentIndex] = 0;
+                        // Цепочка завершена этим тиком — проваливаемся в фазу 2
+                        // сразу (иначе агент стоит один лишний тик: return false ниже).
+                        goto Phase2;
                     }
                 }
                 else if (pool.StuckTimer[agentIndex] >= 1.5f)
@@ -64,11 +85,14 @@ public sealed class AgentMovementService
                     // ниже сработает прямой fallback + запрос нового пути.
                     pool.WaypointCount[agentIndex] = 0;
                     pool.WaypointIndex[agentIndex] = 0;
+                    // Waypoints сброшены — сразу прямое движение этим тиком.
+                    goto Phase2;
                 }
                 return false;
             }
         }
 
+    Phase2:
         // ---- Фаза 2: прямое движение (прежнее поведение) ----
         bool reached = MoveToPoint(agentIndex, target, reachDistance, deltaTime, pool, ctx);
 
@@ -80,6 +104,15 @@ public sealed class AgentMovementService
             float minDist = 4.0f * ctx.TileSize;
             if (dx * dx + dy * dy >= minDist * minDist)
             {
+                // P1 (Phase2-пик): stagger запросов — не все агенты в один тик.
+                // Кулдаун и так 1.5с, но тысячи агентов выходят из него синхронно
+                // (назначены одним диспатчем) и хором бьют в A*. Разносим по
+                // остатку индекса: ~1/4 агентов за тик вместо всех сразу.
+                // Джиттер кулдауна при спавне (0..1.5с) не даёт вечной фазовой
+                // синхронизации одних и тех же агентов.
+                uint gate = Game.Simulation.AgentSimTickGate.Current;
+                if ((((uint)agentIndex ^ ((uint)agentIndex >> 4)) & 3u) != (gate & 3u))
+                    return reached;
                 RequestHierarchicalPath(agentIndex, target, pool, ctx);
             }
         }
@@ -90,11 +123,15 @@ public sealed class AgentMovementService
     /// <summary>
     /// Запрашивает иерархический путь и кладёт waypoints в пул агента.
     /// Частота — не чаще раза в 0.8-1.5 игровых секунды.
+    /// B21/B22: счётчики запросов/успехов + отдельный замер A* (не движения).
     /// </summary>
     private void RequestHierarchicalPath(int agentIndex, Vector2 target, AgentDataPool pool, SimulationContext ctx)
     {
+        // P0-1: без счётчика — кулдаун-хит случается на каждого агента каждый тик.
         if (pool.PathRequestCooldown[agentIndex] > 0f)
+        {
             return;
+        }
 
         int sx = (int)pool.PositionX[agentIndex] >> TileShift;
         int sy = (int)pool.PositionY[agentIndex] >> TileShift;
@@ -104,7 +141,10 @@ public sealed class AgentMovementService
         if (sx == tx && sy == ty)
             return;
 
-        if (HierarchicalPathfinder.Instance.TryFindPath(sx, sy, tx, ty, out int[] path, out int count))
+        // P0-1: без Stopwatch/счётчиков на запрос — A* идёт из тысяч агентов,
+        // каждый Count = lock(_cLock). Тяжёлые пути видны по кванту Phase2.
+        bool ok = HierarchicalPathfinder.Instance.TryFindPath(sx, sy, tx, ty, out int[] path, out int count);
+        if (ok)
         {
             if (count > 0)
             {
@@ -149,7 +189,7 @@ public sealed class AgentMovementService
 
         int curTx = (int)curX >> TileShift;
         int curTy = (int)curY >> TileShift;
-        
+
         float speed = MoveSpeed;
         // Усталость > 80: агент еле волочит ноги (лёгкий NeedsJobSystem).
         if (pool.Fatigue[agentIndex] > AgentNeedsConfig.FatigueSlowThreshold)
@@ -159,56 +199,102 @@ public sealed class AgentMovementService
             speed *= WaterSpeedMultiplier;
         }
 
-        float invDist = 1.0f / dist;
-        float stepX = dx * invDist * (speed * deltaTime);
-        float stepY = dy * invDist * (speed * deltaTime);
-        float stepLenSq = stepX * stepX + stepY * stepY;
-        if (stepLenSq > distSq) { stepX = dx; stepY = dy; }
+        // Крупный dt (0.5 на 100x) давал шаг 60px за суб-степ: агент
+        // перепрыгивал через цель и возвращался — пинг-понг у финиша.
+        // Режем на суб-шаги ≤16px, каждый со своим arrive-капом.
+        float totalStep = speed * deltaTime;
+        int subSteps = (int)(totalStep / 16f) + 1;
+        if (subSteps > 4) subSteps = 4;
+        if (subSteps < 1) subSteps = 1;
+        float subDt = deltaTime / subSteps;
+        bool anyMoved = false;
 
-        float desiredX = curX + stepX;
-        float desiredY = curY + stepY;
-
-        // 1. Прямой шаг
-        if (!IsTileBlocked(desiredX, desiredY, ctx))
+        for (int s = 0; s < subSteps; s++)
         {
-            pool.PositionX[agentIndex] = desiredX;
-            pool.PositionY[agentIndex] = desiredY;
-            pool.StuckTimer[agentIndex] = 0f;
-            return false;
-        }
+            float sx = pool.PositionX[agentIndex];
+            float sy = pool.PositionY[agentIndex];
+            float sdx = target.X - sx;
+            float sdy = target.Y - sy;
+            float sDistSq = sdx * sdx + sdy * sdy;
+            if (sDistSq <= reachDistance * reachDistance)
+                return true;
+            float sDist = MathF.Sqrt(sDistSq);
+            float invDist = 1.0f / sDist;
+            float stepLen = speed * subDt;
+            if (stepLen >= sDist)
+            {
+                // Дошли бы до цели за этот суб-шаг: ставим точно в цель,
+                // дёрганья из-за перепрыгивания мимо нет.
+                if (!IsTileBlocked(target.X, target.Y, ctx))
+                {
+                    pool.PositionX[agentIndex] = target.X;
+                    pool.PositionY[agentIndex] = target.Y;
+                    pool.StuckTimer[agentIndex] = 0f;
+                    return true;
+                }
+                // Цель внутри стены (редкий stand-кейс): считаем дошедшим,
+                // коммит-фаза перепроверит дистанцию сама.
+                return sDistSq <= (reachDistance + 6f) * (reachDistance + 6f);
+            }
+            float stepX = sdx * invDist * stepLen;
+            float stepY = sdy * invDist * stepLen;
 
-        // 2. Скольжение вдоль препятствий (проверяем X и Y отдельно)
-        bool canX = !IsTileBlocked(desiredX, curY, ctx);
-        bool canY = !IsTileBlocked(curX, desiredY, ctx);
+            float desiredX = sx + stepX;
+            float desiredY = sy + stepY;
 
-        if (canX && canY)
-        {
-            float dX = (target.X - desiredX) * (target.X - desiredX) + (target.Y - curY) * (target.Y - curY);
-            float dY = (target.X - curX) * (target.X - curX) + (target.Y - desiredY) * (target.Y - desiredY);
-            if (dX < dY)
+            // 1. Прямой шаг
+            if (!IsTileBlocked(desiredX, desiredY, ctx))
             {
                 pool.PositionX[agentIndex] = desiredX;
-                pool.PositionY[agentIndex] = curY;
+                pool.PositionY[agentIndex] = desiredY;
+                anyMoved = true;
+                continue;
+            }
+
+            // 2. Скольжение вдоль препятствий — детерминированно по
+            // доминирующей оси (не минимум остатка: он давал чередование
+            // X/Y каждый кадр = дрожание у стены и осцилляцию в углу).
+            bool canX = !IsTileBlocked(desiredX, sy, ctx);
+            bool canY = !IsTileBlocked(sx, desiredY, ctx);
+
+            if (canX && canY)
+            {
+                if (MathF.Abs(sdx) >= MathF.Abs(sdy))
+                {
+                    pool.PositionX[agentIndex] = desiredX;
+                    pool.PositionY[agentIndex] = sy;
+                }
+                else
+                {
+                    pool.PositionX[agentIndex] = sx;
+                    pool.PositionY[agentIndex] = desiredY;
+                }
+                anyMoved = true;
+                continue;
+            }
+            else if (canX)
+            {
+                pool.PositionX[agentIndex] = desiredX;
+                pool.PositionY[agentIndex] = sy;
+                anyMoved = true;
+                continue;
+            }
+            else if (canY)
+            {
+                pool.PositionX[agentIndex] = sx;
+                pool.PositionY[agentIndex] = desiredY;
+                anyMoved = true;
+                continue;
             }
             else
             {
-                pool.PositionX[agentIndex] = curX;
-                pool.PositionY[agentIndex] = desiredY;
+                // Суб-шаг упёрся: дальше только обход угла (ниже).
+                break;
             }
-            pool.StuckTimer[agentIndex] = 0f;
-            return false;
         }
-        else if (canX)
+
+        if (anyMoved)
         {
-            pool.PositionX[agentIndex] = desiredX;
-            pool.PositionY[agentIndex] = curY;
-            pool.StuckTimer[agentIndex] = 0f;
-            return false;
-        }
-        else if (canY)
-        {
-            pool.PositionX[agentIndex] = curX;
-            pool.PositionY[agentIndex] = desiredY;
             pool.StuckTimer[agentIndex] = 0f;
             return false;
         }
@@ -260,6 +346,9 @@ public sealed class AgentMovementService
         // Гора = стена (блокирует), а не вода (замедляет).
         if (ctx.Ground[tx, ty] == TileType.Mountain)
             return true;
+
+        // Каменная россыпь проходима: агенты ходят прямо по ней.
+        // Добытчик всё равно работает с соседней stand-клетки (Mining).
 
         // Проверяем соседей только если агент подошел вплотную к краю тайла (быстрая маска 63)
         int subX = (int)worldX & 63;

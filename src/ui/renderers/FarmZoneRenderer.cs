@@ -17,6 +17,11 @@ public partial class FarmZoneRenderer : Node2D
     private static readonly Color HoverFillColor = new(1f, 1f, 1f, 0.12f);
     private static readonly Color SelectedFillColor = new(0.9f, 1.0f, 0.4f, 0.18f);
 
+    // Work-зоны: оранжевая гамма чтобы отличать от Farm.
+    private static readonly Color WorkBorderColor = new(1f, 0.65f, 0.2f, 0.85f);
+    private static readonly Color WorkSelectedBorderColor = new(1f, 0.75f, 0.3f, 0.95f);
+    private static readonly Color WorkSelectedFillColor = new(1f, 0.65f, 0.2f, 0.18f);
+
     private const float RedrawThrottleSec = 0.1f;
     private float _redrawTimer = 1f;
     private bool _redrawPending;
@@ -26,7 +31,7 @@ public partial class FarmZoneRenderer : Node2D
     public override void _Ready()
     {
         ZIndex = 8; // Поверх тайлов и грядок, под агентами
-        FarmZoneManager.Instance.OnZonesUpdated += OnZonesUpdatedThrottled;
+        ZoneManager.Instance.OnZonesUpdated += OnZonesUpdatedThrottled;
     }
 
     public override void _Process(double delta)
@@ -46,21 +51,25 @@ public partial class FarmZoneRenderer : Node2D
 
     public override void _Draw()
     {
-        var zones = FarmZoneManager.Instance.GetAllZones();
-        var hovered = FarmZoneManager.Instance.HoveredZone;
-        var selected = FarmZoneManager.Instance.SelectedZone;
+        // Единый рендер всех зон: Farm — зелёные оттенки, Work — оранжевые.
+        var zones = ZoneManager.Instance.GetAllZones();
+        var hovered = ZoneManager.Instance.HoveredZone;
+        var selected = ZoneManager.Instance.SelectedZone;
 
         foreach (var zone in zones)
         {
             bool isSelected = selected != null && selected.Id == zone.Id;
             bool isHovered = hovered != null && hovered.Id == zone.Id;
+            bool isWork = zone.Kind == ZoneKind.Work;
+
+            Color selFill = isWork ? WorkSelectedFillColor : SelectedFillColor;
 
             // Заливка при наведении или выборе
             if (isSelected)
             {
                 foreach (var (x, y) in zone.Tiles)
                 {
-                    DrawRect(new Rect2(x * TileSize, y * TileSize, TileSize, TileSize), SelectedFillColor);
+                    DrawRect(new Rect2(x * TileSize, y * TileSize, TileSize, TileSize), selFill);
                 }
             }
             else if (isHovered)
@@ -72,7 +81,13 @@ public partial class FarmZoneRenderer : Node2D
             }
 
             // Отрисовка контурной рамки
-            Color borderColor = isSelected ? SelectedBorderColor : (isHovered ? HoverBorderColor : BaseBorderColor);
+            Color borderColor;
+            if (isSelected)
+                borderColor = isWork ? WorkSelectedBorderColor : SelectedBorderColor;
+            else if (isHovered)
+                borderColor = HoverBorderColor;
+            else
+                borderColor = isWork ? WorkBorderColor : BaseBorderColor;
             float thickness = (isSelected || isHovered) ? HighlightBorderThickness : DefaultBorderThickness;
 
             _borderBuffer.Clear();
@@ -110,7 +125,7 @@ public partial class FarmZoneRenderer : Node2D
 
     public override void _ExitTree()
     {
-        FarmZoneManager.Instance.OnZonesUpdated -= OnZonesUpdatedThrottled;
+        ZoneManager.Instance.OnZonesUpdated -= OnZonesUpdatedThrottled;
         base._ExitTree();
     }
 }

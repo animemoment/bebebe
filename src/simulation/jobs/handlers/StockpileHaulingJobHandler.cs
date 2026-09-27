@@ -6,7 +6,7 @@ namespace Game.Simulation.Jobs;
 
 public sealed class StockpileHaulingJobHandler : IJobHandler
 {
-    private const float ReachDist = 48.0f;
+    private const float ReachDist = 20.0f;
     private const float MaxCarryWeight = 25.0f;
     private const float MaxStuckDuration = 5.0f;
 
@@ -19,9 +19,14 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
     {
         // Haul везёт любой тип (Log/Grain), а не только брёвна: иначе работы
         // по зерну создавались Sweep'ом, но вечно фейлились в OnStart.
+        // ЖЁСТКИЙ ЭТАП 1: расчистка стройки — только стадия Clearing.
+        // Обычный мусор (вне стройки) IsStageAllowed пропускает всегда.
+        if (!ConstructionPipeline.Instance.IsStageAllowed(job.SourceX, job.SourceY, JobTypeId.StockpileHauling))
+            return false;
         return (GroundItemManager.Instance.HasAvailableLogs ||
-                GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Grain)) &&
-               StockpileManager.Instance.HasFreeSpace;
+                GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Grain) ||
+                GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Stone)) &&
+                StockpileManager.Instance.HasFreeSpace;
     }
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
@@ -116,10 +121,17 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
                 int sx = pool.SourceCellX[agentIndex];
                 int sy = pool.SourceCellY[agentIndex];
                 int reserved = pool.ReservedItemCount[agentIndex];
-                ItemId want = GroundItemManager.Instance.PeekItemAt(sx, sy);
-                int taken = GroundItemManager.Instance.TakeItems(sx, sy, reserved);
+                // P1: один захват вместо Peek+Take (два lock на агента в коммите).
+                // Take лишь списывает физ. стак — тоталы уже уменьшены резервом
+                // в OnStart (тот же контракт, что у старого TakeItems).
+                var (want, taken) = GroundItemManager.Instance.TakeItemsWithType(sx, sy, reserved);
                 if (taken > 0)
                 {
+                    // #11: TakeItemsWithType списывает физ. стак, но
+                    // ReservedItemCount оставался == reserved. Позже OnCancel
+                    // делал ReleaseReservation(ReservedItemCount) — тоталы
+                    // завышались на (reserved - taken). Синхронизируем сразу.
+                    pool.ReservedItemCount[agentIndex] = 0;
                     // Тип берём из факта кучи, а не захардкоженный Log:
                     // иначе зерно доезжало как бревно и терялось/дублировалось.
                     pool.CarriedItemId[agentIndex] = want != ItemId.None ? want : ItemId.Log;
@@ -157,9 +169,11 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
                 int jobId = pool.CurrentJobId[agentIndex];
                 if (jobId != -1)
                 {
-                    // Одноразовая работа: удаляем. Гард в ReleaseWorkerClaim
-                    // делает последующий ReleaseJobWorker безопасным
-                    // (ReleaseWorkerClaim no-op'ится по !_active).
+                    // Этап 1 пайплайна стройки: клетка-источник расчищена —
+                    // снять флаг haul (идемпотентно; ищем по Source, т.к.
+                    // Target — слот склада).
+                    ConstructionPipeline.Instance.NotifyHaulCleared(
+                        pool.SourceCellX[agentIndex], pool.SourceCellY[agentIndex]);
                     JobDispatcher.Instance.TryUnregisterJob(jobId);
                 }
                 JobDispatcher.Instance.ReleaseJobWorker(agentIndex, pool, ctx);

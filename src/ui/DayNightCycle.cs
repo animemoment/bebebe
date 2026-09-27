@@ -31,8 +31,11 @@ public partial class DayNightCycle : Node
     public const float SunriseHour = 6f;
     public const float SolarNoonHour = 13f;
     public const float SunsetHour = 20f;
-    public const float MaxShadowLengthPx = 28f;
-    public const float ShadowAlphaMax = 0.32f;
+    // Тень обязана быть ДЛИННЕЕ спрайта (32px), иначе это силуэт под ногами.
+    // При 28 тень утром была 21px — короче агента. При 64: утром ~49px,
+    // тень реально тянется и читается как направление от солнца.
+    public const float MaxShadowLengthPx = 64f;
+    public const float ShadowAlphaMax = 0.45f;
     public const float ShadowWidthScale = 0.55f;
 
     /// <summary>Как часто (реал. сек) можно трогать CanvasModulate.color. Дешевле некуда, но и дёргать каждый кадр незачем.</summary>

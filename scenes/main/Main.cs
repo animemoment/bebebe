@@ -16,11 +16,14 @@ public partial class Main : Node2D
 	private SelectionBox _selection;
 	private TimeManager _timeManager;
 	private PerformanceOverlay _profilerOverlay;
-	private CanvasModulate _dayNightModulate;
-	private DayNightCycle _dayNightCycle;
-	private float _syncTimer;
+ 	private CanvasModulate _dayNightModulate;
+ 	private DayNightCycle _dayNightCycle;
+ 	private ItemShadowRenderer _itemShadows;
+ 	private CropRenderer _cropRenderer;
+ 	private GroundItemRenderer _itemRenderer;
+ 	private float _syncTimer;
 
-	[Export] public int AgentCount = 100000;
+	[Export] public int AgentCount = 10000;
 	[Export] public HUDController HUD;
 
 	public override void _Ready()
@@ -59,11 +62,21 @@ public partial class Main : Node2D
 		var farmZoneRenderer = new FarmZoneRenderer { Name = "FarmZoneRenderer" };
 		AddChild(farmZoneRenderer);
 
-		var cropRenderer = new CropRenderer { Name = "CropRenderer" };
-		AddChild(cropRenderer);
-
-		var itemRenderer = new GroundItemRenderer { Name = "GroundItemRenderer" };
-		AddChild(itemRenderer);
+ 		var cropRenderer = new CropRenderer { Name = "CropRenderer" };
+ 		AddChild(cropRenderer);
+ 		_cropRenderer = cropRenderer;
+ 
+ 		var itemRenderer = new GroundItemRenderer { Name = "GroundItemRenderer" };
+ 		AddChild(itemRenderer);
+ 		_itemRenderer = itemRenderer;
+ 
+ 		// Тени мелочи (Syx ShadowBatch): один MultiMesh на предметы+урожай+склад.
+ 		_itemShadows = new ItemShadowRenderer { Name = "ItemShadowRenderer" };
+ 		AddChild(_itemShadows);
+ 		_itemRenderer.ItemShadows = _itemShadows;
+ 		_cropRenderer.ItemShadows = _itemShadows;
+ 		if (_mapRenderer.StockpileItems != null)
+ 			_mapRenderer.StockpileItems.ItemShadows = _itemShadows;
 
 		_profilerOverlay = new PerformanceOverlay { Name = "PerformanceOverlay" };
 		AddChild(_profilerOverlay);
@@ -76,7 +89,7 @@ public partial class Main : Node2D
 		if (_agentThread == null && _mapRenderer.MapData != null)
 		{
 			_agentThread = new AgentSimulationThread();
-			_agentThread.Start(AgentCount, _mapRenderer.MapData.Ground, _mapRenderer.MapData.TreeOnGrass, 0, _mapRenderer.MapData.Humidity);
+			_agentThread.Start(AgentCount, _mapRenderer.MapData.Ground, _mapRenderer.MapData.TreeOnGrass, 0, _mapRenderer.MapData.Humidity, _mapRenderer.MapData.StoneOnGrass, _mapRenderer.MapData.Fertility);
 
 			// Стартовый спавн 100 зерна в центре карты
 			int centerX = MapRenderer.MapWidth / 2;
@@ -130,13 +143,14 @@ public partial class Main : Node2D
 				_dayNightCycle.Tick(_timeManager.GameTimeSeconds, (float)delta);
 			}
 
-			// Солнце по дуге слева направо: тени статики + агентов за один тик, O(1).
-			using (GameProfiler.Scope("Render: Shadows"))
-			{
-				var sun = DayNightCycle.SampleSun(WorldTime.TimeOfDaySeconds(_timeManager.GameTimeSeconds));
-				_mapRenderer?.ShadowRenderer?.Tick(sun, (float)delta);
-				_agentRenderer?.ApplyShadow(sun);
-			}
+ 			// Солнце по дуге слева направо: тени статики + агентов + мелочи за один тик, O(1).
+ 			using (GameProfiler.Scope("Render: Shadows"))
+ 			{
+ 				var sun = DayNightCycle.SampleSun(WorldTime.TimeOfDaySeconds(_timeManager.GameTimeSeconds));
+ 				_mapRenderer?.ShadowRenderer?.Tick(sun, (float)delta);
+ 				_agentRenderer?.ApplyShadow(sun);
+ 				_itemShadows?.SetSun(sun);
+ 			}
 		}
 	}
 

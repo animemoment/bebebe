@@ -37,12 +37,13 @@ public class FarmJobManager
         }
     }
 
-    public void MarkPlotsBatch(List<(int X, int Y)> plots, bool[,] treeOnGrass)
+    public void MarkPlotsBatch(List<(int X, int Y)> plots, bool[,] treeOnGrass, bool[,] stoneOnGrass = null)
     {
         if (plots == null || plots.Count == 0) return;
 
         var addedList = new List<(int X, int Y)>(plots.Count);
         var treesToChop = new List<(int X, int Y)>();
+        var stonesToMine = new List<(int X, int Y)>();
 
         lock (_lock)
         {
@@ -55,8 +56,19 @@ public class FarmJobManager
                     {
                         treesToChop.Add(pos);
                     }
+                    // Камень под грядкой — автоматом в добычу (как деревья):
+                    // вскопка по камню запрещена гардом, без метки грядка встала бы.
+                    if (stoneOnGrass != null && (uint)pos.X < (uint)stoneOnGrass.GetLength(0) && (uint)pos.Y < (uint)stoneOnGrass.GetLength(1) && stoneOnGrass[pos.X, pos.Y])
+                    {
+                        stonesToMine.Add(pos);
+                    }
                 }
             }
+        }
+
+        if (stonesToMine.Count > 0)
+        {
+            StoneJobManager.Instance.MarkStonesBatch(stonesToMine, stoneOnGrass);
         }
 
         if (addedList.Count > 0)
@@ -135,6 +147,24 @@ public class FarmJobManager
             {
                 if ((uint)x < (uint)w && (uint)y < (uint)h)
                     mask[x, y] = true;
+            }
+        }
+        return mask;
+    }
+
+    /// <summary>
+    /// Flat-версия маски (bool[w*h], индекс y*w+x) для HumidityMap.Tick:
+    /// flat-чтение без bounds-check ×2 и вычисления индекса [,].
+    /// </summary>
+    public bool[] BuildGardenBedFlatMask(int w, int h)
+    {
+        var mask = new bool[w * h];
+        lock (_lock)
+        {
+            foreach (var (x, y) in _completedBeds)
+            {
+                if ((uint)x < (uint)w && (uint)y < (uint)h)
+                    mask[y * w + x] = true;
             }
         }
         return mask;

@@ -4,7 +4,8 @@ public enum ItemId : byte
 {
     None = 0,
     Log = 1,   // Бревно
-    Grain = 2  // Зерно / Пшеница
+    Grain = 2, // Зерно / Пшеница
+    Stone = 3  // Камень (добыча с каменных россыпей)
 }
 
 public record ItemDefinition(

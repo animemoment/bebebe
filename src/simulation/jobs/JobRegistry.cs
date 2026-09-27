@@ -17,16 +17,24 @@ public static class JobRegistry
         _handlersArray[(byte)handler.TypeId] = handler;
     }
 
+    // Bounds-guard: битый typeId (>=32) из claim-цикла — без него IndexOutOfRange.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static IJobHandler GetHandler(JobTypeId typeId)
     {
-        return _handlersArray[(byte)typeId];
+        uint idx = (byte)typeId;
+        return idx < 32 ? _handlersArray[idx] : null;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryGetHandler(JobTypeId typeId, out IJobHandler handler)
     {
-        handler = _handlersArray[(byte)typeId];
+        uint idx = (byte)typeId;
+        if (idx >= 32)
+        {
+            handler = null;
+            return false;
+        }
+        handler = _handlersArray[idx];
         return handler != null;
     }
 }

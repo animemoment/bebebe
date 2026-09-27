@@ -13,7 +13,7 @@ namespace Game.Simulation.Jobs;
 /// </summary>
 public sealed class NeedsJobSystem
 {
-    private const float ReachDist = 48.0f;
+    private const float ReachDist = 20.0f;
 
     // P0.5: ThreadLocal RNG для Parallel-путей (Random.Shared contention, ctx.Random race).
     private static readonly System.Threading.ThreadLocal<Random> ThreadRandom = new(
@@ -70,9 +70,14 @@ public sealed class NeedsJobSystem
         bool reached = ctx.Movement.MoveTowards(agentIndex, target, ReachDist, deltaTime, pool, ctx);
         if (!reached && pool.StuckTimer[agentIndex] >= 3.0f)
         {
+            // P0-1: без SimEvents — stuck-ветка горячая при толпах, интерполяция
+            // строки + два lock на каждое срабатывание.
             // Застрял по пути к еде: возвращаем резерв кучи, иначе зерно
             // навсегда вычитается из доступных (утечка _totalAvailableByType).
-            if (behavior == NeedBehavior.SeekingFood && pool.ReservedItemCount[agentIndex] > 0)
+            // Складская еда уже списана из _storage атомарным взятием —
+            // возвращать её некуда без новой кладки, резерв не висит.
+            if (behavior == NeedBehavior.SeekingFood && pool.ReservedItemCount[agentIndex] > 0
+                && !pool.FoodFromStockpile[agentIndex])
             {
                 GroundItemManager.Instance.ReleaseReservation(
                     pool.SourceCellX[agentIndex], pool.SourceCellY[agentIndex],
@@ -116,47 +121,58 @@ public sealed class NeedsJobSystem
         // Дальние клетки всё равно отбрасывались проверкой maxR ниже — теперь не сканируем их.
         // Резервируем сразу eatCount (2), без лишнего Reserve/Release на hot-path.
         float eatWeight = ItemRegistry.Get(ItemId.Grain).Weight * AgentNeedsConfig.FoodEatGrainCount;
-        if (!GroundItemManager.Instance.TryReserveGroundItems(
+        int eatCount = Math.Max(1, AgentNeedsConfig.FoodEatGrainCount);
+        if (GroundItemManager.Instance.TryReserveGroundItems(
                 pos, eatWeight, allowFromStockpile: true, ItemId.Grain, maxChunkRadius: 3,
-                out var cell, out var itemId, out int resCount))
+                out var cell, out var itemId, out int resCount)
+            && itemId == ItemId.Grain && resCount > 0)
         {
-            // Еды нет (fast-fail по тоталам) или не найдена рядом: backoff 30-60с в отдельном
-            // NeedsRetryTimer (не JobSearchTimer — его затирает блуждание 6с), иначе 10k голодных
-            // молотят скан каждые 4 тика вечно. ParallelRng — lock-free (Random.Shared — contention).
-            pool.NeedsRetryTimer[a] = 30.0f + (float)ParallelRng.NextDouble() * 30.0f;
-            return false;
-        }
-        if (itemId != ItemId.Grain || resCount <= 0)
-        {
-            if (resCount > 0)
+            int ax = (int)(pos.X / ctx.TileSize);
+            int ay = (int)(pos.Y / ctx.TileSize);
+            int maxR = AgentNeedsConfig.FoodSearchRadiusTiles;
+            int ddx = cell.X - ax, ddy = cell.Y - ay;
+            if (ddx * ddx + ddy * ddy > maxR * maxR)
+            {
                 GroundItemManager.Instance.ReleaseReservation(cell.X, cell.Y, resCount);
-            pool.NeedsRetryTimer[a] = 30.0f + (float)ParallelRng.NextDouble() * 30.0f;
-            return false;
+            }
+            else
+            {
+                // resCount уже == eatCount (резервировали точный вес), релиз излишка не нужен.
+                StartSeekingFood(a, pool, ctx, cell, resCount, fromStockpile: false);
+                return true;
+            }
         }
-        int ax = (int)(pos.X / ctx.TileSize);
-        int ay = (int)(pos.Y / ctx.TileSize);
-        int maxR = AgentNeedsConfig.FoodSearchRadiusTiles;
-        int ddx = cell.X - ax, ddy = cell.Y - ay;
-        if (ddx * ddx + ddy * ddy > maxR * maxR)
+        // #1: на земле зерна нет (fast-fail по тоталам), но оно может лежать на
+        // складе — DepositItems пишет только в Stockpile._storage, наземный скан
+        // его не видит. Отдельный путь: атомарное взятие eatCount со склада.
+        if (StockpileManager.Instance.TryTakeStockpileFood(
+                new System.Numerics.Vector2(pos.X, pos.Y), ItemId.Grain, eatCount,
+                AgentNeedsConfig.FoodSearchRadiusTiles, out var stockCell))
         {
-            GroundItemManager.Instance.ReleaseReservation(cell.X, cell.Y, resCount);
-            pool.NeedsRetryTimer[a] = 30.0f + (float)ParallelRng.NextDouble() * 30.0f;
-            return false;
+            StartSeekingFood(a, pool, ctx, stockCell, eatCount, fromStockpile: true);
+            return true;
         }
-        // resCount уже == eatCount (резервировали точный вес), релиз излишка не нужен.
-        int eatCount = resCount;
+        // Еды нет ни на земле, ни на складе: backoff 30-60с в отдельном
+        // NeedsRetryTimer (не JobSearchTimer — его затирает блуждание 6с), иначе 10k голодных
+        // молотят скан каждые 4 тика вечно. ParallelRng — lock-free (Random.Shared — contention).
+        pool.NeedsRetryTimer[a] = 30.0f + (float)ParallelRng.NextDouble() * 30.0f;
+        return false;
+    }
+
+    private static void StartSeekingFood(int a, AgentDataPool pool, SimulationContext ctx, (int X, int Y) cell, int eatCount, bool fromStockpile)
+    {
         JobDispatcher.Instance.IdleWorkers.RemoveIdleWorker(a, pool);
         pool.NeedsBehavior[a] = NeedBehavior.SeekingFood;
         pool.States[a] = AgentState.Evacuating;
         pool.SourceCellX[a] = cell.X;
         pool.SourceCellY[a] = cell.Y;
         pool.ReservedItemCount[a] = eatCount;
+        pool.FoodFromStockpile[a] = fromStockpile;
         pool.TargetPositionX[a] = cell.X * ctx.TileSize + 32f;
         pool.TargetPositionY[a] = cell.Y * ctx.TileSize + 32f;
         pool.StuckTimer[a] = 0f;
         pool.WaypointCount[a] = 0;
         pool.WaypointIndex[a] = 0;
-        return true;
     }
     private static void StartResting(int a, AgentDataPool pool)
     {
@@ -207,19 +223,30 @@ public sealed class NeedsJobSystem
 
     private static void CommitEating(int a, AgentDataPool pool)
     {
-        int taken = GroundItemManager.Instance.TakeItems(
-            pool.SourceCellX[a], pool.SourceCellY[a], pool.ReservedItemCount[a]);
+        int taken;
+        if (pool.FoodFromStockpile[a])
+        {
+            // #1: складская еда уже атомарно списана из _storage в
+            // TryTakeStockpileFood — повторный Withdraw не нужен, только съесть.
+            taken = pool.ReservedItemCount[a];
+        }
+        else
+        {
+            taken = GroundItemManager.Instance.TakeItems(
+                pool.SourceCellX[a], pool.SourceCellY[a], pool.ReservedItemCount[a]);
+            if (taken <= 0)
+            {
+                GroundItemManager.Instance.ReleaseReservation(
+                    pool.SourceCellX[a], pool.SourceCellY[a], pool.ReservedItemCount[a]);
+            }
+        }
         if (taken > 0)
         {
             float h = pool.Hunger[a] - AgentNeedsConfig.FoodEatHungerRestore;
             pool.Hunger[a] = h < 0f ? 0f : h;
         }
-        else
-        {
-            GroundItemManager.Instance.ReleaseReservation(
-                pool.SourceCellX[a], pool.SourceCellY[a], pool.ReservedItemCount[a]);
-        }
         pool.ReservedItemCount[a] = 0;
+        pool.FoodFromStockpile[a] = false;
         pool.SourceCellX[a] = 0;
         pool.SourceCellY[a] = 0;
         FinishBehavior(a, pool, cooldownSec: 4f);
@@ -238,6 +265,7 @@ public sealed class NeedsJobSystem
     private static void FinishBehavior(int a, AgentDataPool pool, float cooldownSec)
     {
         pool.NeedsBehavior[a] = NeedBehavior.None;
+        pool.FoodFromStockpile[a] = false;
         pool.States[a] = AgentState.Idle;
         pool.CurrentJobId[a] = -1;
         pool.CurrentJobType[a] = JobTypeId.None;

@@ -23,6 +23,11 @@ public class BlueprintManager
     private readonly object _lock = new();
     private readonly Dictionary<(int X, int Y), BlueprintSite> _blueprints = new(1024);
 
+    /// <summary>
+    /// Сколько брёвен нужно под чертёж. Все цифры — в BuildConfig (один файл).
+    /// </summary>
+    public static int LogsFor(BuildingType type) => BuildConfig.LogsFor(type);
+
     public event Action<(int X, int Y), BuildingType> OnBlueprintAdded;
     public event Action<List<(int X, int Y)>, BuildingType> OnBlueprintsBatchAdded;
     public event Action<(int X, int Y)> OnBlueprintRemoved;
@@ -31,11 +36,14 @@ public class BlueprintManager
 
     public void AddBlueprint(int x, int y, BuildingType type, bool[,] treeOnGrass)
     {
+        // F68: хронология «что построил и когда» с координатами.
+        Game.Core.SimEvents.Mark("BLUEPRINT", $"{type} at={x},{y}");
+        Game.Core.SimEvents.Count("build.blueprint." + type.ToString());
         lock (_lock)
         {
             if (!_blueprints.ContainsKey((x, y)))
             {
-                int target = type == BuildingType.WorkTable ? 25 : 15;
+                int target = LogsFor(type);
                 _blueprints[(x, y)] = new BlueprintSite
                 {
                     X = x,
@@ -55,13 +63,14 @@ public class BlueprintManager
         }
     }
 
-    public void AddBlueprintsBatch(List<(int X, int Y)> cells, BuildingType type, bool[,] treeOnGrass)
+    public void AddBlueprintsBatch(List<(int X, int Y)> cells, BuildingType type, bool[,] treeOnGrass, bool[,] stoneOnGrass = null)
     {
         if (cells == null || cells.Count == 0) return;
 
         var addedList = new List<(int X, int Y)>(cells.Count);
         var treesToChop = new List<(int X, int Y)>();
-        int target = type == BuildingType.WorkTable ? 25 : 15;
+        var stonesToMine = new List<(int X, int Y)>();
+        int target = LogsFor(type);
 
         lock (_lock)
         {
@@ -82,6 +91,11 @@ public class BlueprintManager
                     {
                         treesToChop.Add((x, y));
                     }
+                    // Камень под фундаментом — автоматом в добычу (как деревья).
+                    if (stoneOnGrass != null && (uint)x < (uint)stoneOnGrass.GetLength(0) && (uint)y < (uint)stoneOnGrass.GetLength(1) && stoneOnGrass[x, y])
+                    {
+                        stonesToMine.Add((x, y));
+                    }
                 }
             }
         }
@@ -93,17 +107,25 @@ public class BlueprintManager
             {
                 TreeJobManager.Instance.MarkTreesBatch(treesToChop);
             }
+            if (stonesToMine.Count > 0)
+            {
+                StoneJobManager.Instance.MarkStonesBatch(stonesToMine, stoneOnGrass);
+            }
             Callable.From(() => OnBlueprintsBatchAdded?.Invoke(addedList, type)).CallDeferred();
         }
     }
 
     public void AddDeliveredLogs(int x, int y, int count)
     {
+        if (count <= 0) return;
         lock (_lock)
         {
             if (_blueprints.TryGetValue((x, y), out var site))
             {
-                site.DeliveredLogs += count;
+                // #2: кламп — DeliverLogsToBlueprint уже клампит по индексу,
+                // но прямые вызовы AddDeliveredLogs тоже не должны переполнять.
+                int remaining = site.TargetLogs - site.DeliveredLogs;
+                site.DeliveredLogs += Math.Min(count, Math.Max(0, remaining));
             }
         }
     }
@@ -118,6 +140,7 @@ public class BlueprintManager
                 droppedLogs = site.DeliveredLogs;
                 _blueprints.Remove((x, y));
                 JobBroker.Instance.UnregisterBlueprint(x, y);
+                WorkProgressTracker.Instance.Clear(x, y);
                 Callable.From(() => OnBlueprintRemoved?.Invoke((x, y))).CallDeferred();
             }
         }
@@ -172,6 +195,8 @@ public class BlueprintManager
         if (removedList.Count > 0)
         {
             JobBroker.Instance.UnregisterBlueprintBatch(removedList);
+            foreach (var (x, y) in removedList)
+                WorkProgressTracker.Instance.Clear(x, y);
             Callable.From(() => OnBlueprintsBatchRemoved?.Invoke(removedList)).CallDeferred();
         }
     }
@@ -181,6 +206,28 @@ public class BlueprintManager
         lock (_lock)
         {
             return _blueprints.ContainsKey((x, y));
+        }
+    }
+
+    /// <summary>Сколько бревен уже привезли на чертёж (для гейта 100% стройки).</summary>
+    public int GetDelivered(int x, int y)
+    {
+        lock (_lock)
+        {
+            return _blueprints.TryGetValue((x, y), out var site) ? site.DeliveredLogs : 0;
+        }
+    }
+
+    /// <summary>
+    /// True если на клетке чертёж именно стены (для exists-флаша terrain-слоя
+    /// чертежей: мебель в этот слой не попадает, стирать её оттуда нельзя).
+    /// </summary>
+    public bool IsWallBlueprintAt(int x, int y)
+    {
+        lock (_lock)
+        {
+            return _blueprints.TryGetValue((x, y), out var site)
+                && site.Type == BuildingType.WoodWall;
         }
     }
 

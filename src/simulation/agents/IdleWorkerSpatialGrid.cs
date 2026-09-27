@@ -17,9 +17,13 @@ public sealed class IdleWorkerSpatialGrid
     private bool[] _inGrid;
     private int[] _agentChunk;
     // P-баланс: striped locks вместо одного глобального _lock. Bookkeep-фаза
-    // (16 потоков) дёргает UpdateWorkerChunk на каждую смену клетки, Dispatcher —
-    // Add/Remove: один lock сериализовал их всех, случайный владелец lock'а
-    // стагглерил чужой батч. 32 шарда по младшим битам чанка.
+    // дёргает UpdateWorkerChunk на каждую смену клетки, Dispatcher — Add/Remove.
+    // Шард — ПО ЧАНКУ (StripeOf), а не по агенту: Add/Remove/Move мутируют общий
+    // _chunkHeads[chunkIndex] + Next/Prev соседей — два агента в одном чанке под
+    // разными шардами давали lost-update головы списка. Шард по чанку сериализует
+    // всех писателей одного чанка между собой; агенты разных чанков идут параллельно.
+    // Remove под шардом чанка безопасен: MoveLocked перепроверяет _agentChunk под
+    // lock и выходит, если чанк уже сменился (см. MoveLocked).
     private const int StripeCount = 32;
     private readonly object[] _stripes = CreateStripes();
     private static object[] CreateStripes()
@@ -72,9 +76,8 @@ public sealed class IdleWorkerSpatialGrid
         int cy = Math.Clamp(pool.CurrentCellY[agentIndex] >> ChunkShift, 0, ChunkDim - 1);
         int chunkIndex = cy * ChunkDim + cx;
 
-        // Тот же фикс-шард, что в Remove: пара Add/Remove одного агента
-        // всегда под одним lock (см. комментарий в RemoveIdleWorker).
-        lock (_stripes[agentIndex & (StripeCount - 1)])
+        // Шард по чанку: все писатели одной головы списка сериализованы.
+        lock (_stripes[StripeOf(chunkIndex)])
         {
             if (_inGrid[agentIndex])
                 return;
@@ -100,19 +103,124 @@ public sealed class IdleWorkerSpatialGrid
         EnsureCapacityLocked(pool.Capacity);
         if (agentIndex < 0 || agentIndex >= _inGrid.Length)
             return;
-        // Фиксированный шард по индексу агента: Add/Remove одного агента всегда
-        // сериализованы между собой. Шардирование Remove по _agentChunk опасно:
-        // конкурентный Move меняет чанк между чтением и lock → два потока
-        // правят один linked-узел под разными шардами (use-after-unlink).
-        lock (_stripes[agentIndex & (StripeCount - 1)])
+        // Шард по чанку снятия (hint может устареть — Move мог пересадить).
+        // Если под lock чанк сменился — отпускаем stripe и повторяем по
+        // актуальному чанку (максимум несколько итераций при активной
+        // миграции агента). Раньше был early-return «до следующей попытки»
+        // диспетчера — он терял один проход и рассинхронизировал
+        // TotalIdleCount (collect видит агента, claim пропускает по State).
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            int chunkHint = _agentChunk != null && agentIndex < _agentChunk.Length
+                ? _agentChunk[agentIndex] : -1;
+            if (chunkHint < 0)
+            {
+                // Агент уже снят (Move не ставит -1, только RemoveLocked) —
+                // либо никогда не был в сетке.
+                lock (_stripes[(agentIndex & (StripeCount - 1))])
+                {
+                    if (!_inGrid[agentIndex])
+                        return;
+                    chunkHint = _agentChunk[agentIndex];
+                    if (chunkHint < 0)
+                    {
+                        // In-grid без чанка: битое состояние, чиним счётчик.
+                        _inGrid[agentIndex] = false;
+                        pool.NextInIdleCell[agentIndex] = -1;
+                        pool.PrevInIdleCell[agentIndex] = -1;
+                        Interlocked.Decrement(ref _totalIdleCount);
+                        return;
+                    }
+                    // Чанк появился — повторяем по нормальному пути.
+                    continue;
+                }
+            }
+            int stripeHint = StripeOf(chunkHint);
+            lock (_stripes[stripeHint])
+            {
+                if (!_inGrid[agentIndex])
+                    return;
+
+                int chunkIndex = _agentChunk[agentIndex];
+                if (chunkIndex != chunkHint)
+                    continue; // Move пересадил под другим шардом — retry по новому чанку.
+                RemoveLocked(agentIndex, pool, chunkIndex);
+                return;
+            }
+        }
+        // #4: за 4 попытки не сошлось (агент мигрировал между чанками быстрее,
+        // чем мы брали шард). Раньше здесь был тихий no-op: агент уже в Working,
+        // но _inGrid=true и _totalIdleCount завышен навсегда (дрейф счётчика),
+        // а повторный AddIdleWorker дедуплицировался по _inGrid и терял агента.
+        // Fallback: берём ВСЕ шарды по порядку (младший→старший, как в
+        // UpdateWorkerChunk — дедлока нет) и вырезаем агента из актуального
+        // чанка принудительно. Редкий путь (только после 4 гонок подряд).
+        ForceRemoveLocked(agentIndex, pool);
+    }
+
+    /// <summary>
+    /// #4: принудительное снятие после 4 неудачных попыток RemoveIdleWorker.
+    /// Берёт все шарды по порядку (упорядоченно — дедлока нет, тот же порядок,
+    /// что в UpdateWorkerChunk), блокируя конкурентные Move/Add на время
+    /// операции. Ищет агента в списке его актуального чанка по обходу
+    /// (защита от рассинхрона головы) и вырезает. _totalIdleCount правится
+    /// ровно один раз (только если _inGrid был true).
+    /// </summary>
+    private void ForceRemoveLocked(int agentIndex, AgentDataPool pool)
+    {
+        // Вложенные lock по порядку шардов — тот же паттерн, что в
+        // UpdateWorkerChunk (два шарда ordered). Здесь — все 32: рекурсивный
+        // захват через цикл невозможен для lock(), поэтому берём их
+        // последовательно через Monitor с гарантированным освобождением.
+        for (int s = 0; s < StripeCount; s++)
+            System.Threading.Monitor.Enter(_stripes[s]);
+        try
         {
             if (!_inGrid[agentIndex])
                 return;
-
             int chunkIndex = _agentChunk[agentIndex];
+            if (chunkIndex >= 0 && chunkIndex < _chunkHeads.Length)
+            {
+                // Ищем агента в списке чанка обходом (голова могла уплыть
+                // под гонкой Move — unlink по next/prev всё равно корректен,
+                // если агент действительно в этом списке).
+                int curr = _chunkHeads[chunkIndex];
+                bool found = false;
+                while (curr != -1)
+                {
+                    if (curr == agentIndex) { found = true; break; }
+                    curr = (curr >= 0 && curr < pool.Capacity) ? pool.NextInIdleCell[curr] : -1;
+                }
+                if (found)
+                {
+                    RemoveLocked(agentIndex, pool, chunkIndex);
+                    return;
+                }
+                // Агент не в списке своего чанка (голова рассинхронизирована
+                // гонкой): чистим флаги и счётчик, чтобы не дрейфовал.
+                _inGrid[agentIndex] = false;
+                _agentChunk[agentIndex] = -1;
+                pool.NextInIdleCell[agentIndex] = -1;
+                pool.PrevInIdleCell[agentIndex] = -1;
+                Interlocked.Decrement(ref _totalIdleCount);
+                return;
+            }
+            // Чанк вне диапазона — битое состояние, чиним счётчик.
             _inGrid[agentIndex] = false;
             _agentChunk[agentIndex] = -1;
+            pool.NextInIdleCell[agentIndex] = -1;
+            pool.PrevInIdleCell[agentIndex] = -1;
+            Interlocked.Decrement(ref _totalIdleCount);
+        }
+        finally
+        {
+            for (int s = StripeCount - 1; s >= 0; s--)
+                System.Threading.Monitor.Exit(_stripes[s]);
+        }
+    }
 
+    private void RemoveLocked(int agentIndex, AgentDataPool pool, int chunkIndex)
+    {
             int next = pool.NextInIdleCell[agentIndex];
             int prev = pool.PrevInIdleCell[agentIndex];
 
@@ -133,10 +241,11 @@ public sealed class IdleWorkerSpatialGrid
                 pool.PrevInIdleCell[next] = prev;
             }
 
+            _inGrid[agentIndex] = false;
+            _agentChunk[agentIndex] = -1;
             pool.NextInIdleCell[agentIndex] = -1;
             pool.PrevInIdleCell[agentIndex] = -1;
             Interlocked.Decrement(ref _totalIdleCount);
-        }
     }
 
     private void EnsureCapacityLocked(int capacity)
@@ -165,12 +274,37 @@ public sealed class IdleWorkerSpatialGrid
         if (newChunk == curChunk)
             return;
 
-        // Тот же фикс-шард агента, что в Add/Remove: переезд сериализован
-        // с Add/Remove этого же агента, чужие агенты идут параллельно.
-        // MoveLocked перепроверяет _agentChunk под lock (см. ниже).
-        lock (_stripes[agentIndex & (StripeCount - 1)])
+        // Переезд трогает ДВЕ головы (_chunkHeads[curChunk] и [newChunk]) —
+        // берём оба шарда ordered (младший→старший, дедлока нет). MoveLocked
+        // перепроверяет _agentChunk под lock.
+        int s1 = StripeOf(curChunk);
+        int s2 = StripeOf(newChunk);
+        if (s1 == s2)
         {
-            MoveLocked(agentIndex, pool, curChunk, newChunk);
+            lock (_stripes[s1])
+            {
+                MoveLocked(agentIndex, pool, curChunk, newChunk);
+            }
+        }
+        else if (s1 < s2)
+        {
+            lock (_stripes[s1])
+            {
+                lock (_stripes[s2])
+                {
+                    MoveLocked(agentIndex, pool, curChunk, newChunk);
+                }
+            }
+        }
+        else
+        {
+            lock (_stripes[s2])
+            {
+                lock (_stripes[s1])
+                {
+                    MoveLocked(agentIndex, pool, curChunk, newChunk);
+                }
+            }
         }
     }
 

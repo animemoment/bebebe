@@ -1,7 +1,6 @@
 using Godot;
 using Game.Core;
 using Game.Simulation;
-using Game.Simulation.Gpu;
 using Game.UI.Tools;
 using System;
 using System.Globalization;
@@ -32,11 +31,17 @@ public partial class HUDController : Control
     private Control _additionallyBox;
     private Button _humidityButton;
     private Label _humidityLegendLabel;
+    private Button _fertilityButton;
+    private Label _fertilityLegendLabel;
 
     private Button _woodWallButton;
     private Button _warehouseAreaButton;
     private Button _farmingButton;
     private Button _workTableButton;
+    private Button _bedButton;
+    private Button _benchButton;
+    private Button _nightstandButton;
+    private Button _stoneMiningButton;
     private Button _treeFellingButton;
     private Button _prioritetButton;
 
@@ -63,7 +68,8 @@ public partial class HUDController : Control
     private Button _activeToolButton;
     private Panel _activeHighlightPanel;
     private PriorityBoardController _priorityBoard;
-    private GardenController _gardenController;
+    private FarmController _gardenController;
+    private BuildMenuController _buildMenuController;
 
     public override void _Ready()
     {
@@ -101,6 +107,7 @@ public partial class HUDController : Control
             _additionallyBox = humidityProbe?.GetParent() as Control;
         }
         _humidityButton = FindChild("humidity", true, false) as Button;
+        _fertilityButton = FindChild("fertility", true, false) as Button;
         SetupMapModeControls();
         // Легенда создаётся ПОСЛЕ SetMouseFilterRecursive (он ставит Ignore всем
         // не-кнопкам): легенде нужен Stop? Нет — Ignore, но создавать надо после,
@@ -124,6 +131,11 @@ public partial class HUDController : Control
         SetupHighlightPanel();
         SetupPriorityBoard();
         SetupGardenController();
+        // Новые кнопки стройки/добычи создаются кодом (сцену hud.tscn не трогаем):
+        // мебель — в IndustrialContainer рядом с верстаком, камень — в OrderContainer
+        // рядом с рубкой. Иконки = те же спрайты, что в мире (100x100, expand_icon).
+        SetupFurnitureButtons();
+        SetupStoneMiningButton();
         SetMouseFilterRecursive(this);
 
         if (_buttonConstruct != null)
@@ -246,8 +258,29 @@ public partial class HUDController : Control
                 bool enable = map.CurrentMapMode != MapMode.Humidity;
                 map.SetMapMode(enable ? MapMode.Humidity : MapMode.Normal);
                 // Подсветка активной кнопки: яркая когда вкл, тусклая когда выкл.
+                // Режимы взаимоисключающие — вторую кнопку гасим + её легенду.
                 _humidityButton.Modulate = enable ? new Color(0.5f, 1f, 1f, 1f) : Color.Color8(255, 255, 255, 255);
+                if (_fertilityButton != null)
+                    _fertilityButton.Modulate = Color.Color8(255, 255, 255, 255);
                 UpdateHumidityLegend(enable);
+                UpdateFertilityLegend(false);
+            };
+        }
+
+        if (_fertilityButton != null)
+        {
+            _fertilityButton.MouseFilter = MouseFilterEnum.Stop;
+            _fertilityButton.Pressed += () =>
+            {
+                var map = MapRenderer.Instance;
+                if (map == null) return;
+                bool enable = map.CurrentMapMode != MapMode.Fertility;
+                map.SetMapMode(enable ? MapMode.Fertility : MapMode.Normal);
+                _fertilityButton.Modulate = enable ? new Color(0.6f, 1f, 0.6f, 1f) : Color.Color8(255, 255, 255, 255);
+                if (_humidityButton != null)
+                    _humidityButton.Modulate = Color.Color8(255, 255, 255, 255);
+                UpdateFertilityLegend(enable);
+                UpdateHumidityLegend(false);
             };
         }
 
@@ -268,6 +301,23 @@ public partial class HUDController : Control
         _humidityLegendLabel.AddThemeConstantOverride("shadow_offset_x", 1);
         _humidityLegendLabel.AddThemeConstantOverride("shadow_offset_y", 1);
         AddChild(_humidityLegendLabel);
+
+        // Легенда-шкала плодородия (текст, создаём кодом — сцену не трогаем).
+        _fertilityLegendLabel = new Label
+        {
+            Name = "FertilityLegend",
+            Text = "Плодородие: бледное — бедно, тёмное — богато",
+            Visible = false,
+            MouseFilter = MouseFilterEnum.Ignore,
+            ZIndex = 100
+        };
+        _fertilityLegendLabel.SetAnchorsPreset(LayoutPreset.BottomLeft);
+        _fertilityLegendLabel.Position = new Vector2(20, -60);
+        _fertilityLegendLabel.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f));
+        _fertilityLegendLabel.AddThemeColorOverride("font_shadow_color", new Color(0f, 0f, 0f, 0.9f));
+        _fertilityLegendLabel.AddThemeConstantOverride("shadow_offset_x", 1);
+        _fertilityLegendLabel.AddThemeConstantOverride("shadow_offset_y", 1);
+        AddChild(_fertilityLegendLabel);
     }
 
     private Label _humidityTooltip;
@@ -300,8 +350,47 @@ public partial class HUDController : Control
     {
         if (_humidityLegendLabel != null)
             _humidityLegendLabel.Visible = visible;
-        if (!visible && _humidityTooltip != null)
+        if (!visible && _humidityTooltip != null && MapRenderer.Instance?.CurrentMapMode != MapMode.Fertility)
             _humidityTooltip.Visible = false;
+    }
+
+    private void UpdateFertilityLegend(bool visible)
+    {
+        if (_fertilityLegendLabel != null)
+            _fertilityLegendLabel.Visible = visible;
+        if (!visible && _humidityTooltip != null && MapRenderer.Instance?.CurrentMapMode != MapMode.Humidity)
+            _humidityTooltip.Visible = false;
+    }
+
+    /// <summary>
+    /// Показать плодородие клетки всплывашкой у курсора (тот же тултип, что
+    /// влажность — режимы взаимоисключающие, конфликта нет).
+    /// Только в режиме Fertility и только грунт.
+    /// </summary>
+    public void ShowFertilityAt(int x, int y)
+    {
+        if (_humidityTooltip == null) return;
+        var map = MapRenderer.Instance;
+        if (map?.Fertility == null || map?.MapData?.Ground == null
+            || map.CurrentMapMode != MapMode.Fertility)
+        {
+            _humidityTooltip.Visible = false;
+            return;
+        }
+        var ground = map.MapData.Ground;
+        if ((uint)x >= (uint)ground.GetLength(0) || (uint)y >= (uint)ground.GetLength(1)
+            || ground[x, y] != TileType.Grass)
+        {
+            _humidityTooltip.Visible = false;
+            return;
+        }
+        int v = map.Fertility.Get(x, y);
+        string word = v < 60 ? "бедно" : v <= 140 ? "норма" : "богато";
+        _humidityTooltip.Text = $"{v} {word}";
+        // TopLevel в CanvasLayer: позиция через GlobalPosition + мышь вьюпорта,
+        // иначе (GetGlobalMousePosition у Control) улетает за экран (§20.7).
+        _humidityTooltip.GlobalPosition = GetViewport().GetMousePosition() + new Vector2(16, 16);
+        _humidityTooltip.Visible = true;
     }
 
     /// <summary>
@@ -330,7 +419,8 @@ public partial class HUDController : Control
         string word = m < 40 ? "сухо" : m <= 130 ? "норма" : "мокро";
         _humidityTooltip.Text = $"{m}% {word}";
         // Позиция у курсора (+16px вправо-вниз, чтобы не закрывать клетку).
-        _humidityTooltip.Position = GetGlobalMousePosition() + new Vector2(16, 16);
+        // TopLevel в CanvasLayer — через GlobalPosition (§20.7).
+        _humidityTooltip.GlobalPosition = GetViewport().GetMousePosition() + new Vector2(16, 16);
         _humidityTooltip.Visible = true;
     }
 
@@ -355,7 +445,7 @@ public partial class HUDController : Control
 
     private void SetupGardenController()
     {
-        _gardenController = new GardenController { Name = "GardenController" };
+        _gardenController = new FarmController { Name = "GardenController" };
         AddChild(_gardenController);
 
         _gardenController.OnOpened += () =>
@@ -366,6 +456,39 @@ public partial class HUDController : Control
         };
 
         _gardenController.OnClosed += () =>
+        {
+            SetMainHUDVisible(true);
+        };
+
+        // WorkZone: bootstrap 1-в-1 как Garden (B5: иначе WorkZoneController.Instance == null и весь UI зон мёртв).
+        var workZoneController = new WorkZoneController { Name = "WorkZoneController" };
+        AddChild(workZoneController);
+
+        workZoneController.OnOpened += () =>
+        {
+            CloseAllMenus();
+            ClearActiveToolButton();
+            SetMainHUDVisible(false);
+        };
+
+        workZoneController.OnClosed += () =>
+        {
+            SetMainHUDVisible(true);
+        };
+
+        // Универсальное окно строительства (Build.tscn): открывается при выборе
+        // варианта зоны в ZoneContainer. Bootstrap 1-в-1 как Garden/WorkZone.
+        _buildMenuController = new BuildMenuController { Name = "BuildMenuController" };
+        AddChild(_buildMenuController);
+
+        _buildMenuController.OnOpened += () =>
+        {
+            CloseAllMenus();
+            ClearActiveToolButton();
+            SetMainHUDVisible(false);
+        };
+
+        _buildMenuController.OnClosed += () =>
         {
             SetMainHUDVisible(true);
         };
@@ -458,7 +581,7 @@ public partial class HUDController : Control
         {
             _priorityBoard.Close();
             ClearActiveToolButton();
-            if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen))
+            if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen) && (WorkZoneController.Instance == null || !WorkZoneController.Instance.IsOpen))
                 _amountOfResourcesPanel.Visible = true;
         }
         else
@@ -466,6 +589,7 @@ public partial class HUDController : Control
             ToggleToolButton(_prioritetButton, () =>
             {
                 FarmZoneManager.Instance.DeselectZone();
+                WorkZoneManager.Instance.DeselectZone();
                 if (_amountOfResourcesPanel != null)
                     _amountOfResourcesPanel.Visible = false;
                 _priorityBoard.Open();
@@ -481,7 +605,7 @@ public partial class HUDController : Control
             if (_priorityBoard != null && _priorityBoard.IsOpen)
             {
                 _priorityBoard.Close();
-                if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen))
+                if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen) && (WorkZoneController.Instance == null || !WorkZoneController.Instance.IsOpen))
                     _amountOfResourcesPanel.Visible = true;
             }
             PlayerInteractionManager.Instance?.ResetToDefault();
@@ -490,6 +614,7 @@ public partial class HUDController : Control
 
         ClearActiveToolButton();
         FarmZoneManager.Instance.DeselectZone();
+        WorkZoneManager.Instance.DeselectZone();
         _activeToolButton = button;
 
         if (_activeToolButton != null && _activeHighlightPanel != null)
@@ -514,17 +639,51 @@ public partial class HUDController : Control
         _activeToolButton = null;
     }
 
-    // Всплывашка влажности следует за курсором каждый кадр, пока видима.
+    // Всплывашка влажности/плодородия следует за курсором каждый кадр.
     // Text не трогаем здесь (только Position) — дёшево.
     private void FollowHumidityTooltip()
     {
         if (_humidityTooltip != null && _humidityTooltip.Visible)
-            _humidityTooltip.Position = GetGlobalMousePosition() + new Vector2(16, 16);
+            _humidityTooltip.GlobalPosition = GetViewport().GetMousePosition() + new Vector2(16, 16);
+    }
+
+    // §20.7: цифра под курсором протухает если мышь стоит, а камера едет (WASD).
+    // SelectTool дёргает Show* только при смене клетки — перезапрашиваем сами
+    // раз в 0.25с для клетки под курсором (дешёво, 4 раза в секунду).
+    private float _soilTipTimer;
+
+    private void TickSoilTooltip()
+    {
+        _soilTipTimer += 1.0f / 60.0f;
+        if (_soilTipTimer < 0.25f)
+            return;
+        _soilTipTimer = 0f;
+        var map = MapRenderer.Instance;
+        if (map?.MapData?.Ground == null)
+            return;
+        // Мышь вьюпорта → мировые координаты через камеру.
+        Vector2 world = GetViewport().GetCamera2D()?.GetScreenCenterPosition()
+            + (GetViewport().GetMousePosition() - GetViewport().GetVisibleRect().Size * 0.5f)
+                / (GetViewport().GetCamera2D()?.Zoom.X ?? 1f) ?? Vector2.Zero;
+        int tx = (int)(world.X / MapRenderer.TileSizePx);
+        int ty = (int)(world.Y / MapRenderer.TileSizePx);
+        var ground = map.MapData.Ground;
+        if ((uint)tx >= (uint)ground.GetLength(0) || (uint)ty >= (uint)ground.GetLength(1))
+        {
+            if (_humidityTooltip != null)
+                _humidityTooltip.Visible = false;
+            return;
+        }
+        if (map.CurrentMapMode == MapMode.Humidity)
+            ShowHumidityAt(tx, ty);
+        else if (map.CurrentMapMode == MapMode.Fertility)
+            ShowFertilityAt(tx, ty);
     }
 
     public override void _Process(double delta)
     {
         FollowHumidityTooltip();
+        TickSoilTooltip();
         _statsSyncTimer += (float)delta;
         // П.8: некритичные показатели (население/занятость) — 1с вместо 250мс,
         // время мира — отдельно 0.5с (дёргать Label каждый кадр незачем).
@@ -543,6 +702,8 @@ public partial class HUDController : Control
 
     private void RefreshStats()
     {
+        // E67: замер HUD-обновлений — Label-строки сами могут тормозить.
+        var swH = System.Diagnostics.Stopwatch.StartNew();
         int total = _totalPopulation;
         int unemployed = JobDispatcher.Instance.IdleWorkers.TotalIdleCount;
         int employed = Math.Max(0, total - unemployed);
@@ -550,16 +711,13 @@ public partial class HUDController : Control
         string pop = FormatAmount(total);
         if (pop != _lastPopText) { _lastPopText = pop; if (_populationLabel != null) _populationLabel.Text = pop; }
         string emp = FormatAmount(employed) + "/" + FormatAmount(unemployed);
-        // П.5: GPU-редукция (средний голод/настроение) — ТОЛЬКО если есть свежий
-        // снапшот (Last != null). Без GPU строка бит-в-бит как раньше. Существующий
-        // путь (тоталы, Text-при-изменении) не тронут: формат дописывается в ту же
-        // строку, новых Node в сцене нет.
-        var stats = GpuStatsReduce.Instance.Last;
-        if (stats != null)
-            emp += $" H:{stats.AvgHunger:0} M:{stats.AvgMood:0}";
+        // GPU-трек удалён (GpuStatsReduce): строка employment — бит-в-бит как раньше.
         if (_employmentLabel != null && _employmentLabel.Text != emp) _employmentLabel.Text = emp;
 
         UpdateWorldTimeDisplayThrottled();
+        swH.Stop();
+        if (swH.Elapsed.TotalMilliseconds > 1.0)
+            Game.Core.SimEvents.Record("render", "HUD.RefreshStats", (float)swH.Elapsed.TotalMilliseconds);
     }
 
     private void UpdateWorldTimeDisplayThrottled()
@@ -602,13 +760,20 @@ public partial class HUDController : Control
                 handled = true;
             }
 
+            // T7: 1-в-1 как garden — Escape закрывает рабочую зону.
+            if (WorkZoneController.Instance != null && WorkZoneController.Instance.IsOpen)
+            {
+                WorkZoneManager.Instance.DeselectZone();
+                handled = true;
+            }
+
             if ((_selectionContainer != null && _selectionContainer.Visible) || _activeToolButton != null || (_priorityBoard != null && _priorityBoard.IsOpen))
             {
                 CloseAllMenus();
                 if (_priorityBoard != null && _priorityBoard.IsOpen)
                 {
                     _priorityBoard.Close();
-                    if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen))
+                    if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen) && (WorkZoneController.Instance == null || !WorkZoneController.Instance.IsOpen))
                         _amountOfResourcesPanel.Visible = true;
                 }
                 ClearActiveToolButton();
@@ -783,29 +948,199 @@ public partial class HUDController : Control
         });
     }
 
-    private void OnWarehouseAreaPressed()
+    /// <summary>
+    /// Кнопки мебели (кровать/скамья/тумбочка) в IndustrialContainer.
+    /// Сцену не трогаем — создаём кодом 1-в-1 как WorkTableButton (100x100).
+    /// Иконки грузятся по тем же UID, что кладутся в мир.
+    /// </summary>
+    private void SetupFurnitureButtons()
     {
-        ToggleToolButton(_warehouseAreaButton, () =>
+        if (_industrialContainer == null) return;
+        _bedButton = CreateFurnitureButton("BedButton", "uid://0uf8ok6dxhyi", OnBedPressed);
+        _benchButton = CreateFurnitureButton("BenchButton", "uid://bi667xckuklur", OnBenchPressed);
+        _nightstandButton = CreateFurnitureButton("NightstandButton", "uid://ir5jk74j01fg", OnNightstandPressed);
+    }
+
+    private Button CreateFurnitureButton(string nodeName, string textureUid, Action onPressed)
+    {
+        var btn = new Button { Name = nodeName, CustomMinimumSize = new Vector2(100, 100), ExpandIcon = true };
+        try
+        {
+            var tex = ResourceLoader.Load<Texture2D>(textureUid);
+            if (tex != null) btn.Icon = tex;
+        }
+        catch { /* без иконки кнопка всё равно работает (текст ниже) */ }
+        if (btn.Icon == null) btn.Text = nodeName;
+        btn.MouseFilter = MouseFilterEnum.Stop;
+        btn.Pressed += () => onPressed();
+        _industrialContainer.AddChild(btn);
+        return btn;
+    }
+
+    /// <summary>
+    /// Кнопка добычи камня в OrderContainer рядом с рубкой.
+    /// Иконка — первый квадрант stone.png (тот же, что падает на землю).
+    /// </summary>
+    private void SetupStoneMiningButton()
+    {
+        if (_orderContainer == null) return;
+        _stoneMiningButton = new Button { Name = "StoneMiningButton", CustomMinimumSize = new Vector2(100, 100), ExpandIcon = true };
+        try
+        {
+            var atlas = ResourceLoader.Load<Texture2D>("uid://du6ur8mvtu3le");
+            if (atlas != null)
+                _stoneMiningButton.Icon = new AtlasTexture
+                {
+                    Atlas = atlas,
+                    Region = new Rect2(0, 0, MapRenderer.TileSizePx, MapRenderer.TileSizePx)
+                };
+        }
+        catch { }
+        if (_stoneMiningButton.Icon == null) _stoneMiningButton.Text = "Камень";
+        _stoneMiningButton.MouseFilter = MouseFilterEnum.Stop;
+        _stoneMiningButton.Pressed += OnStoneMiningPressed;
+        _orderContainer.AddChild(_stoneMiningButton);
+    }
+
+    private void StartFurnitureBuild(Button button, BuildingType type, int sourceId)
+    {
+        ToggleToolButton(button, () =>
         {
             var interaction = PlayerInteractionManager.Instance;
-            if (interaction == null) return;
+            var mapRenderer = MapRenderer.Instance;
+            if (interaction == null || mapRenderer?.WallBuildManager == null || mapRenderer?.MapData == null) return;
 
-            var warehouseTool = new WarehouseTool(interaction.Selection);
-            interaction.SetTool(warehouseTool);
+            // Ghost мебели — через building-слой (источники 14–16 только там).
+            var tool = new BuildTool(
+                mapRenderer.WallBuildManager,
+                mapRenderer.GhostLayer,
+                mapRenderer.MapData,
+                type,
+                sourceId
+            );
+            interaction.SetTool(tool);
         });
+    }
+
+    private void OnBedPressed() => StartFurnitureBuild(_bedButton, BuildingType.Bed, MapRenderer.SourceBed);
+    private void OnBenchPressed() => StartFurnitureBuild(_benchButton, BuildingType.Bench, MapRenderer.SourceBench);
+    private void OnNightstandPressed() => StartFurnitureBuild(_nightstandButton, BuildingType.Nightstand, MapRenderer.SourceNightstand);
+
+    private void OnStoneMiningPressed()
+    {
+        ToggleToolButton(_stoneMiningButton, () =>
+        {
+            var interaction = PlayerInteractionManager.Instance;
+            var mapRenderer = MapRenderer.Instance;
+            if (interaction == null || mapRenderer?.MapData == null) return;
+
+            var stoneTool = new StoneMiningTool(interaction.Selection, mapRenderer.MapData);
+            interaction.SetTool(stoneTool);
+        });
+    }
+
+    private void OnWarehouseAreaPressed()
+    {
+        // Выбор варианта зоны "Склад": открываем универсальное окно строительства.
+        _buildMenuController?.Open("warehouse", "Склад");
     }
 
     private void OnFarmingPressed()
     {
-        ToggleToolButton(_farmingButton, () =>
-        {
-            var interaction = PlayerInteractionManager.Instance;
-            var mapRenderer = MapRenderer.Instance;
-            if (interaction == null || mapRenderer?.MapData == null || mapRenderer?.WallBuildManager == null) return;
+        // Выбор варианта зоны "Ферма": открываем универсальное окно строительства.
+        _buildMenuController?.Open("farming", "Ферма");
+    }
 
-            var farmTool = new FarmingTool(interaction.Selection, mapRenderer.MapData, mapRenderer.WallBuildManager);
-            interaction.SetTool(farmTool);
-        });
+    private ZoneDraftTool _draftTool;
+
+    /// <summary>Идёт ли черчение зоны (черновик активен как инструмент).</summary>
+    public bool IsDrafting => _draftTool != null
+        && PlayerInteractionManager.Instance != null
+        && !PlayerInteractionManager.Instance.IsDefaultTool;
+
+    /// <summary>
+    /// ZoneButton окна: включить черновик зоны+стен. Окно остаётся открытым.
+    /// Повторный нажим — ничего не сносит (черновик живёт дальше).
+    /// </summary>
+    public void StartZoneDraft(string zoneId)
+    {
+        var interaction = PlayerInteractionManager.Instance;
+        var mapRenderer = MapRenderer.Instance;
+        if (interaction == null || mapRenderer?.MapData == null || mapRenderer?.GhostLayer == null)
+            return;
+        if (string.IsNullOrEmpty(zoneId))
+            zoneId = _buildMenuController?.CurrentZoneId ?? "";
+        // Повторный нажим той же зоны — не пересоздаём инструмент:
+        // иначе черновик и призрак сносились (баг пропажи зон).
+        if (_draftTool != null && _draftTool.ZoneKind == zoneId)
+            return;
+        // Смена типа зоны — старый черновик аккуратно гасим.
+        if (_draftTool != null)
+        {
+            _draftTool.Cancel();
+            _draftTool = null;
+        }
+        _draftTool = new ZoneDraftTool(
+            interaction.Selection, mapRenderer.MapData, mapRenderer.GhostLayer, zoneId);
+        if (_buildMenuController != null)
+        {
+            _draftTool.SetWallMaterial(_buildMenuController.SelectedMaterialId);
+            _draftTool.SetDoorMode(_buildMenuController.DoorMode);
+        }
+        interaction.SetTool(_draftTool);
+    }
+
+    /// <summary>DoorButton окна: тумблер режима проёма в активном черновике.</summary>
+    public void SetDraftDoorMode(bool enabled)
+    {
+        _draftTool?.SetDoorMode(enabled);
+    }
+
+    /// <summary>Попап материалов: сменить материал в активном черновике.</summary>
+    public void SetDraftMaterial(string materialId)
+    {
+        _draftTool?.SetWallMaterial(materialId);
+    }
+
+    /// <summary>CheckMark окна: коммит черновика, окно закрыть, инструмент сбросить.</summary>
+    public void ConfirmDraft()
+    {
+        bool committed = _draftTool != null && _draftTool.Commit();
+        _draftTool = null;
+        _buildMenuController?.ResetDoorMode();
+        _buildMenuController?.Close();
+        if (committed)
+            PlayerInteractionManager.Instance?.ResetToDefault();
+    }
+
+    /// <summary>Дверь включилась: остановить черчение, но черновик не сносить.</summary>
+    public void StopDraftDrawing()
+    {
+        _draftTool?.StopDrawing();
+    }
+
+    /// <summary>esc окна: отмена черновика БЕЗ удаления (ничего не ставили), инструмент сбросить.</summary>
+    public void CancelDraft()
+    {
+        if (_draftTool != null)
+        {
+            _draftTool.Cancel();
+            _draftTool = null;
+        }
+        PlayerInteractionManager.Instance?.ResetToDefault();
+    }
+
+    /// <summary>Крестик окна: черновик уже поставлен в мир — удалить чертежи+зону.</summary>
+    public void DiscardDraft()
+    {
+        if (_draftTool != null)
+        {
+            _draftTool.Discard();
+            _draftTool = null;
+        }
+        _buildMenuController?.ResetDoorMode();
+        _buildMenuController?.Close();
+        PlayerInteractionManager.Instance?.ResetToDefault();
     }
 
     private void OnTreeFellingPressed()

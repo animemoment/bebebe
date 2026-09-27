@@ -33,11 +33,16 @@ public sealed class HierarchicalPathfinder
     private const int RegionShift = 4;
     private const int RegionSize = 1 << RegionShift;
 
-    // Стоимость прохождения клетки: 0 — блокирована (стена), 1 — трава,
-    // 3 — вода (в движении вода лишь замедляет, поэтому проходима, но дорогая).
+    // Стоимость прохождения клетки: 0 — блокирована (стена), 1 — трава.
+    // #13: CostWater=6 — это ФЛАГ типа клетки («вода»), а НЕ множитель пути.
+    // Реальный штраф воды — ×3 к шагу (step *= 3 ниже: 10→30 / 14→42).
+    // _cost[] как вес напрямую использовать нельзя (дало бы ×6 вместо ×3).
     private const byte CostBlocked = 0;
     private const byte CostGrass = 1;
-    private const byte CostWater = 3;
+    private const byte CostWater = 6;
+    // Сколько водных тайлов подряд LOS прощает напрямик (мелкая лужа/брод).
+    // Длиннее — строим иерархический путь с водным штрафом (обход).
+    private const int MaxDirectWaterTiles = 3;
 
     // Лимиты кэша (простая политика: при переполнении — полная очистка).
     private const int MaxRegionPathCache = 32768;
@@ -83,6 +88,14 @@ public sealed class HierarchicalPathfinder
         public readonly int[] ROpen = new int[4096];
         public readonly bool[] RClosed = new bool[4096];
         public readonly int[] RValue = new int[4096];
+
+        // PERF F4: scratch для TryFindPath/SmoothPath. Переиспользуемые буферы
+        // вместо new int[]/List<int>/ToArray в горячем пути. Капасити: якоря ≤ 256
+        // переходов регионов; сборка пути и сглаживание ≤ 4096 точек.
+        public readonly int[] Anchor = new int[512];
+        public readonly int[] PathScratch = new int[4096];
+        public readonly int[] SmoothScratch = new int[4096];
+        public readonly int[] RevScratch = new int[4096];
     }
 
     private readonly ThreadLocal<SearchBuffers> _buffers = new(() => new SearchBuffers());
@@ -116,11 +129,23 @@ public sealed class HierarchicalPathfinder
 
     /// <summary>
     /// Сбрасывает кэши и помечает оверлей на перестройку (при постройке стен).
+    /// Дебаунс по wall-clock: 100 завершений стройки в один тик раньше давали
+    /// 100 последовательных Clear (каждый — снос 65k entries под _buildLock).
+    /// Версия в ключе кэша не нужна: Clear под гейтом достаточно редок.
     /// </summary>
+    private long _lastInvalidateMs;
+
     public void Invalidate()
     {
+        long now = System.Environment.TickCount64;
+        if (now - Volatile.Read(ref _lastInvalidateMs) < 200)
+            return;
         lock (_buildLock)
         {
+            now = System.Environment.TickCount64;
+            if (now - _lastInvalidateMs < 200)
+                return;
+            _lastInvalidateMs = now;
             _buildVersion++;
             _cost = null;
             _regionPathCache.Clear();
@@ -152,7 +177,15 @@ public sealed class HierarchicalPathfinder
         }
 
         // Прямая видимость — дешёвый путь без построения.
-        if (HasLineOfSight(sx, sy, tx, ty))
+        // НО: вода в LOS раньше игнорировалась — агент шёл напрямик через
+        // озеро/реку (только ×0.45 к скорости) вместо обхода. Если водный
+        // отрезок длиннее порога — идём в иерархический A* (у него вода
+        // стоит ×3 и маршрут обогнёт водоём, где это выгодно).
+        // #14: один проход Брезенхема вместо двух (HasLineOfSight +
+        // WaterCrossingLength дублировали обход) — LineOfSightWithWater
+        // возвращает и флаг стен, и длину водного отрезка сразу.
+        if (LineOfSightWithWater(sx, sy, tx, ty, out int directWater)
+            && directWater <= MaxDirectWaterTiles)
             return true;
 
         int sr = RegionOfCell(sx, sy);
@@ -164,9 +197,22 @@ public sealed class HierarchicalPathfinder
 
         int regionCount = regionPath.Length;
 
-        // Выбор порталов на каждом переходе (якорь в клетке региона обхода).
-        int[] anchorX = new int[regionCount - 1];
-        int[] anchorY = new int[regionCount - 1];
+        // PERF F4: якоря и сборка пути — в thread-local scratch (без new int[]/List
+        // на запрос: ~500 запросов × 6 аллокаций за кадр на 100x давили Gen0 и
+        // останавливали все потоки, включая рендер). Кэш regionPath — shared
+        // (ConcurrentDictionary), но scratch — per-thread, гонки нет.
+        var scratch = _buffers.Value;
+        // anchorPairs хранится парами (x,y) в одном массиве: [x0..xn, y0..yn].
+        int anchorPairs = regionCount - 1;
+        // @destroyer: anchorPairs<=0 невозможен (regionPath.Length>=2 проверен
+        // выше), но оставляем guard — дешевле, чем доказывать инвариант.
+        // Переполнение int при anchorPairs*2: regionCount ограничен числом
+        // регионов карты (≤1024), переполнения нет.
+        if (anchorPairs <= 0 || anchorPairs * 2 > scratch.Anchor.Length)
+            return false; // регион-путь патологичен — retry на следующем кадре
+        Span<int> anchors = scratch.Anchor.AsSpan(0, anchorPairs * 2);
+        Span<int> anchorX = anchors.Slice(0, anchorPairs);
+        Span<int> anchorY = anchors.Slice(anchorPairs, anchorPairs);
 
         for (int t = 0; t < regionCount - 1; t++)
         {
@@ -177,7 +223,8 @@ public sealed class HierarchicalPathfinder
             }
         }
 
-        var path = new List<int>(64);
+        Span<int> path = scratch.PathScratch;
+        int pathLen = 0;
 
         for (int i = 0; i < regionCount; i++)
         {
@@ -195,18 +242,27 @@ public sealed class HierarchicalPathfinder
 
             // Копируем сегмент, исключая его первый элемент (либо это старт,
             // либо якорь, уже добавленный предыдущим сегментом).
+            if (pathLen + seg.Length - 1 > path.Length)
+                return false; // путь длиннее scratch — retry (кэш сегментов цел)
             for (int k = 1; k < seg.Length; k++)
             {
-                path.Add(seg[k]);
+                path[pathLen++] = seg[k];
             }
         }
 
-        if (path.Count == 0)
+        if (pathLen == 0)
             return true;
 
-        int[] result = SmoothPath(sx, sy, tx, ty, path);
-        if (result == null || result.Length == 0)
+        int smoothed = SmoothPath(sx, sy, tx, ty, path.Slice(0, pathLen), scratch.SmoothScratch);
+        if (smoothed <= 0)
             return false;
+
+        // Единственная аллокация на УСПЕШНЫЙ немгновенный путь: точный sized-массив
+        // результата. Scratch не отдаём наружу — его перезапишет следующий
+        // запрос этого потока. Сегменты GetSegmentCached уже закэшированы
+        // (int[] в ConcurrentDictionary), их аллокации амортизированы.
+        var result = new int[smoothed];
+        scratch.SmoothScratch.AsSpan(0, smoothed).CopyTo(result);
 
         outPath = result;
         count = result.Length;
@@ -240,6 +296,7 @@ public sealed class HierarchicalPathfinder
                 for (int x = 0; x < w; x++)
                 {
                     byte c;
+                    // Камень проходим (как трава): россыпь не блокирует путь.
                     if (_ctx.SolidWalls[x, y] || _ctx.Ground[x, y] == TileType.Mountain)
                         c = CostBlocked;
                     else if (_ctx.Ground[x, y] == TileType.Water)
@@ -484,16 +541,29 @@ public sealed class HierarchicalPathfinder
 
     private int[] GetRegionPathCached(int sr, int tr)
     {
+        // P0-1: без счётчиков кэша — вызываются из тысяч A* в параллельных фазах.
         int key = sr * 4096 + tr;
         if (_regionPathCache.TryGetValue(key, out int[] cached))
+        {
             return cached;
+        }
 
         int[] path = ComputeRegionPath(sr, tr);
         if (path == null)
             return null;
 
+        // Переполнение: удаляем четверть старых записей вместо Clear всего кэша
+        // (Clear под нагрузкой = thundering herd: все потоки одновременно идут
+        // в ComputeRegionPath/ComputeLocalSegment).
         if (_regionPathCache.Count >= MaxRegionPathCache)
-            _regionPathCache.Clear();
+        {
+            int toRemove = MaxRegionPathCache / 4;
+            foreach (var k in _regionPathCache.Keys)
+            {
+                if (toRemove-- <= 0) break;
+                _regionPathCache.TryRemove(k, out _);
+            }
+        }
         _regionPathCache[key] = path;
         return path;
     }
@@ -557,19 +627,24 @@ public sealed class HierarchicalPathfinder
         if (parent[tr] < 0 && sr != tr)
             return null;
 
-        // Восстановление.
-        var rev = new List<int>(16);
+        // Восстановление в RevScratch (без List<int>(16)): цепочка parent
+        // длиной ≤ числа регионов. Кэшируем shared — возвращаем sized-копию.
+        // @destroyer: parent-цикл теоретически возможен при data race, поэтому
+        // счётчик итераций ограничен RevScratch.Length — зацикливания нет.
+        var rb = _buffers.Value;
+        int rn = 0;
         int curNode = tr;
-        while (curNode >= 0)
+        while (curNode >= 0 && rn < rb.RevScratch.Length)
         {
-            rev.Add(curNode);
+            rb.RevScratch[rn++] = curNode;
             curNode = parent[curNode];
         }
-        int n = rev.Count;
-        var result = new int[n];
-        for (int i = 0; i < n; i++)
+        if (curNode >= 0)
+            return null; // цепочка длиннее scratch — патологично, без пути
+        var result = new int[rn];
+        for (int i = 0; i < rn; i++)
         {
-            result[i] = rev[n - 1 - i];
+            result[i] = rb.RevScratch[rn - 1 - i];
         }
         return result;
     }
@@ -622,15 +697,26 @@ public sealed class HierarchicalPathfinder
         int packedTo = ty * _mapWidth + tx;
         ulong key = ((ulong)packedFrom << 32) | (uint)packedTo;
 
+        // P0-1: без счётчиков кэша (горячий параллельный путь).
         if (_segmentCache.TryGetValue(key, out int[] cached))
+        {
             return cached;
+        }
 
         int[] seg = ComputeLocalSegment(fx, fy, tx, ty);
         if (seg == null)
             return null;
 
+        // Переполнение: четверть вместо Clear (thundering herd).
         if (_segmentCache.Count >= MaxSegmentCache)
-            _segmentCache.Clear();
+        {
+            int toRemove = MaxSegmentCache / 4;
+            foreach (var k in _segmentCache.Keys)
+            {
+                if (toRemove-- <= 0) break;
+                _segmentCache.TryRemove(k, out _);
+            }
+        }
         _segmentCache[key] = seg;
         return seg;
     }
@@ -818,21 +904,24 @@ public sealed class HierarchicalPathfinder
         if (g[tidx] == int.MaxValue)
             return null;
 
-        // Восстановление пути (включая старт и цель).
-        var rev = new List<int>(16);
+        // Восстановление пути (включая старт и цель) в RevScratch без List.
+        // Длина ограничена cap окна (≤ LocalCapacity); результат — sized-копия
+        // для shared кэша сегментов.
+        int n = 0;
         int cur = tidx;
-        while (cur != -1)
+        while (cur != -1 && n < b.RevScratch.Length)
         {
-            rev.Add(cur);
+            b.RevScratch[n++] = cur;
             if (cur == sidx)
                 break;
             cur = parent[cur];
         }
-        int n = rev.Count;
+        if (n == 0 || (n >= b.RevScratch.Length && cur != -1 && cur != sidx))
+            return null;
         var result = new int[n];
         for (int i = 0; i < n; i++)
         {
-            int loc = rev[n - 1 - i];
+            int loc = b.RevScratch[n - 1 - i];
             int lx = loc % ww + minX;
             int ly = loc / ww + minY;
             result[i] = ly * _mapWidth + lx;
@@ -865,37 +954,102 @@ public sealed class HierarchicalPathfinder
     /// одна клетка по пути не блокирована стеной (вода допустима — движение
     /// напрямую сквозь воду разрешено, лишь медленнее).
     /// </summary>
+    /// <summary>
+    /// Целочисленный Брезенхем: ~5ns на клетку вместо ~30 (float-деление +
+    /// Math.Round ~15ns на шаг). SmoothPath делает LOS на каждый узел пути —
+    /// при 200 узлах × 30 шагов это был главный жор сглаживания.
+    /// </summary>
     private bool HasLineOfSight(int x0, int y0, int x1, int y1)
     {
         int dx = Math.Abs(x1 - x0);
         int dy = Math.Abs(y1 - y0);
-        int steps = Math.Max(dx, dy);
-        if (steps == 0)
-            return true;
-
-        for (int i = 1; i <= steps; i++)
+        int sx = x0 < x1 ? 1 : -1;
+        int sy = y0 < y1 ? 1 : -1;
+        int err = dx - dy;
+        while (true)
         {
-            int x = (int)Math.Round(x0 + ((float)(x1 - x0) * i) / steps);
-            int y = (int)Math.Round(y0 + ((float)(y1 - y0) * i) / steps);
-            if (IsCellBlocked(x, y))
+            if (IsCellBlocked(x0, y0))
                 return false;
+            if (x0 == x1 && y0 == y1)
+                return true;
+            int e2 = err << 1;
+            if (e2 > -dy) { err -= dy; x0 += sx; }
+            if (e2 < dx) { err += dx; y0 += sy; }
         }
-        return true;
+    }
+
+    /// <summary>
+    /// Длина водного отрезка вдоль LOS (тайлы воды по Брезенхему).
+    /// Стены здесь не проверяем — их уже отсеял HasLineOfSight.
+    /// #14: оставлен для совместимости; горячий путь TryFindPath использует
+    /// LineOfSightWithWater (один проход вместо двух).
+    /// </summary>
+    private int WaterCrossingLength(int x0, int y0, int x1, int y1)
+    {
+        int dx = Math.Abs(x1 - x0);
+        int dy = Math.Abs(y1 - y0);
+        int sx = x0 < x1 ? 1 : -1;
+        int sy = y0 < y1 ? 1 : -1;
+        int err = dx - dy;
+        int water = 0;
+        while (true)
+        {
+            if ((uint)x0 < (uint)_mapWidth && (uint)y0 < (uint)_mapHeight
+                && _cost[y0 * _mapWidth + x0] == CostWater)
+                water++;
+            if (x0 == x1 && y0 == y1)
+                return water;
+            int e2 = err << 1;
+            if (e2 > -dy) { err -= dy; x0 += sx; }
+            if (e2 < dx) { err += dx; y0 += sy; }
+        }
+    }
+
+    /// <summary>
+    /// #14: совмещённый LOS + подсчёт воды за ОДИН проход Брезенхема.
+    /// Возвращает false при первой же стене; иначе true + число водных
+    /// тайлов отрезка в <paramref name="waterLength"/>. Экономит ~50% работы
+    /// прямого коридора против пары HasLineOfSight + WaterCrossingLength.
+    /// </summary>
+    private bool LineOfSightWithWater(int x0, int y0, int x1, int y1, out int waterLength)
+    {
+        waterLength = 0;
+        int dx = Math.Abs(x1 - x0);
+        int dy = Math.Abs(y1 - y0);
+        int sx = x0 < x1 ? 1 : -1;
+        int sy = y0 < y1 ? 1 : -1;
+        int err = dx - dy;
+        while (true)
+        {
+            if (IsCellBlocked(x0, y0))
+                return false;
+            if ((uint)x0 < (uint)_mapWidth && (uint)y0 < (uint)_mapHeight
+                && _cost[y0 * _mapWidth + x0] == CostWater)
+                waterLength++;
+            if (x0 == x1 && y0 == y1)
+                return true;
+            int e2 = err << 1;
+            if (e2 > -dy) { err -= dy; x0 += sx; }
+            if (e2 < dx) { err += dx; y0 += sy; }
+        }
     }
 
     /// <summary>
     /// Прореживает детальный путь: оставляет только точки поворота, где
     /// прямая видимость между последовательными опорными точками сохраняется.
+    /// PERF F4: zero-alloc — пишет в <paramref name="destination"/> (thread-local
+    /// scratch вызывателя), возвращает число точек. Семантика 1-в-1 со старым
+    /// List-вариантом (включая финал и fallback на последнюю точку).
     /// </summary>
-    private int[] SmoothPath(int sx, int sy, int tx, int ty, List<int> path)
+    private int SmoothPath(int sx, int sy, int tx, int ty, Span<int> path, Span<int> destination)
     {
-        var result = new List<int>(Math.Min(path.Count, 32));
+        int outLen = 0;
         int curX = sx;
         int curY = sy;
         int lastX = -1;
         int lastY = -1;
 
-        for (int i = 0; i < path.Count; i++)
+        for (int i = 0; i < path.Length; i++)
         {
             int packed = path[i];
             int px = packed % _mapWidth;
@@ -910,7 +1064,9 @@ public sealed class HierarchicalPathfinder
 
             if (lastX >= 0)
             {
-                result.Add(lastY * _mapWidth + lastX);
+                if ((uint)outLen >= (uint)destination.Length)
+                    return 0; // scratch переполнен — вызыватель retry'ит
+                destination[outLen++] = lastY * _mapWidth + lastX;
                 curX = lastX;
                 curY = lastY;
             }
@@ -924,19 +1080,23 @@ public sealed class HierarchicalPathfinder
         // Финал: марш мимо последней опорной к цели.
         if (HasLineOfSight(curX, curY, tx, ty))
         {
-            result.Add(ty * _mapWidth + tx);
+            if ((uint)outLen >= (uint)destination.Length)
+                return 0;
+            destination[outLen++] = ty * _mapWidth + tx;
         }
         else if (lastX >= 0 && !(lastX == tx && lastY == ty))
         {
-            result.Add(lastY * _mapWidth + lastX);
+            if ((uint)outLen >= (uint)destination.Length)
+                return 0;
+            destination[outLen++] = lastY * _mapWidth + lastX;
         }
-        else if (result.Count == 0)
+        else if (outLen == 0)
         {
-            result.Add(path[path.Count - 1]);
+            if (path.Length == 0 || destination.Length == 0)
+                return 0;
+            destination[outLen++] = path[path.Length - 1];
         }
 
-        if (result.Count == 0)
-            return null;
-        return result.ToArray();
+        return outLen;
     }
 }

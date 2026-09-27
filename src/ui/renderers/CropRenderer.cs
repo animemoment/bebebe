@@ -21,6 +21,9 @@ public partial class CropRenderer : Node2D
     private readonly MultiMesh[] _multiMeshes = new MultiMesh[4];
     private readonly float[][] _renderBuffers = new float[4][];
 
+    /// <summary>Тени ростков: общий рендерер ставит Main, тикает солнцем.</summary>
+    public ItemShadowRenderer ItemShadows { get; set; }
+
     public override void _Ready()
     {
         ZIndex = 6; // Поверх грядок (ZIndex=0..5), под агентами (ZIndex=10)
@@ -99,6 +102,10 @@ public partial class CropRenderer : Node2D
                 }
 
                 _multiMeshes[stage].Buffer = buffer;
+
+                // Ростки 3-4 стадии выше — им тень, мелочь 1-2 пропускаем (Syx early-out).
+                if (stage >= 2)
+                    ItemShadows?.PushSpots(positions, count, CropSize);
             }
         }
     }

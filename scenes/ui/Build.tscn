@@ -1,0 +1,183 @@
+[gd_scene format=3 uid="uid://coy1wcm3a47uo"]
+
+[ext_resource type="Texture2D" uid="uid://cj4xotk0mcyx4" path="res://ui/assets/textures/icons/ZonesIcon.png" id="1_3m0vb"]
+[ext_resource type="Texture2D" uid="uid://cla88bco32h8t" path="res://ui/assets/textures/icons/BuildIcon/maerialVariant.png" id="1_7y32b"]
+[ext_resource type="Texture2D" uid="uid://bvpkdy03fk5sw" path="res://ui/assets/textures/icons/BuildIcon/door.png" id="1_ukacn"]
+[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="2_4ascc"]
+[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="3_5g1wv"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4pfqy"]
+bg_color = Color(0.0051989057, 0.005198907, 0.005198903, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4ascc"]
+bg_color = Color(0, 0, 0, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_olvik"]
+bg_color = Color(0.047557652, 0.047557652, 0.047557607, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_5g1wv"]
+bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_g8rbv"]
+bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+
+[node name="Control" type="Control" unique_id=193924575]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="HBoxContainer3" type="HBoxContainer" parent="." unique_id=1941492016]
+layout_mode = 0
+offset_top = -280.0
+offset_right = 544.0
+offset_bottom = -230.0
+theme_override_constants/separation = 63
+
+[node name="Button" type="Button" parent="HBoxContainer3" unique_id=1302253801]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Button2" type="Button" parent="HBoxContainer3" unique_id=1087056401]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Button3" type="Button" parent="HBoxContainer3" unique_id=574349315]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Button4" type="Button" parent="HBoxContainer3" unique_id=934158816]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Button5" type="Button" parent="HBoxContainer3" unique_id=326449213]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Panel2" type="Panel" parent="." unique_id=1796129257]
+layout_mode = 0
+offset_top = 73.0
+offset_bottom = 73.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_4pfqy")
+
+[node name="ScrollContainer" type="ScrollContainer" parent="." unique_id=1239572011]
+layout_mode = 0
+offset_top = 73.0
+offset_right = 542.0
+offset_bottom = 1077.0
+
+[node name="PanelContainer" type="PanelContainer" parent="ScrollContainer" unique_id=735098447]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_4ascc")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="ScrollContainer/PanelContainer" unique_id=1686993654]
+layout_mode = 2
+theme_override_constants/separation = 60
+
+[node name="HBoxContainer" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=997990025]
+layout_mode = 2
+theme_override_constants/separation = 164
+
+[node name="DoorButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=1831715510]
+layout_mode = 2
+icon = ExtResource("1_ukacn")
+
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/DoorButton" unique_id=1331986032]
+layout_mode = 0
+offset_top = 69.0
+offset_right = 58.0
+offset_bottom = 92.0
+text = "Дверь"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="WallMaterialButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=780160551]
+layout_mode = 2
+icon = ExtResource("1_7y32b")
+
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/WallMaterialButton" unique_id=1385468371]
+layout_mode = 0
+offset_left = -14.0
+offset_top = 69.0
+offset_right = 79.0
+offset_bottom = 118.0
+text = "Материал
+стены"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="ZoneButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=321630253]
+custom_minimum_size = Vector2(64, 64)
+layout_mode = 2
+icon = ExtResource("1_3m0vb")
+
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/ZoneButton" unique_id=131844693]
+layout_mode = 0
+offset_top = 69.0
+offset_right = 58.0
+offset_bottom = 92.0
+text = "Зона"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Name2" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=556073215]
+layout_mode = 2
+theme_override_font_sizes/font_size = 30
+theme_override_styles/normal = SubResource("StyleBoxFlat_olvik")
+text = "Строительные объекты"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1143051463]
+layout_mode = 2
+theme_override_constants/separation = 63
+
+[node name="Button" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=391276167]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Button2" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=473383483]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Button3" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1642110371]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Button4" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1547243963]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Button5" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=194924075]
+custom_minimum_size = Vector2(50, 50)
+layout_mode = 2
+
+[node name="Name" type="Label" parent="." unique_id=46160512]
+layout_mode = 0
+offset_right = 542.0
+offset_bottom = 73.0
+theme_override_font_sizes/font_size = 30
+theme_override_styles/normal = SubResource("StyleBoxFlat_olvik")
+text = "Строительство"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="esc" type="Button" parent="." unique_id=1578370279]
+layout_mode = 0
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 44.0
+offset_bottom = 44.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_5g1wv")
+icon = ExtResource("2_4ascc")
+expand_icon = true
+
+[node name="CheckMark" type="Button" parent="." unique_id=419955259]
+layout_mode = 0
+offset_left = 542.0
+offset_right = 615.0
+offset_bottom = 73.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_g8rbv")
+icon = ExtResource("3_5g1wv")

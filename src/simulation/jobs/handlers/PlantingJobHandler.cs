@@ -7,7 +7,7 @@ namespace Game.Simulation.Jobs;
 public sealed class PlantingJobHandler : IJobHandler
 {
     private const float PlantDuration = 10.0f; // 10 секунд на посадку
-    private const float ReachDist = 48.0f;
+    private const float ReachDist = 20.0f;
 
     public JobTypeId TypeId => JobTypeId.Planting;
     public JobExecutionType ExecutionType => JobExecutionType.Hauling;
@@ -55,7 +55,7 @@ public sealed class PlantingJobHandler : IJobHandler
                 pool.CurrentJobType[agentIndex] = JobTypeId.None;
             }
             pool.States[agentIndex] = AgentState.Idle;
-            pool.JobSearchTimer[agentIndex] = 4.0f + (float)ctx.Random.NextDouble() * 4.0f;
+            pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
             JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
         }
     }
@@ -72,6 +72,9 @@ public sealed class PlantingJobHandler : IJobHandler
         else if (state == AgentState.Working)
         {
             pool.WorkProgress[agentIndex] += deltaTime;
+            // Визуал посадки: 6 стадий ProcessOfWork.
+            WorkProgressTracker.Instance.ReportFraction(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex],
+                pool.WorkProgress[agentIndex] / PlantDuration);
         }
     }
 
@@ -104,7 +107,7 @@ public sealed class PlantingJobHandler : IJobHandler
             else if (pool.StuckTimer[agentIndex] >= 3.0f)
             {
                 JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
-                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ctx.Random.NextDouble() * 4.0f;
+                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
             }
         }
         else if (state == AgentState.MovingToTarget)
@@ -126,7 +129,7 @@ public sealed class PlantingJobHandler : IJobHandler
                 pool.CarriedItemCount[agentIndex] = 0;
                 pool.CarriedItemId[agentIndex] = ItemId.None;
                 JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
-                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ctx.Random.NextDouble() * 4.0f;
+                pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
             }
         }
         else if (state == AgentState.Working && pool.WorkProgress[agentIndex] >= PlantDuration)
@@ -141,15 +144,16 @@ public sealed class PlantingJobHandler : IJobHandler
             }
 
             CropGrowthManager.Instance.PlantCrop(tx, ty, zoneId);
+            WorkProgressTracker.Instance.Clear(tx, ty);
             pool.CarriedItemCount[agentIndex] = 0;
             pool.CarriedItemId[agentIndex] = ItemId.None;
 
+            // Эталон Farming: stale unregister → освободить claim вручную.
             int jobId = pool.CurrentJobId[agentIndex];
             if (jobId != -1)
             {
-                // RemoveJob уже поправил _unclaimedCount — отдельный
-                // ReleaseWorkerClaim после удачного Unregister удвоил бы счётчик.
-                JobDispatcher.Instance.TryUnregisterJob(jobId);
+                if (!JobDispatcher.Instance.TryUnregisterJob(jobId))
+                    JobDispatcher.Instance.JobIndex.ReleaseWorkerClaim(jobId);
             }
 
             pool.CurrentJobId[agentIndex] = -1;

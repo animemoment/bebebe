@@ -9,19 +9,6 @@ namespace Game.Core;
 /// </summary>
 public static class NoiseGenerator
 {
-    // Мост fBm GPU (пункт 4): MapGenerator — чистый C# без Godot, поэтому прямая
-    // зависимость Core → Simulation/GPU запрещена. Вместо неё — делегат без зависимостей,
-    // который ставит GpuMapBridge.Enable() только на время генерации карты.
-    // Сигнатура: (width, height, seed, baseScale, octaves, lacunarity, gain) → float[,].
-    public static Func<int, int, uint, float, int, float, float, float[,]> FbmOverride = null;
-
-    // Защита от бесконечной рекурсии: GenerateFbmMapGpu при недоступном GPU
-    // сам падает назад на NoiseGenerator.GenerateFbmMap — повторный вход в мост
-    // запрещён, внутренний вызов идёт сразу по CPU-пути. ThreadStatic, т.к.
-    // генерация идёт в одном фоновом Task (MapRenderer), сим мост не видит.
-    [ThreadStatic]
-    private static bool _inFbmOverride;
-
     private static readonly Vector2[] Gradients =
     {
         new(1f, 0f), new(-1f, 0f), new(0f, 1f), new(0f, -1f),
@@ -53,24 +40,7 @@ public static class NoiseGenerator
     /// </summary>
     public static float[,] GenerateFbmMap(int width, int height, uint seed, float baseScale, int octaves = 4, float lacunarity = 2.0f, float gain = 0.5f)
     {
-        // Мост вызывается ПЕРВОЙ строкой, до клампов: клампы делают обе стороны сами
-        // (GPU — в GenerateFbmMapGpu, CPU — ниже при fallback). Исключение моста =
-        // откат на CPU + снятие override, генерацию не роняем.
-        var ov = FbmOverride;
-        if (ov != null && !_inFbmOverride)
-        {
-            try
-            {
-                _inFbmOverride = true;
-                try { return ov(width, height, seed, baseScale, octaves, lacunarity, gain); }
-                // Мост сам не кидает (у GenerateFbmMapGpu внутренний CPU-fallback),
-                // но внешний чужой override может: снимаем его и идём по CPU-пути.
-                catch { FbmOverride = null; }
-                finally { _inFbmOverride = false; }
-            }
-            catch { FbmOverride = null; }
-        }
-
+        // GPU-трек удалён: только CPU-путь.
         var map = new float[width, height];
 
         octaves = Math.Max(1, Math.Min(6, octaves));
@@ -106,22 +76,111 @@ public static class NoiseGenerator
     /// <summary>
     /// Добавляет одну октаву Perlin-шума в аккумулятор map с весом weight.
     /// </summary>
-    private static void AccumulateOctave(float[,] map, int width, int height, uint seed, float scale, float weight)
+    /// <summary>
+    /// XorShift32: детерминированный ГПСЧ для решёток градиентов.
+    /// System.Random не гарантирует стабильность последовательности между
+    /// версиями .NET — здесь стабильность зашита алгоритмом (п.19.3-9).
+    /// </summary>
+    internal static uint XorNext(ref uint state)
+    {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return state;
+    }
+
+    /// <summary>
+    /// Ridged-шум для гор (п.19.1-1): 1-|n| даёт острые хребты и пики вместо
+    /// округлых холмов обычного fBm. Диапазон [0..1], 1 = гребень.
+    /// Подмешивается к heightMap с малым весом (×0.25–0.3), а не заменяет её.
+    /// </summary>
+    public static float[,] GenerateRidgedMap(int width, int height, uint seed, float baseScale, int octaves = 3)
+    {
+        var map = new float[width, height];
+        octaves = Math.Max(1, Math.Min(6, octaves));
+        baseScale = Math.Max(4f, baseScale);
+
+        float ampSum = 0f;
+        float amp = 1f;
+        for (int o = 0; o < octaves; o++)
+        {
+            ampSum += amp;
+            amp *= 0.5f;
+        }
+
+        amp = 1f;
+        float freq = 1f;
+        for (int o = 0; o < octaves; o++)
+        {
+            float scale = baseScale / freq;
+            AccumulateRidgedOctave(map, width, height, seed + (uint)(o * 1013) + 55555u, scale, amp / ampSum);
+            amp *= 0.5f;
+            freq *= 2.1f;
+        }
+        return map;
+    }
+
+    private static void AccumulateRidgedOctave(float[,] map, int width, int height, uint seed, float scale, float weight)
     {
         scale = Math.Max(2f, scale);
-        var rng = new Random(unchecked((int)seed));
+        uint state = seed == 0 ? 0x9E3779B9u : seed;
 
         int gridW = (int)MathF.Ceiling(width / scale) + 2;
         int gridH = (int)MathF.Ceiling(height / scale) + 2;
         var gradientIndices = new int[gridW, gridH];
 
         for (int gx = 0; gx < gridW; gx++)
-        {
             for (int gy = 0; gy < gridH; gy++)
+                gradientIndices[gx, gy] = (int)(XorNext(ref state) % (uint)Gradients.Length);
+
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
             {
-                gradientIndices[gx, gy] = rng.Next(Gradients.Length);
+                float sx = x / scale;
+                float sy = y / scale;
+
+                int x0 = (int)MathF.Floor(sx);
+                int y0 = (int)MathF.Floor(sy);
+                int x1 = Math.Min(x0 + 1, gridW - 1);
+                int y1 = Math.Min(y0 + 1, gridH - 1);
+                x0 = Math.Clamp(x0, 0, gridW - 1);
+                y0 = Math.Clamp(y0, 0, gridH - 1);
+
+                float tx = sx - MathF.Floor(sx);
+                float ty = sy - MathF.Floor(sy);
+
+                float v00 = Dot(gradientIndices[x0, y0], tx, ty);
+                float v10 = Dot(gradientIndices[x1, y0], tx - 1f, ty);
+                float v01 = Dot(gradientIndices[x0, y1], tx, ty - 1f);
+                float v11 = Dot(gradientIndices[x1, y1], tx - 1f, ty - 1f);
+
+                float stx = Smoothstep(tx);
+                float sty = Smoothstep(ty);
+
+                float v0 = Lerp(v00, v10, stx);
+                float v1 = Lerp(v01, v11, stx);
+                float value = Lerp(v0, v1, sty);
+
+                float n = value * 0.707f + 0.5f; // 0..1
+                float ridged = 1f - Math.Abs(n * 2f - 1f); // 0..1, 1 = гребень
+                map[x, y] += ridged * ridged * weight; // квадрат — острые пики
             }
         }
+    }
+
+    private static void AccumulateOctave(float[,] map, int width, int height, uint seed, float scale, float weight)
+    {
+        scale = Math.Max(2f, scale);
+        uint state = seed == 0 ? 0x9E3779B9u : seed;
+
+        int gridW = (int)MathF.Ceiling(width / scale) + 2;
+        int gridH = (int)MathF.Ceiling(height / scale) + 2;
+        var gradientIndices = new int[gridW, gridH];
+
+        for (int gx = 0; gx < gridW; gx++)
+            for (int gy = 0; gy < gridH; gy++)
+                gradientIndices[gx, gy] = (int)(XorNext(ref state) % (uint)Gradients.Length);
 
         for (int x = 0; x < width; x++)
         {

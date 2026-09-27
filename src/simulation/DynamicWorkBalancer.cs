@@ -40,9 +40,19 @@ public static class DynamicWorkBalancer
 
     /// <summary>
     /// Сброс EMA-состояния (например, при смене скорости симуляции).
+    /// Finding 3: оставлен для явного полного сброса; смена скорости в
+    /// AgentSimulationThread идёт через ResetForSpeedChange (EMA хранится).
     /// </summary>
     public static void Reset()
     {
         DynamicWorkScheduler.Shared.Reset();
+    }
+
+    /// <summary>
+    /// Мягкий сброс при смене скорости: очереди чистятся, EMA батчей хранится.
+    /// </summary>
+    public static void ResetForSpeedChange()
+    {
+        DynamicWorkScheduler.Shared.ResetForSpeedChange();
     }
 }

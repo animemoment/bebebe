@@ -19,6 +19,22 @@ public static class GridHelper
         bool[,] treeOnGrass,
         out (int X, int Y) standPos)
     {
+        return TryFindAdjacentWalkable(tx, ty, ground, solidWalls, treeOnGrass, null, out standPos);
+    }
+
+    /// <summary>
+    /// Перегрузка с камнем: клетка стояния не должна быть занята ни деревом, ни россыпью.
+    /// Саму клетку-цель (с камнем/деревом) рабочий не занимает — стоит рядом.
+    /// stoneOnGrass может быть null (старые вызовы без камня).
+    /// </summary>
+    public static bool TryFindAdjacentWalkable(
+        int tx, int ty,
+        TileType[,] ground,
+        bool[,] solidWalls,
+        bool[,] treeOnGrass,
+        bool[,] stoneOnGrass,
+        out (int X, int Y) standPos)
+    {
         int mapWidth = ground.GetLength(0);
         int mapHeight = ground.GetLength(1);
 
@@ -29,7 +45,7 @@ public static class GridHelper
 
             if (nx >= 0 && ny >= 0 && nx < mapWidth && ny < mapHeight)
             {
-                if (ground[nx, ny] == TileType.Grass && !solidWalls[nx, ny] && (treeOnGrass == null || !treeOnGrass[nx, ny]))
+                if (ground[nx, ny] == TileType.Grass && !solidWalls[nx, ny] && (treeOnGrass == null || !treeOnGrass[nx, ny]) && (stoneOnGrass == null || !stoneOnGrass[nx, ny]))
                 {
                     standPos = (nx, ny);
                     return true;
@@ -67,7 +83,8 @@ public static class GridHelper
 
                     if (x >= 0 && y >= 0 && x < mapWidth && y < mapHeight)
                     {
-                        if (ground[x, y] == TileType.Grass && !solidWalls[x, y] && (treeOnGrass == null || !treeOnGrass[x, y]))
+                        bool freeTree = treeOnGrass == null || !treeOnGrass[x, y];
+                        if (ground[x, y] == TileType.Grass && !solidWalls[x, y] && freeTree)
                         {
                             freeTile = (x, y);
                             return true;

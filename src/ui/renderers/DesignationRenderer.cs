@@ -65,6 +65,12 @@ public partial class DesignationRenderer : Node2D
         TreeJobManager.Instance.OnTreeUnmarked += OnTreeUnmarked;
         TreeJobManager.Instance.OnTreesBatchUnmarked += OnTreesBatchUnmarked;
         TreeJobManager.Instance.OnTreeChopped += OnTreeUnmarked;
+        // Метки камня — тем же красным маркером (общий пул _markedPositions).
+        StoneJobManager.Instance.OnStoneMarked += OnTreeMarked;
+        StoneJobManager.Instance.OnStonesBatchMarked += OnTreesBatchMarked;
+        StoneJobManager.Instance.OnStoneUnmarked += OnTreeUnmarked;
+        StoneJobManager.Instance.OnStonesBatchUnmarked += OnTreesBatchUnmarked;
+        StoneJobManager.Instance.OnStoneMined += OnTreeUnmarked;
     }
 
     private void OnTreeMarked((int X, int Y) pos)
@@ -184,6 +190,11 @@ public partial class DesignationRenderer : Node2D
         TreeJobManager.Instance.OnTreeUnmarked -= OnTreeUnmarked;
         TreeJobManager.Instance.OnTreesBatchUnmarked -= OnTreesBatchUnmarked;
         TreeJobManager.Instance.OnTreeChopped -= OnTreeUnmarked;
+        StoneJobManager.Instance.OnStoneMarked -= OnTreeMarked;
+        StoneJobManager.Instance.OnStonesBatchMarked -= OnTreesBatchMarked;
+        StoneJobManager.Instance.OnStoneUnmarked -= OnTreeUnmarked;
+        StoneJobManager.Instance.OnStonesBatchUnmarked -= OnTreesBatchUnmarked;
+        StoneJobManager.Instance.OnStoneMined -= OnTreeUnmarked;
         base._ExitTree();
     }
 }

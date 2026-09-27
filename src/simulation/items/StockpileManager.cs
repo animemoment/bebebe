@@ -27,6 +27,13 @@ public class StockpileManager
 
     private bool _isDirty = true;
 
+    // Finding 6: ring из 3 снапшот-буферов (см. GroundItemManager) — ноль
+    // аллокаций на снапшот после первого прохода. Рендерер drain'ит очередь
+    // до последнего, cap = 2, ротация = 3: перезаписи читаемого нет.
+    private readonly System.Numerics.Vector2[][][] _snapRing = new System.Numerics.Vector2[3][][];
+    private readonly int[][] _snapCountsRing = new int[3][];
+    private int _snapCursor;
+
     public ConcurrentQueue<(System.Numerics.Vector2[][] PositionsByItem, int[] Counts)> SnapshotQueue { get; } = new();
 
     private int _freeSlotsCount = 0;
@@ -126,6 +133,96 @@ public class StockpileManager
         JobBroker.Instance.SweepStockpileHaulJobs();
     }
 
+    /// <summary>
+    /// Батчевое добавление зоны склада (drag 100×100 = 10k клеток одним вызовом).
+    /// Раньше WarehouseTool звал AddZoneTile на клетку: 10k lock + 10k CallDeferred
+    /// + 10k SweepStockpileHaulJobs (каждый — O(N) скан склада) = фриз.
+    /// Здесь: один lock, один CallDeferred-батч, один sweep в конце.
+    /// </summary>
+    public void AddZoneTilesBatch(System.Collections.Generic.List<(int X, int Y)> tiles)
+    {
+        if (tiles == null || tiles.Count == 0) return;
+        var added = new System.Collections.Generic.List<(int X, int Y)>(tiles.Count);
+        lock (_lock)
+        {
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                var (x, y) = tiles[i];
+                if (_zones.Add((x, y)))
+                {
+                    Interlocked.Increment(ref _zoneCount);
+                    if (!_storage.ContainsKey((x, y)))
+                    {
+                        _storage[(x, y)] = (ItemId.None, 0, 0);
+                        _freeSlotsCount++;
+                    }
+                    var (cx, cy) = GetChunkCoord(x, y);
+                    _zoneChunks[cx, cy].Add((x, y));
+                    added.Add((x, y));
+                }
+            }
+            if (added.Count > 0)
+                _isDirty = true;
+        }
+        if (added.Count > 0)
+        {
+            var snapshot = added.ToArray();
+            Callable.From(() => OnZoneTilesBatchAdded?.Invoke(snapshot)).CallDeferred();
+            JobBroker.Instance.SweepStockpileHaulJobs();
+        }
+    }
+
+    /// <summary>Событие батчевого добавления тайлов зоны (один CallDeferred на drag).</summary>
+    public event Action<(int X, int Y)[]> OnZoneTilesBatchAdded;
+
+    /// <summary>
+    /// Батчевое удаление зоны склада: один lock, один sweep не нужен
+    /// (удаление не создаёт работ).
+    /// </summary>
+    public void RemoveZoneTilesBatch(System.Collections.Generic.List<(int X, int Y)> tiles)
+    {
+        if (tiles == null || tiles.Count == 0) return;
+        var removed = new System.Collections.Generic.List<(int X, int Y)>(tiles.Count);
+        lock (_lock)
+        {
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                var (x, y) = tiles[i];
+                if (_zones.Remove((x, y)))
+                {
+                    Interlocked.Decrement(ref _zoneCount);
+                    var (cx, cy) = GetChunkCoord(x, y);
+                    _zoneChunks[cx, cy].Remove((x, y));
+                    if (_storage.TryGetValue((x, y), out var entry))
+                    {
+                        _storage.Remove((x, y));
+                        _isDirty = true;
+                        var def = entry.Item != ItemId.None ? ItemRegistry.Get(entry.Item) : ItemRegistry.Log;
+                        if (entry.Count + entry.ReservedIncoming < def.MaxStack)
+                        {
+                            _freeSlotsCount = Math.Max(0, _freeSlotsCount - 1);
+                        }
+                        if (entry.Item != ItemId.None && entry.Count > 0)
+                        {
+                            AddLiveTotal(entry.Item, -entry.Count);
+                            int total = GetTotalItemCountInternal(entry.Item);
+                            QueueItemCountChanged(entry.Item, total);
+                        }
+                    }
+                    removed.Add((x, y));
+                }
+            }
+        }
+        if (removed.Count > 0)
+        {
+            var snapshot = removed.ToArray();
+            Callable.From(() => OnZoneTilesBatchRemoved?.Invoke(snapshot)).CallDeferred();
+        }
+    }
+
+    /// <summary>Событие батчевого удаления тайлов зоны.</summary>
+    public event Action<(int X, int Y)[]> OnZoneTilesBatchRemoved;
+
     public void RemoveZoneTile(int x, int y)
     {
         lock (_lock)
@@ -167,8 +264,17 @@ public class StockpileManager
         }
     }
 
+    // Инкрементальные тоталы: GetTotalItemCountInternal делал O(N)-скан всего
+    // _storage под _lock на КАЖДЫЙ Deposit/Withdraw (сотни раз/с при активной
+    // работе склада × 1000 записей = 100k итераций/с под глобальным lock).
+    // Ведём +=/-= в точках изменения, чтение — Volatile (уже есть _cachedTotals).
+    private readonly int[] _liveTotals = new int[8];
+
     private int GetTotalItemCountInternal(ItemId itemId)
     {
+        int idx = (int)itemId;
+        if ((uint)idx < 8)
+            return Volatile.Read(ref _liveTotals[idx]);
         int total = 0;
         foreach (var entry in _storage.Values)
         {
@@ -180,17 +286,27 @@ public class StockpileManager
         return total;
     }
 
+    private void AddLiveTotal(ItemId item, int delta)
+    {
+        int idx = (int)item;
+        if (item != ItemId.None && (uint)idx < 8)
+            _liveTotals[idx] += delta;
+    }
+
     public bool TryReserveStockpileSlot(System.Numerics.Vector2 agentPos, ItemId itemId, int countToDeposit, out (int X, int Y) slot, out int acceptedCount)
     {
         slot = (-1, -1);
         acceptedCount = 0;
 
-        if (_zones.Count == 0 || _freeSlotsCount <= 0) 
+        // #7: early-out только через Volatile.Read атомарных счётчиков.
+        // _zones.Count (HashSet.Count) без lock читать нельзя — гонка даёт
+        // stale-значение; используем _zoneCount (ведётся через Interlocked).
+        if (Volatile.Read(ref _zoneCount) <= 0 || Volatile.Read(ref _freeSlotsCount) <= 0)
             return false;
 
         lock (_lock)
         {
-            if (_zones.Count == 0 || _freeSlotsCount <= 0) 
+            if (_zones.Count == 0 || _freeSlotsCount <= 0)
                 return false;
 
             var def = ItemRegistry.Get(itemId);
@@ -267,6 +383,85 @@ public class StockpileManager
         }
     }
 
+    /// <summary>
+    /// #1: резерв еды со склада для NeedsJobSystem. Складская еда живёт только
+    /// в _storage (DepositItems НЕ пишет в GroundItemManager), поэтому голодный
+    /// агент при полном складе и пустой земле раньше уходил в backoff 30–60с.
+    /// Атомарно резервирует eatCount зерна ближайшей клетки (спираль по чанкам,
+    /// как TryReserveStockpileSlot) и сразу списывает из _storage+тоталов:
+    /// резервация == взятие, отдельного release не нужно (еда съедается сразу).
+    /// Возвращает false — еды на складе нет / не хватило.
+    /// </summary>
+    public bool TryTakeStockpileFood(System.Numerics.Vector2 agentPos, ItemId itemId, int eatCount, int maxTileRadius, out (int X, int Y) cell)
+    {
+        cell = (-1, -1);
+        if (eatCount <= 0 || itemId == ItemId.None) return false;
+        if (Volatile.Read(ref _zoneCount) <= 0) return false;
+        if (Volatile.Read(ref _liveTotals[(int)itemId]) < eatCount) return false;
+
+        lock (_lock)
+        {
+            if (_zones.Count == 0) return false;
+            if (Volatile.Read(ref _liveTotals[(int)itemId]) < eatCount) return false;
+
+            int agentTileX = (int)(agentPos.X / 64f);
+            int agentTileY = (int)(agentPos.Y / 64f);
+            int startCx = Math.Clamp((int)(agentPos.X / ChunkSizePx), 0, ChunkDim - 1);
+            int startCy = Math.Clamp((int)(agentPos.Y / ChunkSizePx), 0, ChunkDim - 1);
+            int radius = Math.Clamp(maxTileRadius <= 0 ? MaxChunkRadius : (maxTileRadius + ChunkSize - 1) / ChunkSize, 1, MaxChunkRadius);
+
+            float bestDistSq = float.MaxValue;
+            (int X, int Y) best = (-1, -1);
+            for (int r = 0; r < radius; r++)
+            {
+                int minCx = Math.Max(0, startCx - r);
+                int maxCx = Math.Min(ChunkDim - 1, startCx + r);
+                int minCy = Math.Max(0, startCy - r);
+                int maxCy = Math.Min(ChunkDim - 1, startCy + r);
+                for (int cx = minCx; cx <= maxCx; cx++)
+                {
+                    for (int cy = minCy; cy <= maxCy; cy++)
+                    {
+                        if (r > 0 && cx > minCx && cx < maxCx && cy > minCy && cy < maxCy)
+                            continue;
+                        var chunk = _zoneChunks[cx, cy];
+                        if (chunk.Count == 0) continue;
+                        foreach (var tile in chunk)
+                        {
+                            if (!_storage.TryGetValue(tile, out var entry)) continue;
+                            if (entry.Item != itemId || entry.Count < eatCount) continue;
+                            float dx = tile.X - agentTileX;
+                            float dy = tile.Y - agentTileY;
+                            float distSq = dx * dx + dy * dy;
+                            if (distSq < bestDistSq)
+                            {
+                                bestDistSq = distSq;
+                                best = tile;
+                            }
+                        }
+                    }
+                }
+                if (best.X != -1) break;
+            }
+            if (best.X == -1) return false;
+
+            var e = _storage[best];
+            if (e.Item != itemId || e.Count < eatCount) return false;
+            var def = ItemRegistry.Get(e.Item);
+            int wasTotal = e.Count + e.ReservedIncoming;
+            int newCount = e.Count - eatCount;
+            var kept = newCount == 0 ? ItemId.None : e.Item;
+            _storage[best] = (kept, newCount, e.ReservedIncoming);
+            _isDirty = true;
+            if (wasTotal >= def.MaxStack && (newCount + e.ReservedIncoming) < def.MaxStack)
+                _freeSlotsCount++;
+            AddLiveTotal(e.Item, -eatCount);
+            QueueItemCountChanged(e.Item, Volatile.Read(ref _liveTotals[(int)e.Item]));
+            cell = best;
+            return true;
+        }
+    }
+
     public void CancelReservation(int x, int y, int count)
     {
         lock (_lock)
@@ -306,6 +501,7 @@ public class StockpileManager
                     _freeSlotsCount++;
                 }
 
+                AddLiveTotal(itemId, count);
                 int total = GetTotalItemCountInternal(itemId);
                 QueueItemCountChanged(itemId, total);
             }
@@ -333,6 +529,7 @@ public class StockpileManager
                 }
 
                 var oldItem = entry.Item;
+                AddLiveTotal(oldItem, -toTake);
                 int total = GetTotalItemCountInternal(oldItem);
                 QueueItemCountChanged(oldItem, total);
                 return toTake;
@@ -361,10 +558,24 @@ public class StockpileManager
                 storageCopy[ci++] = kvp;
         }
 
-        var currentSnap = new System.Numerics.Vector2[MaxItemTypes][];
-        for (int t = 0; t < MaxItemTypes; t++)
-            currentSnap[t] = new System.Numerics.Vector2[MaxSnapshotItemsPerType];
-        var currentCounts = new int[MaxItemTypes];
+        // Finding 6: ring-буфер вместо fresh-аллокации (см. GroundItemManager).
+        int slot = _snapCursor % 3;
+        _snapCursor++;
+        var currentSnap = _snapRing[slot];
+        var currentCounts = _snapCountsRing[slot];
+        if (currentSnap == null)
+        {
+            currentSnap = new System.Numerics.Vector2[MaxItemTypes][];
+            for (int t = 0; t < MaxItemTypes; t++)
+                currentSnap[t] = new System.Numerics.Vector2[MaxSnapshotItemsPerType];
+            currentCounts = new int[MaxItemTypes];
+            _snapRing[slot] = currentSnap;
+            _snapCountsRing[slot] = currentCounts;
+        }
+        else
+        {
+            Array.Clear(currentCounts, 0, currentCounts.Length);
+        }
 
         for (int i = 0; i < storageCopy.Length; i++)
         {

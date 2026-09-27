@@ -77,7 +77,7 @@ public class FarmingTool : ITool
 
             if (_cellBuffer.Count > 0)
             {
-                FarmJobManager.Instance.MarkPlotsBatch(_cellBuffer, _mapData?.TreeOnGrass);
+                FarmJobManager.Instance.MarkPlotsBatch(_cellBuffer, _mapData?.TreeOnGrass, _mapData?.StoneOnGrass);
                 FarmZoneManager.Instance.CreateZone(_cellBuffer);
             }
         }
@@ -121,6 +121,10 @@ public class FarmingTool : ITool
             return false;
 
         if (FarmJobManager.Instance.IsGardenBed(x, y) || FarmJobManager.Instance.IsPlotMarked(x, y))
+            return false;
+
+        // Камень под плуг не годится — сначала добудь (инструмент камня).
+        if (_mapData != null && _mapData.HasStone(x, y))
             return false;
 
         return true;

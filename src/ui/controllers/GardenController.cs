@@ -128,6 +128,11 @@ public partial class GardenController : Control
     {
         if (_rootPanel == null || zone == null) return;
 
+        // Единый выбор уже в ZoneManager: закрываем окно Work-зоны если открыто.
+        var work = WorkZoneController.Instance;
+        if (work != null && work.IsOpen)
+            work.Close();
+
         if (_titleLabel != null)
         {
             _titleLabel.Text = $"{zone.Name} ({zone.TotalTiles} кл.)";

@@ -1,0 +1,147 @@
+[gd_scene format=3 uid="uid://cmrgl28eaa27n"]
+
+[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="1_bbej2"]
+[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="2_b86uc"]
+[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="3_tcupk"]
+[ext_resource type="Texture2D" uid="uid://dwnuonti5n42d" path="res://ui/assets/textures/icons/info.png" id="4_04ohc"]
+[ext_resource type="Texture2D" uid="uid://cn4relttiql7r" path="res://ui/assets/textures/icons/jobdisplay.png" id="5_ea4ef"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4pfqy"]
+bg_color = Color(0, 0, 0, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_0yrv2"]
+bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_g8rbv"]
+bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_va8w1"]
+bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_2n86q"]
+bg_color = Color(0, 0, 0, 1)
+
+[node name="Control" type="Control" unique_id=913188786]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="ScrollContainer" type="ScrollContainer" parent="." unique_id=1952743419]
+layout_mode = 0
+offset_top = 73.0
+offset_right = 502.0
+offset_bottom = 1080.0
+
+[node name="PanelContainer" type="PanelContainer" parent="ScrollContainer" unique_id=2008775494]
+custom_minimum_size = Vector2(502, 0)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_4pfqy")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="ScrollContainer/PanelContainer" unique_id=544966951]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="HBoxContainer" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1662450368]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=1020842059]
+custom_minimum_size = Vector2(250, 30)
+layout_mode = 2
+theme_override_font_sizes/font_size = 24
+text = "N клеток"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1315033493]
+layout_mode = 2
+theme_override_constants/separation = 50
+alignment = 1
+
+[node name="VBoxContainer" type="VBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1305543176]
+layout_mode = 2
+
+[node name="TextureRect" type="TextureRect" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2/VBoxContainer" unique_id=11695330]
+custom_minimum_size = Vector2(200, 200)
+layout_mode = 2
+texture = ExtResource("1_bbej2")
+
+[node name="Description" type="RichTextLabel" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2/VBoxContainer" unique_id=449777636]
+custom_minimum_size = Vector2(20, 100)
+layout_mode = 2
+theme_override_font_sizes/normal_font_size = 12
+text = "Пшеница — это важнейшая зерновая культура из семейства злаков, которая служит основой питания для миллионов людей по всему миру"
+
+[node name="VBoxContainer2" type="VBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1945923467]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="CheckMark" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2/VBoxContainer2" unique_id=469941885]
+custom_maximum_size = Vector2(64, 64)
+layout_mode = 2
+theme_override_styles/normal = SubResource("StyleBoxFlat_0yrv2")
+icon = ExtResource("2_b86uc")
+
+[node name="AmountOfResources" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2/VBoxContainer2" unique_id=2110566991]
+layout_mode = 2
+text = "количество необходимых 
+ресурсов для посадки 
+ферсы"
+
+[node name="Label" type="Label" parent="." unique_id=63811646]
+layout_mode = 0
+offset_right = 502.0
+offset_bottom = 73.0
+theme_override_font_sizes/font_size = 40
+theme_override_styles/normal = SubResource("StyleBoxFlat_g8rbv")
+text = "Ферма"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="esc" type="Button" parent="." unique_id=327029660]
+layout_mode = 0
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 44.0
+offset_bottom = 44.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_va8w1")
+icon = ExtResource("3_tcupk")
+expand_icon = true
+
+[node name="CheckMark" type="Button" parent="." unique_id=205479199]
+layout_mode = 0
+offset_left = 502.0
+offset_right = 575.0
+offset_bottom = 73.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_0yrv2")
+icon = ExtResource("2_b86uc")
+
+[node name="Infoormation" type="Button" parent="." unique_id=2053136278]
+layout_mode = 0
+offset_left = 502.0
+offset_top = 73.0
+offset_right = 575.0
+offset_bottom = 146.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_0yrv2")
+icon = ExtResource("4_04ohc")
+
+[node name="ButtonForJobDisplay" type="Button" parent="." unique_id=1278412628]
+layout_mode = 0
+offset_left = 502.0
+offset_top = 146.0
+offset_right = 575.0
+offset_bottom = 219.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_0yrv2")
+icon = ExtResource("5_ea4ef")
+expand_icon = true
+
+[node name="InfoWindow" type="Label" parent="." unique_id=1970562515]
+layout_mode = 0
+offset_left = -236.0
+offset_top = 354.0
+offset_right = -62.183594
+offset_bottom = 445.05765
+theme_override_font_sizes/font_size = 20
+theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")

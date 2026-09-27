@@ -36,6 +36,14 @@ public partial class ShadowCasterRenderer : Node2D
     private bool _hasState;
     private bool _hasSun;
 
+    // Frustum culling как у Syx (RenderData.onScreenTiles): тянем из холодного
+    // _anchors только то, что в кадре камеры + запас на длину тени.
+    // Камера и запас обновляются в Tick из вьюпорта (O(1), только главный поток).
+    private Vector2 _viewCenter;
+    private Vector2 _viewHalf;
+    private bool _hasView;
+    private Vector2 _lastPushCenter = new(float.NaN, float.NaN);
+
     public override void _Ready()
     {
         ZIndex = 4;
@@ -126,6 +134,8 @@ public partial class ShadowCasterRenderer : Node2D
     {
         bool show = sun.Alpha > 0.004f && sun.LengthPx >= 0.5f && _anchors.Count > 0;
         _hasSun = show;
+        // Кадр камеры: O(1) на тик. Нет камеры (headless-юнит) — рисуем всех, как раньше.
+        UpdateView(sun);
         Visible = show;
         if (_instance != null)
             _instance.Visible = show;
@@ -135,7 +145,11 @@ public partial class ShadowCasterRenderer : Node2D
             || Math.Abs(_current.LengthPx - sun.LengthPx) >= 0.5f
             || Math.Abs(_current.Alpha - sun.Alpha) >= 0.004f
             || (_current.Dir - sun.Dir).LengthSquared() >= 0.0004f;
-        if (sunChanged)
+        // Камера уехала дальше запаса — пересобрать видимый набор, даже если солнце то же.
+        bool viewMoved = _hasView
+            && (Math.Abs(_viewCenter.X - _lastPushCenter.X) > _viewHalf.X
+                || Math.Abs(_viewCenter.Y - _lastPushCenter.Y) > _viewHalf.Y);
+        if (sunChanged || viewMoved)
         {
             _current = sun;
             _hasState = true;
@@ -173,6 +187,38 @@ public partial class ShadowCasterRenderer : Node2D
         return new Vector2(tx * tile + tile * 0.5f, ty * tile + tile);
     }
 
+    private void UpdateView(DayNightCycle.SunState sun)
+    {
+        var cam = GetViewport()?.GetCamera2D();
+        if (cam == null)
+        {
+            _hasView = false;
+            return;
+        }
+        Vector2 vp = GetViewportRect().Size;
+        Vector2 zoom = cam.Zoom;
+        if (zoom.X <= 0f || zoom.Y <= 0f)
+        {
+            _hasView = false;
+            return;
+        }
+        // Запас = пол-экрана + макс. длина тени (28px), чтобы тень не обрезалась у края.
+        _viewCenter = cam.GetScreenCenterPosition();
+        _viewHalf = new Vector2(
+            vp.X / zoom.X * 0.5f + DayNightCycle.MaxShadowLengthPx,
+            vp.Y / zoom.Y * 0.5f + DayNightCycle.MaxShadowLengthPx);
+        _hasView = true;
+    }
+
+    private bool InView(Vector2 anchor)
+    {
+        if (!_hasView)
+            return true;
+        float dx = Math.Abs(anchor.X - _viewCenter.X);
+        float dy = Math.Abs(anchor.Y - _viewCenter.Y);
+        return dx <= _viewHalf.X && dy <= _viewHalf.Y;
+    }
+
     private bool AddCell(int tx, int ty, float tile)
     {
         if (!_cells.Add((tx, ty)))
@@ -183,7 +229,6 @@ public partial class ShadowCasterRenderer : Node2D
 
     private void PushBuffer()
     {
-        int count = Math.Min(_anchors.Count, MaxCasters);
         Vector2 dir = _hasState ? _current.Dir : Vector2.Zero;
         float rawLen = _hasState ? _current.LengthPx : 0f;
         // Порядок Buffer для Transform2D: x.x, x.y, pad, origin.x, y.x, y.y, pad, origin.y.
@@ -194,17 +239,25 @@ public partial class ShadowCasterRenderer : Node2D
         float hx = dir.X * len * 0.5f, hy = dir.Y * len * 0.5f;
         float px = -dir.Y, py = dir.X;
         float qx = px * wdt * 0.5f, qy = py * wdt * 0.5f;
-        for (int i = 0; i < count; i++)
+        // Пишем только видимые + cap. Счётчик отдельно: пропуски кадра не ломают stride-8.
+        int count = 0;
+        int limit = Math.Min(_anchors.Count, MaxCasters);
+        _lastPushCenter = _viewCenter;
+        for (int i = 0; i < limit && count < MaxCasters; i++)
         {
-            int idx = i * 8;
+            Vector2 anchor = _anchors[i];
+            if (!InView(anchor))
+                continue;
+            int idx = count * 8;
             _buffer[idx + 0] = hx * 2f;
             _buffer[idx + 1] = hy * 2f;
             _buffer[idx + 2] = 0f;
-            _buffer[idx + 3] = _anchors[i].X + hx;
+            _buffer[idx + 3] = anchor.X + hx;
             _buffer[idx + 4] = qx * 2f;
             _buffer[idx + 5] = qy * 2f;
             _buffer[idx + 6] = 0f;
-            _buffer[idx + 7] = _anchors[i].Y + hy;
+            _buffer[idx + 7] = anchor.Y + hy;
+            count++;
         }
         _multiMesh.VisibleInstanceCount = count;
         if (count > 0)

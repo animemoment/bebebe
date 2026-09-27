@@ -44,11 +44,21 @@ public static class ParallelRng
     /// <summary>[0, 1) без lock и без аллокаций.</summary>
     public static double NextDouble() => (Next() >> 11) * (1.0 / 9007199254740992.0);
 
-    /// <summary>[minInclusive, maxExclusive) без lock.</summary>
+    /// <summary>[minInclusive, maxExclusive) без lock. Равномерно через
+    /// rejection sampling (#9: наивный Next()%range даёт modulo-смещение —
+    /// для больших range старшие значения выпадают реже; здесь отсев
+    /// переполняющего хвоста 2^64 mod range, распределение равномерное).</summary>
     public static int Next(int minInclusive, int maxExclusive)
     {
         if (minInclusive >= maxExclusive) return minInclusive;
         uint range = (uint)(maxExclusive - minInclusive);
-        return minInclusive + (int)(Next() % range);
+        // Граница отсева: значения r >= limit отбрасываем (иначе modulo-смещение).
+        ulong limit = (0xFFFFFFFFFFFFFFFFUL / range) * range;
+        while (true)
+        {
+            ulong r = Next();
+            if (r < limit)
+                return minInclusive + (int)(r % range);
+        }
     }
 }

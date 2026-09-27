@@ -63,15 +63,70 @@ public sealed class GenericJobSpatialIndex
     private int _totalCount;
     private int _unclaimedCount;
 
+    // Per-dispatch memo CanAgentExecute: состояние менеджеров (Ground/Crop)
+    // заморожено на время DispatchPendingJobs (диспетчер и коммиты идут
+    // последовательно в одном sim-потоке), поэтому повторы CanAgentExecute
+    // для одного jobId между воркерами — чистый дубль под lock. Кэшируем
+    // результат на время одного DispatchPendingJobs-вызова: один lock на
+    // jobId вместо N (по числу воркеров). Эпоха инкрементится диспетчером
+    // в начале каждого вызова (BeginClaimEpoch); записи — только воркеры
+    // claim-проходов, гонка записей одного jobId невозможна без потери
+    // корректности (идемпотентный bool), чтение — без lock.
+    // Размер — по capacity, растёт в EnsureCapacity.
+    private int _claimEpoch;
+    private int[] _canExecEpoch;
+    private bool[] _canExecResult;
+
     private int _nextJobId = 0;
 
     public int UnclaimedCount => Volatile.Read(ref _unclaimedCount);
     public int TotalCount => Volatile.Read(ref _totalCount);
 
+    /// <summary>
+    /// Начать новую эпоху memo CanAgentExecute. Зовёт диспетчер один раз
+    /// в начале DispatchPendingJobs (sim-поток). Переполнение int — сброс
+    /// массива эпох (раз в ~2 млрд диспатчей).
+    /// </summary>
+    public void BeginClaimEpoch()
+    {
+        int next = unchecked(_claimEpoch + 1);
+        if (next == int.MaxValue)
+        {
+            Array.Clear(_canExecEpoch, 0, _canExecEpoch.Length);
+            next = 1;
+        }
+        Volatile.Write(ref _claimEpoch, next);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryGetMemoCanExecute(int jobId, out bool result)
+    {
+        int epoch = Volatile.Read(ref _claimEpoch);
+        if (epoch != 0 && jobId >= 0 && jobId < _capacity &&
+            Volatile.Read(ref _canExecEpoch[jobId]) == epoch)
+        {
+            result = _canExecResult[jobId];
+            return true;
+        }
+        result = false;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void StoreMemoCanExecute(int jobId, bool result)
+    {
+        if (jobId < 0 || jobId >= _capacity)
+            return;
+        _canExecResult[jobId] = result;
+        Volatile.Write(ref _canExecEpoch[jobId], Volatile.Read(ref _claimEpoch));
+    }
+
     public GenericJobSpatialIndex()
     {
         _capacity = InitialCapacity;
         AllocateArrays(_capacity);
+        _canExecEpoch = new int[_capacity];
+        _canExecResult = new bool[_capacity];
         InitFreeList(_capacity);
         _nextJobId = InitialCapacity;
 
@@ -180,6 +235,8 @@ public sealed class GenericJobSpatialIndex
         Array.Resize(ref _workDuration, newCap);
         Array.Resize(ref _active, newCap);
         Array.Resize(ref _nextFree, newCap);
+        Array.Resize(ref _canExecEpoch, newCap);
+        Array.Resize(ref _canExecResult, newCap);
 
         for (int i = _capacity; i < newCap - 1; i++)
             _nextFree[i] = i + 1;
@@ -192,6 +249,15 @@ public sealed class GenericJobSpatialIndex
     /// ерестраивает макет chunk-бакетов при переполнении слота чанка.
     /// Rebuilds the chunk-bucket layout when a chunk slot overflows.
     /// Called only under _registerLock (rare case).
+    ///
+    /// БАГ «полосы грядок»: старая публикация (сначала _chunkJobs, потом
+    /// _chunkStart/_chunkCount) давала torn-read — читатель видел новый массив
+    /// со старыми start/count и считал чанк пустым/чужой. Теперь порядок
+    /// обратный: сначала counts в 0 (чанк «пуст», но консистентен), барьер,
+    /// затем новый массив + starts, барьер, затем реальные counts. Читатель
+    /// в худшем случае видит пустой чанк один диспатч-вызов, но никогда —
+    /// чужое содержимое.
+    /// </summary>
     private void RebuildChunkBuckets()
     {
         int maxCount = 0;
@@ -216,22 +282,26 @@ public sealed class GenericJobSpatialIndex
             newCounts[ci]++;
         }
 
-        // Публикация одним шагом: сначала содержимое, затем барьер,
-        // затем управляющие поля. Читатели снимают ссылку _chunkJobs один раз
-        // (см. TryClaimForWorkerInChunk/FillPrioritizedUnclaimed) и не видят
-        // torn-read наполовину перестроенного макета.
         for (int ci = 0; ci < ChunkCount; ci++)
             newStarts[ci] = ci * newJobsPerChunk;
+
+        // Шаг 1: counts в 0 — чанки «пусты», но консистентны со старым массивом
+        // (count=0 → читатель выходит раньше чтения содержимого).
+        for (int ci = 0; ci < ChunkCount; ci++)
+            Volatile.Write(ref _chunkCount[ci], 0);
         Thread.MemoryBarrier();
+
+        // Шаг 2: новый массив + starts (counts ещё 0 — читатель видит пустоту).
         _chunkJobs = newJobs;
         _chunkCapacity = newCap;
         _jobsPerChunk = newJobsPerChunk;
-        Thread.MemoryBarrier();
         for (int ci = 0; ci < ChunkCount; ci++)
-        {
             _chunkStart[ci] = newStarts[ci];
+        Thread.MemoryBarrier();
+
+        // Шаг 3: реальные counts — чанки «появляются» целиком.
+        for (int ci = 0; ci < ChunkCount; ci++)
             Volatile.Write(ref _chunkCount[ci], newCounts[ci]);
-        }
     }
 
     private void AddToChunkBucket(int chunkIndex, int jobId)
@@ -317,9 +387,14 @@ public sealed class GenericJobSpatialIndex
             AddToChunkBucket(chunkIndex, id);
             Interlocked.Increment(ref _unclaimedCount);
 
+            // P0-1: без трейса регистрации (ToString+Mark+интерполяция на каждую
+            // работу; sweep регистрирует сотни).
+
             return id;
         }
     }
+
+
 
     public void RegisterBatch(List<JobData> jobs)
     {
@@ -458,8 +533,40 @@ public sealed class GenericJobSpatialIndex
         {
             if (_posMap.TryGetValue((x, y, type), out int id) && _active[id])
             {
-                _currentDeliveredCount[id] += countToAdd;
-                isCompleted = _currentDeliveredCount[id] >= _targetItemCount[id];
+                // #2: кламп перепоставки — носильщик может принести до 29 брёвен
+                // (25кг/0.85) при target 10–25. Без клампа излишек испарялся:
+                // индекс и AddDeliveredLogs слепо прибавляли count.
+                int target = _targetItemCount[id];
+                int remaining = target - _currentDeliveredCount[id];
+                int accepted = Math.Min(countToAdd, Math.Max(0, remaining));
+                _currentDeliveredCount[id] += accepted;
+                isCompleted = _currentDeliveredCount[id] >= target;
+                countToAdd = accepted;
+                jobSnapshot = GetJobData(id);
+                return true;
+            }
+            isCompleted = false;
+            jobSnapshot = default;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// #2: остаток доставки сверх target (то, что кламп отсёк в TryAddJobProgress).
+    /// Вызывается через out-параметр — сколько из carried реально принято.
+    /// </summary>
+    public bool TryAddJobProgressClamped(int x, int y, JobTypeId type, int countToAdd, out int acceptedCount, out bool isCompleted, out JobData jobSnapshot)
+    {
+        acceptedCount = 0;
+        lock (_registerLock)
+        {
+            if (_posMap.TryGetValue((x, y, type), out int id) && _active[id])
+            {
+                int target = _targetItemCount[id];
+                int remaining = target - _currentDeliveredCount[id];
+                acceptedCount = Math.Min(countToAdd, Math.Max(0, remaining));
+                _currentDeliveredCount[id] += acceptedCount;
+                isCompleted = _currentDeliveredCount[id] >= target;
                 jobSnapshot = GetJobData(id);
                 return true;
             }
@@ -483,27 +590,42 @@ public sealed class GenericJobSpatialIndex
     {
         claimedJob = default;
 
-        // Снимок макета: RebuildChunkBuckets публикует новый массив одним шагом,
-        // читаем ссылку/старт/каунт в локальные переменные, иначе torn-read.
+        // Снимок макета (порядок важен — см. RebuildChunkBuckets): сначала
+        // count, барьер, затем ссылка+start. Если между чтениями прошла
+        // перестройка (counts сброшены в 0 → новый макет), count=0 и выходим
+        // раньше чтения чужого содержимого. idx>=len — тоже выход, не пропуск.
+        int count = Volatile.Read(ref _chunkCount[chunkIndex]);
+        if (count == 0) return false;
+        Thread.MemoryBarrier();
         int[] chunkJobsSnap = Volatile.Read(ref _chunkJobs);
         if (chunkJobsSnap == null) return false;
         int start = Volatile.Read(ref _chunkStart[chunkIndex]);
-        int count = Volatile.Read(ref _chunkCount[chunkIndex]);
-        if (count == 0) return false;
 
         // Быстрая проверка: есть ли вообще вакансии в этом чанке?
         bool hasStockpileSpace = StockpileManager.Instance.HasFreeSpace;
         bool hasAvailableLogs = GroundItemManager.Instance.HasAvailableLogs;
+
+        // P0-2: кап сканирования чанка (было 64 с головы списка — хвост чанка
+        // голодал вечно: старые работы лежали дальше 64-й позиции и их никто
+        // не брал). Окно сканирования ротируется по эпохе диспатча: каждый
+        // вызов покрывает следующие 64, за несколько проходов — весь чанк.
+        const int MaxClaimScanPerWorker = 64;
+        int scanCount = Math.Min(count, MaxClaimScanPerWorker);
+        int epoch = Volatile.Read(ref _claimEpoch);
+        int scanStart = count > scanCount ? epoch % (count - scanCount + 1) : 0;
 
         int bestJobId = -1;
         int bestPriority = -1;
         float bestDistSq = float.MaxValue;
 
         // Проход 1: read-only поиск лучшего кандидата
+        // (окно [scanStart, scanStart+scanCount) — ротация эпохой выше).
         int jobsLen = chunkJobsSnap.Length;
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < scanCount; i++)
         {
-            int idx = start + i;
+            int idx = start + scanStart + i;
+            if (idx >= start + count)
+                break;
             if (idx >= jobsLen)
                 break;
             int jobId = chunkJobsSnap[idx];
@@ -523,7 +645,10 @@ public sealed class GenericJobSpatialIndex
             if (_typeId[jobId] == JobTypeId.BlueprintDelivery && !hasAvailableLogs)
                 continue;
 
-            int priority = JobPriorityManager.Instance.GetPriorityForJobType(_typeId[jobId]);
+            // Finding 7: приоритет через категорию без GetPriorityForJobType
+            // (switch + Volatile-read вместо двух вызовов на кандидата).
+            int priority = JobPriorityManager.Instance.GetPriority(
+                JobPriorityManager.Instance.GetCategory(_typeId[jobId]));
             if (priority <= 0)
                 continue;
 
@@ -532,8 +657,26 @@ public sealed class GenericJobSpatialIndex
             if (IsJobOnCooldown(jobId))
                 continue;
 
-            if (!JobRegistry.TryGetHandler(_typeId[jobId], out var handler) ||
-                !handler.CanAgentExecute(agentIndex, GetJobData(jobId), pool, ctx))
+            // Per-dispatch memo: все CanAgentExecute агент-независимы
+            // (читают только ctx/мокси менеджеров, agentIndex игнорируется),
+            // состояние заморожено на время диспатча — один lock на jobId.
+            bool canExec;
+            if (TryGetMemoCanExecute(jobId, out bool memo))
+            {
+                canExec = memo;
+            }
+            else
+            {
+                if (!JobRegistry.TryGetHandler(_typeId[jobId], out var handler2) ||
+                    !handler2.CanAgentExecute(agentIndex, GetJobData(jobId), pool, ctx))
+                {
+                    StoreMemoCanExecute(jobId, false);
+                    continue;
+                }
+                StoreMemoCanExecute(jobId, true);
+                canExec = true;
+            }
+            if (!canExec)
                 continue;
 
             float dx = _standX[jobId] - workerTileX;
@@ -549,7 +692,9 @@ public sealed class GenericJobSpatialIndex
         }
 
         if (bestJobId == -1)
+        {
             return false;
+        }
 
         // Проход 2: CAS-захват лучшего кандидата
         int current = Volatile.Read(ref _assignedWorkers[bestJobId]);
@@ -609,6 +754,8 @@ public sealed class GenericJobSpatialIndex
     {
         if (jobId < 0 || jobId >= _capacity || !_active[jobId])
             return;
+        // P0-1: без SimEvents — кулдаун случается из горячего пути, интерполяция
+        // строки + два lock на каждый stuck-релиз.
         _jobFailCd[jobId] = unchecked((int)System.Environment.TickCount + Math.Max(0, cooldownMs));
     }
 
@@ -623,10 +770,41 @@ public sealed class GenericJobSpatialIndex
         return remain > 0;
     }
 
+    // P0-1: no-op — оставлена для совместимости вызовов. Счётчики canexec.*
+    // (ToString + lock на каждого кандидата) убраны из claim-цикла.
+    public void NoteCanExec(JobTypeId type, bool memoHit, bool result)
+    {
+    }
+
     /// <summary>
-    /// Штраф за смену профессии (в единицах distSq): задачи той же категории,
-    /// которую агент делал последней, предпочитаются в радиусе ~20 тайлов.
+    /// C31: снимок состава задач (job_id, type, pos, assigned/max, priority, fail_cd)
+    /// для ответа «какие работы в диспетчере сейчас». Вызывать раз в секунду из sim-потока,
+    /// не из горячего пути (O(N) проход). Формат строк: id;type;x;y;assigned/max;prio;cooldown.
     /// </summary>
+    public string BuildJobSnapshot(int maxRows = 200)
+    {
+        var sb = new System.Text.StringBuilder(2048);
+        sb.AppendLine("id;type;x;y;assigned/max;prio;cooldown_ms");
+        int rows = 0;
+        for (int id = 0; id < _capacity && rows < maxRows; id++)
+        {
+            if (!_active[id]) continue;
+            int cd = 0;
+            int exp = _jobFailCd[id];
+            if (exp != 0)
+            {
+                int remain = unchecked(exp - (int)System.Environment.TickCount);
+                if (remain > 0) cd = remain;
+            }
+            sb.Append(id).Append(';').Append(_typeId[id].ToString()).Append(';')
+              .Append(_targetX[id]).Append(';').Append(_targetY[id]).Append(';')
+              .Append(Volatile.Read(ref _assignedWorkers[id])).Append('/').Append(_maxWorkers[id]).Append(';')
+              .Append(JobPriorityManager.Instance.GetPriorityForJobType(_typeId[id])).Append(';')
+              .Append(cd).AppendLine();
+            rows++;
+        }
+        return sb.ToString();
+    }
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static float GetAffinityPenalty(AgentDataPool pool, int agentIndex, JobTypeId jobType)
     {
@@ -661,6 +839,9 @@ public sealed class GenericJobSpatialIndex
             {
                 Interlocked.Decrement(ref _unclaimedCount);
             }
+
+            // P0-1: без трейса удаления (ToString+Count+Mark на каждое завершение
+            // haul-работы; при шаттлах это тысячи/с).
 
             return true;
         }
@@ -708,16 +889,49 @@ public sealed class GenericJobSpatialIndex
         }
     }
 
+    /// <summary>
+    /// Собирает незахваченные задачи в приоритизированный список для global-прохода.
+    /// P1 (Dispatch-спайк): старый Fill шёл по ВСЕМ 1024 чанкам даже когда
+    /// незахваченных мало (пустые чанки — volatile-read, но при тысячах
+    /// unclaimed в 2–3 чанках хвост всё равно сканировался зря) + ToArray()×2
+    /// на сортировку (два heap-alloc раз в 2с + двойное копирование).
+    /// Теперь: ранний выход по счётчику собранных unclaimed (O(unclaimed),
+    /// не O(N)) + сортировка in-place по scratch-массивам без ToArray.
+    /// destination переупорядочивается in-place, аллокаций нет.
+    /// </summary>
     public void FillPrioritizedUnclaimed(List<int> destination)
     {
+        const int MaxGlobalCandidates = 512;
         destination.Clear();
+        int wantTotal = Volatile.Read(ref _unclaimedCount);
+        if (wantTotal <= 0) return;
+        int want = Math.Min(wantTotal, MaxGlobalCandidates);
         int[] chunkJobsSnap = Volatile.Read(ref _chunkJobs);
         if (chunkJobsSnap == null) return;
         int snapLen = chunkJobsSnap.Length;
-        for (int ci = 0; ci < ChunkCount; ci++)
+        int collectedUnclaimed = 0;
+        // Стартовый чанк ротируется эпохой: иначе при want < unclaimed
+        // (ранний стоп выше) хвост чанков не собирался НИКОГДА — старые
+        // работы в дальних чанках висели вечно ("работа давняя — не берут").
+        int fillEpoch = Volatile.Read(ref _claimEpoch);
+        for (int pass = 0; pass < ChunkCount; pass++)
         {
-            int start = Volatile.Read(ref _chunkStart[ci]);
+            int ci = (fillEpoch + pass) % ChunkCount;
+            {
+            // Тот же порядок, что в TryClaimForWorkerInChunk: count → барьер →
+            // ссылка/starts. Рваный макет даёт пропуск чанка на один проход,
+            // а не чужое содержимое.
             int count = Volatile.Read(ref _chunkCount[ci]);
+            if (count == 0) continue;
+            Thread.MemoryBarrier();
+            int[] snap = Volatile.Read(ref _chunkJobs);
+            if (!ReferenceEquals(snap, chunkJobsSnap))
+            {
+                chunkJobsSnap = snap;
+                if (chunkJobsSnap == null) return;
+                snapLen = chunkJobsSnap.Length;
+            }
+            int start = Volatile.Read(ref _chunkStart[ci]);
             for (int i = 0; i < count; i++)
             {
                 int idx = start + i;
@@ -727,18 +941,63 @@ public sealed class GenericJobSpatialIndex
                     Volatile.Read(ref _assignedWorkers[jobId]) < _maxWorkers[jobId])
                 {
                     destination.Add(jobId);
+                    collectedUnclaimed++;
+                    // Ранний стоп двойной: кап 512 (global берёт ≤32 рабочих —
+                    // запас покрывает выбор) И все unclaimed уже собраны
+                    // (хвост чанков — пустые/занятые, сканировать нечего).
+                    // Полный скан 262k не нужен: O(unclaimed), не O(N).
+                    if (destination.Count >= MaxGlobalCandidates || collectedUnclaimed >= want)
+                        goto Sort;
                 }
             }
+            }
         }
-        destination.Sort((a, b) =>
+    Sort:
+        // Ключ сортировки предвычисляем один раз на задачу: приоритет типа
+        // (через категорию — дешёвый switch) в старших битах, тир — в младших.
+        // Внимание: Emergency=0 — самый ВАЖНЫЙ тир, Low=6 — фон. Прямой (p<<8)|tier
+        // инвертирует порядок тиров (Low всплывал бы вверх). Инвертируем тир:
+        // key = (p << 8) | (255 - tier): сортировка по убыванию = старый компаратор
+        // (pb.CompareTo(pa), затем tier b.CompareTo(a)) 1-в-1.
+        // @destroyer: приоритет типа p — тот же GetPriorityForJobType, только без
+        // лишнего indirection-вызова; инверсия тира покрыта инвариантом ниже.
+        int n = destination.Count;
+        if (n == 0) return;
+        _sortKeys.EnsureCapacity(n);
+        _sortIds.EnsureCapacity(n);
+        _sortKeys.Clear();
+        _sortIds.Clear();
+        // P1: in-place сортировка без ToArray()×2 — scratch-массивы переиспользуются
+        // между проходами (Fill идёт раз в 2с, но два heap-alloc 512 int + двойное
+        // копирование на каждый global-проход давили Gen0 зря).
+        if (_sortKeysScratch == null || _sortKeysScratch.Length < n)
         {
-            int pa = JobPriorityManager.Instance.GetPriorityForJobType(_typeId[a]);
-            int pb = JobPriorityManager.Instance.GetPriorityForJobType(_typeId[b]);
-            int cmp = pb.CompareTo(pa);
-            if (cmp != 0) return cmp;
-            return _priorityTier[b].CompareTo(_priorityTier[a]);
-        });
+            _sortKeysScratch = new int[Math.Max(n, 512)];
+            _sortIdsScratch = new int[Math.Max(n, 512)];
+        }
+        for (int i = 0; i < n; i++)
+        {
+            int jobId = destination[i];
+            int p = JobPriorityManager.Instance.GetPriorityForJobType(_typeId[jobId]);
+            _sortKeysScratch[i] = (p << 8) | (255 - (byte)_priorityTier[jobId]);
+            _sortIdsScratch[i] = jobId;
+        }
+        // Сортировка пар (key, jobId) без аллокаций на проход: Comparer без
+        // замыкания (static lambda в Comparer.Create — один alloc раз в 2с).
+        Array.Sort(_sortKeysScratch, _sortIdsScratch, 0, n, Comparer<int>.Create(static (a, b) => b.CompareTo(a)));
+        destination.Clear();
+        for (int i = 0; i < n; i++)
+            destination.Add(_sortIdsScratch[i]);
     }
+
+    // Scratch для предвычисленных ключей сортировки FillPrioritizedUnclaimed.
+    // Fill зовётся из одного sim-потока (GlobalRedistributePass) — гонки нет.
+    // P1: _sortKeys/_sortIds оставлены для совместимости (EnsureCapacity/Clear
+    // дёшевы), реальная сортировка идёт по scratch-массивам без ToArray.
+    private readonly List<int> _sortKeys = new(512);
+    private readonly List<int> _sortIds = new(512);
+    private int[] _sortKeysScratch;
+    private int[] _sortIdsScratch;
 
     /// <summary>
     /// Глобальный захват: ищет в готовом приоритизированном списке кандидатов
@@ -781,7 +1040,10 @@ public sealed class GenericJobSpatialIndex
             if (_typeId[jobId] == JobTypeId.BlueprintDelivery && !hasAvailableLogs)
                 continue;
 
-            int priority = JobPriorityManager.Instance.GetPriorityForJobType(_typeId[jobId]);
+            // Finding 7: приоритет через категорию без GetPriorityForJobType
+            // (switch + Volatile-read вместо двух вызовов на кандидата).
+            int priority = JobPriorityManager.Instance.GetPriority(
+                JobPriorityManager.Instance.GetCategory(_typeId[jobId]));
             if (priority <= 0)
                 continue;
 
@@ -789,8 +1051,24 @@ public sealed class GenericJobSpatialIndex
             if (IsJobOnCooldown(jobId))
                 continue;
 
-            if (!JobRegistry.TryGetHandler(_typeId[jobId], out var handler) ||
-                !handler.CanAgentExecute(agentIndex, GetJobData(jobId), pool, ctx))
+            // То же per-dispatch memo, что в TryClaimForWorkerInChunk.
+            bool canExec2;
+            if (TryGetMemoCanExecute(jobId, out bool memo2))
+            {
+                canExec2 = memo2;
+            }
+            else
+            {
+                if (!JobRegistry.TryGetHandler(_typeId[jobId], out var handler2) ||
+                    !handler2.CanAgentExecute(agentIndex, GetJobData(jobId), pool, ctx))
+                {
+                    StoreMemoCanExecute(jobId, false);
+                    continue;
+                }
+                StoreMemoCanExecute(jobId, true);
+                canExec2 = true;
+            }
+            if (!canExec2)
                 continue;
 
             float dx = _standX[jobId] - workerTileX;
