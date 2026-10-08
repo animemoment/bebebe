@@ -19,6 +19,10 @@ public partial class WorldMapOverlay : Node2D
 
 	// --- Dirty-state cache: на каждый загруженный чанк храним cached tile index ---
 	private readonly Dictionary<Vector2I, short[]> _chunkTileCache = new();
+	/// <summary>Глобальный persistent-кэш сгенерированных чанков (переживает unload/reload).</summary>
+	private readonly Dictionary<Vector2I, short[]> _generatedChunkCache = new();
+	private const int GeneratedCacheCap = 512; // ~8.4 МБ max, LRU-вытеснение oldest
+	private readonly Queue<Vector2I> _generatedOrder = new();
 	private Camera2D _camera;
 	private TileMapLayer _mapLayer;
 	private CanvasLayer _uiLayer;
@@ -64,7 +68,7 @@ public partial class WorldMapOverlay : Node2D
 			return;
 
 		HideGameLayer();
-		ClearAllCache();
+		// Кэш НЕ сбрасываем: чанки валидны до смены seed/version (Initialize делает ClearAllCache).
 		Visible = true;
 		_uiLayer.Visible = true;
 		_camera.Enabled = true;
@@ -129,6 +133,7 @@ public partial class WorldMapOverlay : Node2D
 	}
 
 	private Vector2 _lastCameraPosition = Vector2.Zero;
+	private Vector2 _lastCameraZoom = Vector2.Zero;
 
 	public override void _Process(double delta)
 	{
@@ -146,9 +151,11 @@ public partial class WorldMapOverlay : Node2D
 			ClampCamera();
 		}
 
-		if (!_lastCameraPosition.Equals(_camera.Position))
+		// Zoom меняет видимый rect без движения камеры — учитываем оба.
+		if (!_lastCameraPosition.Equals(_camera.Position) || !_lastCameraZoom.Equals(_camera.Zoom))
 		{
 			_lastCameraPosition = _camera.Position;
+			_lastCameraZoom = _camera.Zoom;
 			LoadVisibleChunks();
 		}
 	}
@@ -211,13 +218,17 @@ public partial class WorldMapOverlay : Node2D
 			}
 		}
 
-		// Удаление невидимых чанков
-		foreach (var chk in _chunkTileCache.Keys)
+		// Удаление невидимых чанков (только выгрузка из TileMapLayer; persistent-кэш остаётся)
+		if (_chunkTileCache.Count > 0)
 		{
-			if (!_visibleChunksThisFrame.Contains(chk))
+			_staleChunks.Clear();
+			foreach (var chk in _chunkTileCache.Keys)
 			{
-				UnloadChunk(chk);
+				if (!_visibleChunksThisFrame.Contains(chk))
+					_staleChunks.Add(chk);
 			}
+			for (int i = 0; i < _staleChunks.Count; i++)
+				UnloadChunk(_staleChunks[i]);
 		}
 
 		// Загрузка/обновление видимых чанков
@@ -225,15 +236,35 @@ public partial class WorldMapOverlay : Node2D
 			PullChunk(chk);
 	}
 
-	/// <summary>Загружает или обновляет один чанк. Если чанк ранее был выгружен — все клетки «чистые» (need redraw).</summary>
+	private readonly List<Vector2I> _staleChunks = new();
+
+	/// <summary>Загружает или обновляет один чанк. Кэш-хит → 0 вычислений шума, только dirty-сравнение.</summary>
 	private void PullChunk(Vector2I chunk)
 	{
 		bool isNew = !_chunkTileCache.TryGetValue(chunk, out var tiles);
 
 		if (isNew)
 		{
-			tiles = new short[ChunkSize * ChunkSize]; // -1 = пусто/needs draw
-			for (int i = 0; i < tiles.Length; i++) tiles[i] = -1;
+			// Persistent-кэш: переиспользуем уже сгенерированный чанк без пересчёта BiomeMapper.
+			if (_generatedChunkCache.TryGetValue(chunk, out var cached))
+			{
+				tiles = cached;
+			}
+			else
+			{
+				tiles = new short[ChunkSize * ChunkSize];
+				for (int i = 0; i < tiles.Length; i++) tiles[i] = -1;
+				_generatedChunkCache[chunk] = tiles;
+				_generatedOrder.Enqueue(chunk);
+				while (_generatedOrder.Count > GeneratedCacheCap)
+				{
+					Vector2I oldest = _generatedOrder.Dequeue();
+					if (!IsChunkVisible(oldest))
+						_generatedChunkCache.Remove(oldest);
+					else
+						_generatedOrder.Enqueue(oldest); // видимый не вытесняем, переносим в хвост
+				}
+			}
 			_chunkTileCache[chunk] = tiles;
 		}
 
@@ -253,6 +284,7 @@ public partial class WorldMapOverlay : Node2D
 			if (wx >= endX || wy >= endY) continue; // outside this chunk's valid bounds
 
 			short cachedTile = tiles[idx];
+			if (cachedTile >= 0 && !isNew) continue; // валидный кэш — клетка чистая, пересчёт не нужен
 
 			TilePick pick = BiomeMapper.Pick(_seed, _version, wx, wy, RegionTraitProvider.SampleBlended(_seed, _version, wx, wy));
 			short tileIdx = (short)WorldMapTileMapper.GetTileId(pick.Biome, pick.Variant);
@@ -264,6 +296,8 @@ public partial class WorldMapOverlay : Node2D
 			}
 		}
 	}
+
+	private bool IsChunkVisible(Vector2I chunk) => _visibleChunksThisFrame.Contains(chunk);
 
 	private void UnloadChunk(Vector2I chunk)
 	{
@@ -297,6 +331,8 @@ public partial class WorldMapOverlay : Node2D
 			}
 		}
 		_chunkTileCache.Clear();
+		_generatedChunkCache.Clear();
+		_generatedOrder.Clear();
 	}
 
 	private void ZoomAtMouse(float factor)

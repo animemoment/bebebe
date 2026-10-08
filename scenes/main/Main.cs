@@ -296,16 +296,42 @@ public partial class Main : Node2D
 
 		if (_mapOverlay.Visible)
 		{
+			SetAgentsVisible(true);
 			_mapOverlay.CloseMap();
 			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
 			if (canvas != null) canvas.Visible = true;
 		}
 		else
 		{
+			SetAgentsVisible(false);
+			// Мир-фон и его агенты под мировой картой не видны — глушим вид целиком:
+			// Visible=false убирает draw-коллы всех дочерних TileMapLayer,
+			// SetProcess(false) останавливает стриминговый тик на main thread.
+			if (_worldView != null && IsInstanceValid(_worldView))
+			{
+				_worldView.Visible = false;
+				_worldView.SetProcess(false);
+			}
 			_mapOverlay.OpenMap();
 			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
 			if (canvas != null) canvas.Visible = false;
 		}
+	}
+
+	/// <summary>Вкл/выкл рендер агентов (MultiMesh-тела + тени + все Node2D-рендереры на дереве).</summary>
+	private void SetAgentsVisible(bool visible)
+	{
+		if (_agentRenderer != null && IsInstanceValid(_agentRenderer))
+		{
+			_agentRenderer.Visible = visible;
+			foreach (Node child in _agentRenderer.GetChildren())
+				child.Visible = visible;
+		}
+
+		// WorldAgentRenderer/прочие точечные рендереры агентов ищем по имени в дереве.
+		Node worldAgents = FindNode("WorldAgentRenderer", true, false);
+		if (worldAgents is CanvasItem ci)
+			ci.Visible = visible;
 	}
 
 	public override void _ExitTree()
