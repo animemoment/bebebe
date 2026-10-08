@@ -9,8 +9,7 @@ namespace Game.UI;
 /// Показывает название («Ферма #5»), число клеток, пшеницу, галочку
 /// автопосадки. Кнопка ButtonForJobDisplay ведёт в JobDisplay (§20.6),
 /// кнопка Infoormation — тумблер подсказки про клетку (§20.5).
-/// Замена старому GardenController (Garden.tscn больше не используется,
-/// сам файл сцены не удаляем).
+/// Замена старому GardenController — Garden.tscn удалён.
 /// </summary>
 public partial class FarmController : Control
 {
@@ -60,8 +59,6 @@ public partial class FarmController : Control
             "res://scenes/ui/Farm.tscn",
             "res://Farm.tscn",
             "res://ui/Farm.tscn",
-            // Запасной вариант — старая сцена, если Farm не найдётся.
-            "res://scenes/ui/Garden.tscn",
         };
 
         foreach (var path in paths)

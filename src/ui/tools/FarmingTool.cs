@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using Game.Core;
 using Game.Simulation;
 using System.Collections.Generic;
@@ -47,6 +47,8 @@ public class FarmingTool : ITool
         }
     }
 
+    public IToolWorldPlacement WorldPlacement { get; set; }
+
     public void OnRelease(Vector2I startTile, Vector2I endTile, Vector2 worldPos, bool isLeftClick)
     {
         if (!_isDragging) return;
@@ -55,10 +57,21 @@ public class FarmingTool : ITool
         _selectionBox?.EndSelection();
         _selectionBox?.ResetDefaultStyle();
 
-        int minX = Mathf.Clamp(Mathf.Min(startTile.X, endTile.X), 0, MapRenderer.MapWidth - 1);
-        int maxX = Mathf.Clamp(Mathf.Max(startTile.X, endTile.X), 0, MapRenderer.MapWidth - 1);
-        int minY = Mathf.Clamp(Mathf.Min(startTile.Y, endTile.Y), 0, MapRenderer.MapHeight - 1);
-        int maxY = Mathf.Clamp(Mathf.Max(startTile.Y, endTile.Y), 0, MapRenderer.MapHeight - 1);
+        // §28: грядки/зона фермы за кромкой острова — метки мира.
+        if (WorldPlacement != null)
+        {
+            WorldPlacementPass.Run(startTile.X, startTile.Y, endTile.X, endTile.Y, WorldPlacement,
+                isLeftClick ? WorldPlacement.TryPlaceFarmPlot : WorldPlacement.TryRemoveFarmPlot);
+        }
+
+        // ПЕРЕСЕЧЕНИЕ с островом, а не кламп: драг целиком за кромкой раньше писал/сносил
+        // клетки по краю острова, которых игрок не выбирал.
+        int minX = Mathf.Max(Mathf.Min(startTile.X, endTile.X), 0);
+        int maxX = Mathf.Min(Mathf.Max(startTile.X, endTile.X), MapRenderer.MapWidth - 1);
+        int minY = Mathf.Max(Mathf.Min(startTile.Y, endTile.Y), 0);
+        int maxY = Mathf.Min(Mathf.Max(startTile.Y, endTile.Y), MapRenderer.MapHeight - 1);
+        if (minX > maxX || minY > maxY)
+            return;
 
         _cellBuffer.Clear();
 

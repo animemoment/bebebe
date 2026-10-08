@@ -16,6 +16,14 @@ public sealed class GenericJobSpatialIndex
     private const int ChunkShift = 4;
     private const int ChunkDim = 32;
     private const int ChunkCount = ChunkDim * ChunkDim;
+
+    /// <summary>
+    /// Размер сетки чанков наружу (для диагностики диспетчера).
+    /// ВАЖНО: обязан совпадать с IdleWorkerSpatialGrid.ChunkDim — диспетчер
+    /// сводит работу и рабочего по ОДНОМУ номеру чанка, и разные сетки дали бы
+    /// «работы есть, а рабочих рядом нет» на всей карте.
+    /// </summary>
+    public const int ChunkGridDim = ChunkDim;
     private const int InitialCapacity = 16384;
     private const int GrowFactor = 2;
     private const int JobsPerChunk = 256;

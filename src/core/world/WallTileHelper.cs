@@ -93,54 +93,5 @@ public static class WallTileHelper
 		return false;
 	}
 
-	public static Vector2I GetTile((int X, int Y) pos, HashSet<(int X, int Y)> walls)
-	{
-		int x = pos.X;
-		int y = pos.Y;
 
-		bool u = walls.Contains((x, y - 1));
-		bool r = walls.Contains((x + 1, y));
-		bool d = walls.Contains((x, y + 1));
-		bool l = walls.Contains((x - 1, y));
-
-		int mask = (u ? 1 : 0) | (r ? 2 : 0) | (d ? 4 : 0) | (l ? 8 : 0);
-
-		int corners = 0;
-		if (walls.Contains((x + 1, y - 1))) corners |= TR;
-		if (walls.Contains((x - 1, y - 1))) corners |= TL;
-		if (walls.Contains((x + 1, y + 1))) corners |= BR;
-		if (walls.Contains((x - 1, y + 1))) corners |= BL;
-
-		Entry[] group = mask switch
-		{
-			0 => M0, 1 => M1, 2 => M2, 4 => M4, 8 => M8, 5 => M5, 10 => M10,
-			3 => M3, 6 => M6, 9 => M9, 12 => M12, 7 => M7, 13 => M13,
-			11 => M11, 14 => M14, _ => M15,
-		};
-
-		// Скоринг как у движка: углы записи ⊆ фактических, максимум совпадений.
-		// Ничья (визуальные дубли) — reservoir по хэшу координат, детерминированно.
-		uint h = (uint)(x * 73856093 ^ y * 19349663 ^ mask * 83492791);
-		Vector2I best = group[0].Atlas;
-		int bestScore = -1;
-		int ties = 0;
-		for (int i = 0; i < group.Length; i++)
-		{
-			int need = group[i].Corners;
-			if ((need & ~corners) != 0) continue;
-			int score = PopCount(need);
-			if (score > bestScore)
-			{
-				bestScore = score;
-				best = group[i].Atlas;
-				ties = 1;
-			}
-			else if (score == bestScore)
-			{
-				ties++;
-				if (h % (uint)ties == 0) best = group[i].Atlas;
-			}
-		}
-		return best;
-	}
 }

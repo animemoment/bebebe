@@ -99,13 +99,13 @@ public partial class HUDController : Control
 
         // Режим карты: кнопка other (шторка >/<) + additionally-бокс с влажностью.
         _otherButton = FindChild("other", true, false) as Button;
-        _additionallyBox = FindChild("HBoxContainer", true, false) as Control;
+        
+        // Исправленный поиск: поднимаемся от кнопки humidity до родителя ноды "additionally"
+        var humidityBtn = FindChild("humidity", true, false) as Control;
+        _additionallyBox = humidityBtn?.GetParent()?.GetParent() as Control;
         if (_additionallyBox == null)
-        {
-            // HBoxContainer с кнопкой humidity — ищем по ребёнку, если имя другое.
-            var humidityProbe = FindChild("humidity", true, false) as Control;
-            _additionallyBox = humidityProbe?.GetParent() as Control;
-        }
+            GD.PrintErr("[HUD] additionallyBox не найден (humidity->parent->parent)");
+        
         _humidityButton = FindChild("humidity", true, false) as Button;
         _fertilityButton = FindChild("fertility", true, false) as Button;
         SetupMapModeControls();
@@ -910,6 +910,19 @@ public partial class HUDController : Control
         HideAllSubContainers();
     }
 
+    /// <summary>Скрыть все контейнеры HUD (для открытия мировой карты).</summary>
+    public void HideContainers()
+    {
+        CloseAllMenus();
+        foreach (Control ctrl in GetChildren())
+        {
+            string n = ctrl.Name;
+            if (n == "GardenController" || n == "WorkZoneController" || n == "BuildMenuController")
+                ctrl.Visible = false;
+        }
+        HideContainer(FindChild("AmountOfResources", true, false) as Control);
+    }
+
     private void OnWoodWallPressed()
     {
         ToggleToolButton(_woodWallButton, () =>
@@ -926,6 +939,7 @@ public partial class HUDController : Control
                 MapRenderer.SourceWall
             );
             interaction.SetTool(buildTool);
+            buildTool.WorldPlacement = WorldPlacement;
         });
     }
 
@@ -945,6 +959,7 @@ public partial class HUDController : Control
                 MapRenderer.SourceWorkTable
             );
             interaction.SetTool(tableTool);
+            tableTool.WorldPlacement = WorldPlacement;
         });
     }
 
@@ -1019,6 +1034,7 @@ public partial class HUDController : Control
                 sourceId
             );
             interaction.SetTool(tool);
+            tool.WorldPlacement = WorldPlacement;
         });
     }
 
@@ -1036,6 +1052,7 @@ public partial class HUDController : Control
 
             var stoneTool = new StoneMiningTool(interaction.Selection, mapRenderer.MapData);
             interaction.SetTool(stoneTool);
+            stoneTool.WorldPlacement = WorldPlacement;
         });
     }
 
@@ -1052,6 +1069,12 @@ public partial class HUDController : Control
     }
 
     private ZoneDraftTool _draftTool;
+
+    /// <summary>
+    /// Мир за кромкой острова (§26 шаг 2, §28): задаётся из Main.cs после включения
+    /// стримингового мира. null — инструменты работают только по острову, как раньше.
+    /// </summary>
+    public Game.UI.Tools.IToolWorldPlacement WorldPlacement { get; set; }
 
     /// <summary>Идёт ли черчение зоны (черновик активен как инструмент).</summary>
     public bool IsDrafting => _draftTool != null
@@ -1088,6 +1111,7 @@ public partial class HUDController : Control
             _draftTool.SetDoorMode(_buildMenuController.DoorMode);
         }
         interaction.SetTool(_draftTool);
+        _draftTool.WorldPlacement = WorldPlacement;
     }
 
     /// <summary>DoorButton окна: тумблер режима проёма в активном черновике.</summary>
@@ -1153,6 +1177,7 @@ public partial class HUDController : Control
 
             var treeTool = new TreeFellingTool(interaction.Selection, mapRenderer.MapData);
             interaction.SetTool(treeTool);
+            treeTool.WorldPlacement = WorldPlacement;
         });
     }
 
@@ -1173,6 +1198,67 @@ public partial class HUDController : Control
             interactionManager.OnToolReset += ClearActiveToolButton;
         }
         RefreshStats();
+    }
+
+    private Button _buttonMap; // Сохраняем ссылку для защиты от дубликатов
+
+    /// <summary>Привязать кнопку ButtonMap (глобальная карта §23/§24) к переключению оверлея.</summary>
+    public void BindWorldMapButton(Action onPressed)
+    {
+        if (onPressed == null)
+            return;
+
+        if (_buttonMap != null && GodotObject.IsInstanceValid(_buttonMap))
+            return;
+
+        var button = GetNodeOrNull<Button>("BtnOpenWorldMap")
+                    ?? FindChild("BtnOpenWorldMap", true, false) as Button;
+
+        if (button == null)
+        {
+            GD.PrintErr("[HUD] ButtonMap NOT found — checking scene tree:");
+            foreach (var child in GetChildren())
+                GD.Print($"  [HUD] direct child: '{child.Name}' ({child.GetType().Name})");
+            
+            // Also search recursively for troubleshooting
+            var recurse = FindChild("Button*", false, false);
+            GD.Print($"  [HUD] recursive partial match: {(recurse != null ? recurse.Name : "NONE")}");
+            return;
+        }
+
+        _buttonMap = button;
+        _buttonMap.MouseFilter = Control.MouseFilterEnum.Stop;
+        
+        // Ensure visible and styled — guarantee clickable even if theme overrides fail
+        _buttonMap.Visible = true;
+        _buttonMap.SetProcessInput(true);
+        
+        // Move to end so it draws above all sibling panels
+        if (_buttonMap.GetParent() == this)
+        {
+            RemoveChild(_buttonMap);
+            AddChild(_buttonMap);
+        }
+
+        // Force a StyleBoxFlat with semi-transparent bg for reliable interaction
+        var style = new StyleBoxFlat
+        {
+            BgColor = new Color(0f, 0f, 0f, 0.01f),
+            DrawCenter = true,
+            BorderWidthLeft = 0,
+            BorderWidthTop = 0,
+            BorderWidthRight = 0,
+            BorderWidthBottom = 0
+        };
+        _buttonMap.AddThemeStyleboxOverride("normal", style);
+
+        _buttonMap.Pressed += () =>
+        {
+            GD.Print("[HUD BUTTONMAP] CLICKED → invoking ToggleWorldMap");
+            onPressed.Invoke();
+        };
+
+        GD.Print($"[HUD] ButtonMap bound OK (pos={_buttonMap.Position}, size={_buttonMap.Size}, icon={(_buttonMap.Icon != null ? _buttonMap.Icon.ResourcePath : "none")})");
     }
 
     private static void SetMouseFilterRecursive(Control control)

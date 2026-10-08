@@ -13,10 +13,12 @@ config_version=5
 config/name="Game"
 run/main_scene="res://scenes/main/Main.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
+run/max_fps=60
 
 [autoload]
 
 _mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
+McpInteractionServer="*res://autoload/mcp_interaction_server.gd"
 
 [display]
 
@@ -33,6 +35,10 @@ project/assembly_name="Game"
 
 enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg")
 
+[game]
+
+rendering/use_gpu_agent_interpolation=true
+
 [physics]
 
 3d/physics_engine="Jolt Physics"
@@ -40,4 +46,3 @@ enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg")
 [rendering]
 
 textures/canvas_textures/default_texture_filter=0
-rendering_device/driver.windows="d3d12"

@@ -157,8 +157,9 @@ public static class SimdNeedsBatch
         bool vectorized = Vector.IsHardwareAccelerated && len >= Vector<float>.Count;
         if (vectorized)
         {
-            AddCapped(spanHunger, hungerAdd);
-            AddCapped(spanSleep, sleepAdd);
+            // Голод и сон — ОДНИМ проходом: обе операции «добавить с потолком 100»
+            // по тем же индексам, второй проход только терял локальность кэша.
+            AddCapped2(spanHunger, hungerAdd, spanSleep, sleepAdd);
         }
         else
         {
@@ -166,25 +167,14 @@ public static class SimdNeedsBatch
             AddCappedScalar(spanSleep, sleepAdd);
         }
 
-        // Усталость — скалярный подпроход: ветвление по AgentState не векторизуется.
+        // Усталость — БЕЗ ВЕТВЛЕНИЙ по состоянию (см. ApplyFatigue): на 10k агентов
+        // состояния перемешаны, и промахи предсказания ветвлений стоили дороже
+        // самой арифметики. Дельта берётся таблицей по значению AgentState.
         float fatigueWorkAdd = AgentNeedsConfig.FatigueWorkPerGameSec * deltaTime;
         float fatigueIdleSub = AgentNeedsConfig.FatigueIdleRecoveryPerGameSec * deltaTime;
         AgentState[] states = pool.States;
         float[] fatigue = pool.Fatigue;
-        for (int i = start; i < end; i++)
-        {
-            AgentState state = states[i];
-            if (state == AgentState.Working)
-            {
-                float f = fatigue[i] + fatigueWorkAdd;
-                fatigue[i] = f > 100f ? 100f : f;
-            }
-            else if (state == AgentState.Idle)
-            {
-                float f = fatigue[i] - fatigueIdleSub;
-                fatigue[i] = f < 0f ? 0f : f;
-            }
-        }
+        ApplyFatigue(states, fatigue, start, end, fatigueWorkAdd, fatigueIdleSub);
 
         // Окружение — одна заливка на диапазон (Span.Fill векторизован внутри).
         var spanEnv = new Span<float>(pool.EnvironmentSatisfaction, start, len);
@@ -337,24 +327,62 @@ public static class SimdNeedsBatch
             throw new ArgumentOutOfRangeException(nameof(deltaTime), "deltaTime не может быть отрицательным.");
     }
 
-    /// <summary>Векторизованное: span[i] = span[i] + add &gt; 100 ? 100 : span[i] + add. Только верхний clamp (как в скаляре). NaN-детерминировано через ConditionalSelect (без Vector.Min).</summary>
-    private static void AddCapped(Span<float> span, float add)
+    /// <summary>
+    /// Векторизованно и за один проход: a[i] = a[i] + addA > 100 ? 100 : a[i] + addA,
+    /// b[i] = b[i] + addB > 100 ? 100 : b[i] + addB. Только верхний clamp (как в
+    /// скаляре), NaN-детерминировано через ConditionalSelect (без Vector.Min).
+    /// Фьюз двух «добавок с потолком» в один проход: индексы те же, массивы пула
+    /// уже в кэше — экономим проход и повторное чтение индексов.
+    /// </summary>
+    private static void AddCapped2(Span<float> a, float addA, Span<float> b, float addB)
     {
         int n = Vector<float>.Count;
-        int limit = span.Length - span.Length % n;
-        var vAdd = new Vector<float>(add);
+        int limit = a.Length - a.Length % n;
+        var vAddA = new Vector<float>(addA);
+        var vAddB = new Vector<float>(addB);
         var vCap = new Vector<float>(100f);
         for (int k = 0; k < limit; k += n)
         {
-            Vector<float> t = new Vector<float>(span.Slice(k)) + vAdd;
-            var mask = Vector.GreaterThan(t, vCap);
-            Vector<float> r = Vector.ConditionalSelect(mask, vCap, t);
-            r.CopyTo(span.Slice(k));
+            Vector<float> ta = new Vector<float>(a.Slice(k)) + vAddA;
+            ta = Vector.ConditionalSelect(Vector.GreaterThan(ta, vCap), vCap, ta);
+            ta.CopyTo(a.Slice(k));
+
+            Vector<float> tb = new Vector<float>(b.Slice(k)) + vAddB;
+            tb = Vector.ConditionalSelect(Vector.GreaterThan(tb, vCap), vCap, tb);
+            tb.CopyTo(b.Slice(k));
         }
-        for (int k = limit; k < span.Length; k++)
+        for (int k = limit; k < a.Length; k++)
         {
-            float v = span[k] + add;
-            span[k] = v > 100f ? 100f : v;
+            float va = a[k] + addA;
+            a[k] = va > 100f ? 100f : va;
+            float vb = b[k] + addB;
+            b[k] = vb > 100f ? 100f : vb;
+        }
+    }
+
+    /// <summary>
+    /// Усталость: Working → +workAdd (потолок 100), Idle → −idleSub (пол 0),
+    /// прочие состояния → без изменений. Без ветвлений: дельта выбирается
+    /// таблицей по значению <see cref="AgentState"/> (byte-backed enum, значений
+    /// меньше 256). Таблица — 1 КБ на стеке, попадает в L1.
+    /// Побитово совпадает со скалярным if/else-if: fatigue всегда в [0,100]
+    /// (инициализируется ≥ 0 и меняется только двумя правилами выше), поэтому
+    /// двусторонний clamp не искажает результат, а для «прочих» состояний
+    /// delta == 0 и прибавление +0.0 к значению из [0,100] — тождество.
+    /// (Недостижимое на практике отличие — сохранение -0.0.)
+    /// </summary>
+    private static void ApplyFatigue(AgentState[] states, float[] fatigue, int start, int end, float workAdd, float idleSub)
+    {
+        Span<float> delta = stackalloc float[256];
+        delta.Clear();
+        delta[(byte)AgentState.Working] = workAdd;
+        delta[(byte)AgentState.Idle] = -idleSub;
+        for (int i = start; i < end; i++)
+        {
+            float f = fatigue[i] + delta[(byte)states[i]];
+            if (f < 0f) f = 0f;
+            else if (f > 100f) f = 100f;
+            fatigue[i] = f;
         }
     }
 

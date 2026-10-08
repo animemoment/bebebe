@@ -91,7 +91,7 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_hqnrr")
 
-[node name="ButtonMap" type="Button" parent="." unique_id=1801891714]
+[node name="BtnOpenWorldMap" type="Button" parent="." unique_id=1801891714]
 layout_mode = 0
 offset_left = 1844.0
 offset_right = 1919.0
@@ -343,6 +343,7 @@ offset_left = 1646.0
 offset_top = 454.0
 offset_right = 1920.0
 offset_bottom = 1080.0
+mouse_filter = 2
 theme = SubResource("Theme_xmflq")
 theme_override_styles/panel = SubResource("StyleBoxFlat_dtglo")
 

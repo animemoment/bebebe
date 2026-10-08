@@ -13,6 +13,7 @@ default_font = ExtResource("1_581w3")
 bg_color = Color(0, 0, 0, 1)
 
 [node name="Control" type="Control" unique_id=370585758]
+custom_minimum_size = Vector2(0, -1.83)
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0

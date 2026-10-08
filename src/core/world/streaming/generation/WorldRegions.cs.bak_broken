@@ -1,0 +1,17 @@
+namespace Game.Core.WorldStreaming;
+
+public static class WorldRegions
+{
+    public const int WorldRegionsX = 2048;
+    public const int WorldRegionsY = 1024;
+    public const int WorldRegionCells = 512;
+    public const int ChunkCells = 64;
+    public const int TilesPerRegionAxis = WorldRegionCells / ChunkCells;
+
+    public readonly record struct RegionKey(long X, long Y);
+    
+    public static RegionKey RegionForCell(long cellX, long cellY) 
+    {
+        return new RegionKey(cellX / WorldRegionCells, cellY / WorldRegionCells);
+    }
+}

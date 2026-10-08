@@ -1,0 +1,195 @@
+using Godot;
+using Game.Core.WorldStreaming;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace Game.UI.Streaming;
+
+public partial class WorldMapController : Control
+{
+	[Signal] public delegate void RegionSelectedEventHandler(int x, int y);
+	[Signal] public delegate void CloseRequestedEventHandler();
+
+	[Export] public TileMapLayer MapLayer;
+	[Export] public Button CloseButton;
+	[Export] public ulong WorldSeed = 0x0123456789ABCDEFUL;
+	[Export] public uint GeneratorVersion = 3;
+
+	private ColorRect _backdrop;
+
+	// окно после плотной перевыкладки (для клика -> абсолютный регион маппера)
+	private int _winCountX, _winCountY;
+	private long _absBaseX, _absBaseY;
+
+	public override void _Ready()
+	{
+		if (GetParent() is not CanvasLayer)
+		{
+			var cl = new CanvasLayer { Layer = 100, Name = "WorldMapCanvas" };
+			GetTree().Root.AddChild(cl);
+			GetParent()?.RemoveChild(this);
+			cl.AddChild(this);
+		}
+
+		SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+		OffsetLeft = 0; OffsetTop = 0; OffsetRight = 0; OffsetBottom = 0;
+		MouseFilter = MouseFilterEnum.Stop;
+		ClipContents = true;
+		ZIndex = 1000;
+
+		_backdrop = new ColorRect
+		{
+			Name = "Backdrop",
+			Color = new Color(0.05f, 0.06f, 0.08f, 1f),
+			MouseFilter = MouseFilterEnum.Ignore
+		};
+		_backdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+		AddChild(_backdrop);
+		MoveChild(_backdrop, 0);
+
+		MapLayer ??= GetNodeOrNull<TileMapLayer>("TileMapLayer");
+		CloseButton ??= GetNodeOrNull<Button>("BtnOpenWorldMap");
+		if (CloseButton == null) CloseButton = GetNodeOrNull<Button>("ButtonMap");
+		if (CloseButton == null)
+			foreach (var c in GetChildren())
+				if (c is Button b) { CloseButton = b; break; }
+
+		if (CloseButton != null)
+		{
+			CloseButton.ZIndex = 10;
+			CloseButton.MouseFilter = MouseFilterEnum.Stop;
+			CloseButton.Pressed += CloseSelf;
+		}
+
+		if (MapLayer != null)
+		{
+			MapLayer.ZIndex = 1;
+			var mapper = new WorldMapTileMapper { Name = "WorldMapTileMapper" };
+			AddChild(mapper);
+			mapper.Initialize(WorldSeed, GeneratorVersion, MapLayer);
+
+			RepackDense();   // <- мост: склеиваем разреженные тайлы маппера в плотную сетку
+			FitByUsedCells();
+		}
+		else GD.PrintErr("[WMC] no TileMapLayer");
+	}
+
+	private void RepackDense()
+	{
+		if (MapLayer == null) return;
+		var cells = MapLayer.GetUsedCells();
+		if (cells.Count == 0) { GD.PrintErr("[WMC-REPACK] usedCells=0"); return; }
+
+		var snap = new List<(long x, long y, int src, Vector2I atlas, int alt)>();
+		foreach (Variant v in cells)
+		{
+			var c = v.AsVector2I();
+			int src = MapLayer.GetCellSourceId(c);
+			if (src < 0) continue;
+			snap.Add((c.X, c.Y, src, MapLayer.GetCellAtlasCoords(c), MapLayer.GetCellAlternativeTile(c)));
+		}
+		if (snap.Count == 0) { GD.PrintErr("[WMC-REPACK] no valid source cells"); return; }
+
+		var xs = snap.Select(s => s.x).Distinct().OrderBy().ToList();
+		var ys = snap.Select(s => s.y).Distinct().OrderBy().ToList();
+		long stepX = xs.Count > 1 ? xs[1] - xs[0] : 1; if (stepX <= 0) stepX = 1;
+		long stepY = ys.Count > 1 ? ys[1] - ys[0] : 1; if (stepY <= 0) stepY = 1;
+		long minX = xs[0], minY = ys[0];
+
+		// абсолютный индекс региона левого-верхнего тайла окна (у маппера сейчас вокруг 0)
+		_absBaseX = FloorDiv(minX, stepX);
+		_absBaseY = FloorDiv(minY, stepY);
+		_winCountX = xs.Count;
+		_winCountY = ys.Count;
+
+		foreach (var s in snap) MapLayer.EraseCell(new Vector2I((int)s.x, (int)s.y));
+
+		int placed = 0;
+		foreach (var s in snap)
+		{
+			long dx = FloorDiv(s.x - minX, stepX);
+			long dy = FloorDiv(s.y - minY, stepY);
+			MapLayer.SetCell(new Vector2I((int)dx, (int)dy), s.src, s.atlas, s.alt);
+			placed++;
+		}
+
+		var ts = MapLayer.TileSet != null ? MapLayer.TileSet.TileSize : new Vector2I(16, 16);
+		GD.Print($"[WMC-REPACK] stepX={stepX} stepY={stepY} grid={_winCountX}x{_winCountY} " +
+				 $"absBase=({_absBaseX},{_absBaseY}) placed={placed} tileSize={ts} " +
+				 $"bboxPx=({_winCountX * ts.X}x{_winCountY * ts.Y})");
+	}
+
+	private static long FloorDiv(long a, long b)
+	{
+		long q = a / b, r = a % b;
+		if (r != 0 && ((r < 0) != (b < 0))) q--;
+		return q;
+	}
+
+	private void FitByUsedCells()
+	{
+		if (MapLayer == null) return;
+		var cells = MapLayer.GetUsedCells();
+		if (cells.Count == 0) return;
+
+		int minX = int.MaxValue, maxX = int.MinValue, minY = int.MaxValue, maxY = int.MinValue;
+		foreach (Variant v in cells)
+		{
+			var c = v.AsVector2I();
+			if (c.X < minX) minX = c.X; if (c.X > maxX) maxX = c.X;
+			if (c.Y < minY) minY = c.Y; if (c.Y > maxY) maxY = c.Y;
+		}
+		var ts = MapLayer.TileSet != null ? MapLayer.TileSet.TileSize : new Vector2I(16, 16);
+		if (ts.X <= 0) ts.X = 16; if (ts.Y <= 0) ts.Y = 16;
+
+		float pxMinX = minX * ts.X, pxMaxX = (maxX + 1) * ts.X;
+		float pxMinY = minY * ts.Y, pxMaxY = (maxY + 1) * ts.Y;
+		float bw = pxMaxX - pxMinX, bh = pxMaxY - pxMinY; if (bw <= 0 || bh <= 0) return;
+
+		var vp = GetViewport().GetVisibleRect().Size;
+		float s = Mathf.Min(vp.X / bw, vp.Y / bh);
+		MapLayer.Scale = new Vector2(s, s);
+		float cx = (pxMinX + pxMaxX) * 0.5f, cy = (pxMinY + pxMaxY) * 0.5f;
+		MapLayer.Position = vp * 0.5f - new Vector2(cx, cy) * s;
+		GD.Print($"[WMC-FIT] scale={s:F3} pxPerTile={s * ts.X:F1} pos={MapLayer.Position}");
+	}
+
+	private void CloseSelf()
+	{
+		GD.Print("[WMC] CloseSelf invoked");
+		EmitSignal("close_requested");
+		QueueFree();
+	}
+
+	public override void _Input(InputEvent e)
+	{
+		if (e is InputEventKey k && k.Pressed && !k.Echo && k.Keycode == Key.Escape)
+		{ CloseSelf(); GetViewport().SetInputAsHandled(); }
+	}
+
+	public override void _GuiInput(InputEvent e)
+	{
+		if (e is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
+		{
+			if (TryGetRegion(mb.GlobalPosition, out int rx, out int ry))
+			{
+				GD.Print($"[WMC-CLICK] region=({rx},{ry})");
+				AcceptEvent();
+				EmitSignal("region_selected", rx, ry);
+			}
+		}
+	}
+
+	private bool TryGetRegion(Vector2 g, out int rx, out int ry)
+	{
+		rx = ry = 0;
+		if (MapLayer == null || _winCountX <= 0 || _winCountY <= 0) return false;
+		Vector2I t = MapLayer.LocalToMap(MapLayer.ToLocal(g));
+		if (t.X < 0 || t.Y < 0 || t.X >= _winCountX || t.Y >= _winCountY) return false;
+		// плотная сетка: 1 тайл = 1 регион окна; абсолютный регион = смещение маппера + индекс
+		rx = (int)(t.X + _absBaseX);
+		ry = (int)(t.Y + _absBaseY);
+		return true;
+	}
+}

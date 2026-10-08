@@ -1,0 +1,1255 @@
+using Godot;
+using Game.Core;
+using Game.Simulation;
+using Game.UI.Tools;
+using System;
+using System.Globalization;
+
+namespace Game.UI;
+
+public partial class HUDController : Control
+{
+    public static HUDController Instance { get; private set; }
+
+    private Button _buttonConstruct;
+
+    private Control _selectionContainer;
+    private Control _buildContainer;
+    private Control _orderContainer;
+    private Control _wallContainer;
+    private Control _zoneContainer;
+    private Control _industrialContainer;
+
+    private Button _buildVariantButton;
+    private Button _orderVariantButton;
+
+    private Button _wallVariantButton;
+    private Button _zonesVariantButton;
+    private Button _industrialItemsVariantButton;
+
+    private Button _otherButton;
+    private Control _additionallyBox;
+    private Button _humidityButton;
+    private Label _humidityLegendLabel;
+    private Button _fertilityButton;
+    private Label _fertilityLegendLabel;
+
+    private Button _woodWallButton;
+    private Button _warehouseAreaButton;
+    private Button _farmingButton;
+    private Button _workTableButton;
+    private Button _bedButton;
+    private Button _benchButton;
+    private Button _nightstandButton;
+    private Button _stoneMiningButton;
+    private Button _treeFellingButton;
+    private Button _prioritetButton;
+
+    private Label _populationLabel;
+    private Label _employmentLabel;
+    private Label _woodAmountLabel;
+    private Label _worldTimeLabel;
+    private Control _amountOfResourcesPanel;
+
+    private Control _speedButtonsContainer;
+    private Button _stopButton;
+    private Button _speed1xButton;
+    private Button _speed5xButton;
+    private Button _speed25xButton;
+    private Button _speed100xButton;
+
+    private float _statsSyncTimer;
+    private float _timeSyncTimer;
+    private string _lastPopText = "";
+    private string _lastWoodText = "";
+    private string _lastTimeText = "";
+    private int _totalPopulation = 550;
+
+    private Button _activeToolButton;
+    private Panel _activeHighlightPanel;
+    private PriorityBoardController _priorityBoard;
+    private FarmController _gardenController;
+    private BuildMenuController _buildMenuController;
+
+    public override void _Ready()
+    {
+        Instance = this;
+        _buttonConstruct = GetNodeOrNull<Button>("ButtonConstruct") ?? FindChild("ButtonConstruct", true, false) as Button;
+
+        _selectionContainer  = FindChild("SelectionContainer", true, false) as Control;
+        _buildContainer      = FindChild("BuildContainer", true, false) as Control;
+        _orderContainer      = FindChild("OrderContainer", true, false) as Control;
+        _wallContainer       = FindChild("WallContainer", true, false) as Control;
+        _zoneContainer       = FindChild("ZoneContainer", true, false) as Control;
+        _industrialContainer = FindChild("IndustrialContainer", true, false) as Control;
+
+        _buildVariantButton = FindChild("BuildVariant", true, false) as Button;
+        _orderVariantButton = (FindChild("OrderVariant", true, false) as Button) ?? (FindChild("OrderVarinat", true, false) as Button);
+
+        _wallVariantButton            = FindChild("WallVariant", true, false) as Button;
+        _zonesVariantButton           = FindChild("ZonesVariant", true, false) as Button;
+        _industrialItemsVariantButton = FindChild("IndustrialItemsVariant", true, false) as Button;
+
+        _woodWallButton      = FindChild("WoodWallButton", true, false) as Button;
+        _warehouseAreaButton = FindChild("WarehouseArea", true, false) as Button;
+        _farmingButton       = FindChild("Farming", true, false) as Button;
+        _workTableButton     = FindChild("WorkTableButton", true, false) as Button;
+        _treeFellingButton   = (FindChild("TreeFellingButton", true, false) as Button) ?? (FindChild("TreeFelingButton", true, false) as Button);
+        _prioritetButton     = FindChild("PrioritetButton", true, false) as Button ?? FindChild("PriorityButton", true, false) as Button;
+
+        // Режим карты: кнопка other (шторка >/<) + additionally-бокс с влажностью.
+        _otherButton = FindChild("other", true, false) as Button;
+        
+        // Исправленный поиск: поднимаемся от кнопки humidity до родителя ноды "additionally"
+        var humidityBtn = FindChild("humidity", true, false) as Control;
+        _additionallyBox = humidityBtn?.GetParent()?.GetParent() as Control;
+        if (_additionallyBox == null)
+            GD.PrintErr("[HUD] additionallyBox не найден (humidity->parent->parent)");
+        
+        _humidityButton = FindChild("humidity", true, false) as Button;
+        _fertilityButton = FindChild("fertility", true, false) as Button;
+        SetupMapModeControls();
+        // Легенда создаётся ПОСЛЕ SetMouseFilterRecursive (он ставит Ignore всем
+        // не-кнопкам): легенде нужен Stop? Нет — Ignore, но создавать надо после,
+        // иначе рекурсия её уже обработала. Порядок: рекурсия ниже, легенда внутри
+        // SetupMapModeControls — ок, но тултип-лейбл создаём отдельно после.
+        SetupHumidityTooltip();
+
+        _populationLabel = (FindChild("Population", true, false) as Label) ?? GetNodeOrNull<Label>("Population");
+        _employmentLabel = (FindChild("Employment", true, false) as Label) ?? GetNodeOrNull<Label>("Employment");
+        _woodAmountLabel = FindChild("WoodAmount", true, false) as Label;
+        _worldTimeLabel = FindChild("WorldTimeLabel", true, false) as Label;
+        _amountOfResourcesPanel = FindChild("AmountOfResources", true, false) as Control;
+
+        _stopButton      = FindChild("stop", true, false) as Button ?? FindChild("StopTime", true, false) as Button;
+        _speed1xButton   = FindChild("1x", true, false) as Button ?? FindChild("1xTime", true, false) as Button;
+        _speed5xButton   = FindChild("5x", true, false) as Button ?? FindChild("5xTime", true, false) as Button;
+        _speed25xButton  = FindChild("25x", true, false) as Button ?? FindChild("25xTime", true, false) as Button;
+        _speed100xButton = FindChild("100x", true, false) as Button ?? FindChild("100xTime", true, false) as Button;
+
+        SetupSpeedControlsLayer();
+        SetupHighlightPanel();
+        SetupPriorityBoard();
+        SetupGardenController();
+        // Новые кнопки стройки/добычи создаются кодом (сцену hud.tscn не трогаем):
+        // мебель — в IndustrialContainer рядом с верстаком, камень — в OrderContainer
+        // рядом с рубкой. Иконки = те же спрайты, что в мире (100x100, expand_icon).
+        SetupFurnitureButtons();
+        SetupStoneMiningButton();
+        SetMouseFilterRecursive(this);
+
+        if (_buttonConstruct != null)
+        {
+            _buttonConstruct.MouseFilter = MouseFilterEnum.Stop;
+            _buttonConstruct.Pressed += OnButtonConstructPressed;
+        }
+
+        if (_buildVariantButton != null)
+        {
+            _buildVariantButton.MouseFilter = MouseFilterEnum.Stop;
+            _buildVariantButton.Pressed += OnBuildVariantPressed;
+        }
+
+        if (_orderVariantButton != null)
+        {
+            _orderVariantButton.MouseFilter = MouseFilterEnum.Stop;
+            _orderVariantButton.Pressed += OnOrderVariantPressed;
+        }
+
+        if (_wallVariantButton != null)
+        {
+            _wallVariantButton.MouseFilter = MouseFilterEnum.Stop;
+            _wallVariantButton.Pressed += () => ToggleSubContainer(_wallContainer);
+        }
+
+        if (_zonesVariantButton != null)
+        {
+            _zonesVariantButton.MouseFilter = MouseFilterEnum.Stop;
+            _zonesVariantButton.Pressed += () => ToggleSubContainer(_zoneContainer);
+        }
+
+        if (_industrialItemsVariantButton != null)
+        {
+            _industrialItemsVariantButton.MouseFilter = MouseFilterEnum.Stop;
+            _industrialItemsVariantButton.Pressed += () => ToggleSubContainer(_industrialContainer);
+        }
+
+        if (_woodWallButton != null)
+        {
+            _woodWallButton.MouseFilter = MouseFilterEnum.Stop;
+            _woodWallButton.Pressed += OnWoodWallPressed;
+        }
+
+        if (_warehouseAreaButton != null)
+        {
+            _warehouseAreaButton.MouseFilter = MouseFilterEnum.Stop;
+            _warehouseAreaButton.Pressed += OnWarehouseAreaPressed;
+        }
+
+        if (_farmingButton != null)
+        {
+            _farmingButton.MouseFilter = MouseFilterEnum.Stop;
+            _farmingButton.Pressed += OnFarmingPressed;
+        }
+
+        if (_workTableButton != null)
+        {
+            _workTableButton.MouseFilter = MouseFilterEnum.Stop;
+            _workTableButton.Pressed += OnWorkTablePressed;
+        }
+
+        if (_treeFellingButton != null)
+        {
+            _treeFellingButton.MouseFilter = MouseFilterEnum.Stop;
+            _treeFellingButton.Pressed += OnTreeFellingPressed;
+        }
+
+        if (_prioritetButton != null)
+        {
+            _prioritetButton.MouseFilter = MouseFilterEnum.Stop;
+            _prioritetButton.Pressed += OnPrioritetButtonPressed;
+        }
+
+        BindTimeButton(_stopButton, GameSpeed.Paused);
+        BindTimeButton(_speed1xButton, GameSpeed.Normal);
+        BindTimeButton(_speed5xButton, GameSpeed.Fast5);
+        BindTimeButton(_speed25xButton, GameSpeed.Fast25);
+        BindTimeButton(_speed100xButton, GameSpeed.Fast100);
+
+        StockpileManager.Instance.OnItemCountChanged += OnStockpileItemCountChanged;
+        UpdateWoodDisplay(StockpileManager.Instance.GetTotalItemCount(ItemId.Log));
+
+        if (PlayerInteractionManager.Instance != null)
+        {
+            PlayerInteractionManager.Instance.OnToolReset += ClearActiveToolButton;
+        }
+
+        CloseAllMenus();
+    }
+
+    /// <summary>
+    /// Кнопка other тогглит ">" / "&lt;" и видимость additionally-бокса.
+    /// Кнопка humidity тогглит режим карты Влажность (слой поверх тайлов).
+    /// </summary>
+    private void SetupMapModeControls()
+    {
+        if (_additionallyBox != null)
+            _additionallyBox.Visible = false;
+
+        if (_otherButton != null)
+        {
+            _otherButton.MouseFilter = MouseFilterEnum.Stop;
+            _otherButton.Pressed += () =>
+            {
+                if (_additionallyBox == null) return;
+                bool show = !_additionallyBox.Visible;
+                _additionallyBox.Visible = show;
+                _otherButton.Text = show ? "<" : ">";
+            };
+        }
+
+        if (_humidityButton != null)
+        {
+            _humidityButton.MouseFilter = MouseFilterEnum.Stop;
+            _humidityButton.Pressed += () =>
+            {
+                var map = MapRenderer.Instance;
+                if (map == null) return;
+                bool enable = map.CurrentMapMode != MapMode.Humidity;
+                map.SetMapMode(enable ? MapMode.Humidity : MapMode.Normal);
+                // Подсветка активной кнопки: яркая когда вкл, тусклая когда выкл.
+                // Режимы взаимоисключающие — вторую кнопку гасим + её легенду.
+                _humidityButton.Modulate = enable ? new Color(0.5f, 1f, 1f, 1f) : Color.Color8(255, 255, 255, 255);
+                if (_fertilityButton != null)
+                    _fertilityButton.Modulate = Color.Color8(255, 255, 255, 255);
+                UpdateHumidityLegend(enable);
+                UpdateFertilityLegend(false);
+            };
+        }
+
+        if (_fertilityButton != null)
+        {
+            _fertilityButton.MouseFilter = MouseFilterEnum.Stop;
+            _fertilityButton.Pressed += () =>
+            {
+                var map = MapRenderer.Instance;
+                if (map == null) return;
+                bool enable = map.CurrentMapMode != MapMode.Fertility;
+                map.SetMapMode(enable ? MapMode.Fertility : MapMode.Normal);
+                _fertilityButton.Modulate = enable ? new Color(0.6f, 1f, 0.6f, 1f) : Color.Color8(255, 255, 255, 255);
+                if (_humidityButton != null)
+                    _humidityButton.Modulate = Color.Color8(255, 255, 255, 255);
+                UpdateFertilityLegend(enable);
+                UpdateHumidityLegend(false);
+            };
+        }
+
+        // Легенда-шкала влажности (текст, создаём кодом — сцену не трогаем).
+        // Позиция — левый низ (600,1020 при 1920×1080), поверх мира, ZIndex выше.
+        _humidityLegendLabel = new Label
+        {
+            Name = "HumidityLegend",
+            Text = "Влажность: светлое — сухо, тёмное — мокро",
+            Visible = false,
+            MouseFilter = MouseFilterEnum.Ignore,
+            ZIndex = 100
+        };
+        _humidityLegendLabel.SetAnchorsPreset(LayoutPreset.BottomLeft);
+        _humidityLegendLabel.Position = new Vector2(20, -60);
+        _humidityLegendLabel.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f));
+        _humidityLegendLabel.AddThemeColorOverride("font_shadow_color", new Color(0f, 0f, 0f, 0.9f));
+        _humidityLegendLabel.AddThemeConstantOverride("shadow_offset_x", 1);
+        _humidityLegendLabel.AddThemeConstantOverride("shadow_offset_y", 1);
+        AddChild(_humidityLegendLabel);
+
+        // Легенда-шкала плодородия (текст, создаём кодом — сцену не трогаем).
+        _fertilityLegendLabel = new Label
+        {
+            Name = "FertilityLegend",
+            Text = "Плодородие: бледное — бедно, тёмное — богато",
+            Visible = false,
+            MouseFilter = MouseFilterEnum.Ignore,
+            ZIndex = 100
+        };
+        _fertilityLegendLabel.SetAnchorsPreset(LayoutPreset.BottomLeft);
+        _fertilityLegendLabel.Position = new Vector2(20, -60);
+        _fertilityLegendLabel.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f));
+        _fertilityLegendLabel.AddThemeColorOverride("font_shadow_color", new Color(0f, 0f, 0f, 0.9f));
+        _fertilityLegendLabel.AddThemeConstantOverride("shadow_offset_x", 1);
+        _fertilityLegendLabel.AddThemeConstantOverride("shadow_offset_y", 1);
+        AddChild(_fertilityLegendLabel);
+    }
+
+    private Label _humidityTooltip;
+
+    /// <summary>
+    /// Всплывашка у курсора с % влажности. Создаётся после SetMouseFilterRecursive,
+    /// иначе рекурсия выставит ей Ignore... нет, ей и нужен Ignore (не жрёт клики).
+    /// TopLevel + ZIndex 200 — летает поверх всего за мышкой.
+    /// </summary>
+    private void SetupHumidityTooltip()
+    {
+        _humidityTooltip = new Label
+        {
+            Name = "HumidityTooltip",
+            Text = "",
+            Visible = false,
+            MouseFilter = MouseFilterEnum.Ignore,
+            ZIndex = 200,
+            TopLevel = true
+        };
+        _humidityTooltip.AddThemeColorOverride("font_color", new Color(0.7f, 0.95f, 1f));
+        _humidityTooltip.AddThemeColorOverride("font_shadow_color", new Color(0f, 0f, 0f, 0.9f));
+        _humidityTooltip.AddThemeConstantOverride("shadow_offset_x", 1);
+        _humidityTooltip.AddThemeConstantOverride("shadow_offset_y", 1);
+        _humidityTooltip.AddThemeFontSizeOverride("font_size", 20);
+        AddChild(_humidityTooltip);
+    }
+
+    private void UpdateHumidityLegend(bool visible)
+    {
+        if (_humidityLegendLabel != null)
+            _humidityLegendLabel.Visible = visible;
+        if (!visible && _humidityTooltip != null && MapRenderer.Instance?.CurrentMapMode != MapMode.Fertility)
+            _humidityTooltip.Visible = false;
+    }
+
+    private void UpdateFertilityLegend(bool visible)
+    {
+        if (_fertilityLegendLabel != null)
+            _fertilityLegendLabel.Visible = visible;
+        if (!visible && _humidityTooltip != null && MapRenderer.Instance?.CurrentMapMode != MapMode.Humidity)
+            _humidityTooltip.Visible = false;
+    }
+
+    /// <summary>
+    /// Показать плодородие клетки всплывашкой у курсора (тот же тултип, что
+    /// влажность — режимы взаимоисключающие, конфликта нет).
+    /// Только в режиме Fertility и только грунт.
+    /// </summary>
+    public void ShowFertilityAt(int x, int y)
+    {
+        if (_humidityTooltip == null) return;
+        var map = MapRenderer.Instance;
+        if (map?.Fertility == null || map?.MapData?.Ground == null
+            || map.CurrentMapMode != MapMode.Fertility)
+        {
+            _humidityTooltip.Visible = false;
+            return;
+        }
+        var ground = map.MapData.Ground;
+        if ((uint)x >= (uint)ground.GetLength(0) || (uint)y >= (uint)ground.GetLength(1)
+            || ground[x, y] != TileType.Grass)
+        {
+            _humidityTooltip.Visible = false;
+            return;
+        }
+        int v = map.Fertility.Get(x, y);
+        string word = v < 60 ? "бедно" : v <= 140 ? "норма" : "богато";
+        _humidityTooltip.Text = $"{v} {word}";
+        // TopLevel в CanvasLayer: позиция через GlobalPosition + мышь вьюпорта,
+        // иначе (GetGlobalMousePosition у Control) улетает за экран (§20.7).
+        _humidityTooltip.GlobalPosition = GetViewport().GetMousePosition() + new Vector2(16, 16);
+        _humidityTooltip.Visible = true;
+    }
+
+    /// <summary>
+    /// Показать % влажности клетки всплывашкой у курсора.
+    /// Только в режиме Humidity и только грунт: на воде/мёртвой клетке —
+    /// прячем (это вода, и так видно что мокро).
+    /// </summary>
+    public void ShowHumidityAt(int x, int y)
+    {
+        if (_humidityTooltip == null) return;
+        var map = MapRenderer.Instance;
+        if (map?.Humidity == null || map?.MapData?.Ground == null
+            || map.CurrentMapMode != MapMode.Humidity)
+        {
+            _humidityTooltip.Visible = false;
+            return;
+        }
+        var ground = map.MapData.Ground;
+        if ((uint)x >= (uint)ground.GetLength(0) || (uint)y >= (uint)ground.GetLength(1)
+            || ground[x, y] != TileType.Grass)
+        {
+            _humidityTooltip.Visible = false;
+            return;
+        }
+        int m = map.Humidity.Get(x, y);
+        string word = m < 40 ? "сухо" : m <= 130 ? "норма" : "мокро";
+        _humidityTooltip.Text = $"{m}% {word}";
+        // Позиция у курсора (+16px вправо-вниз, чтобы не закрывать клетку).
+        // TopLevel в CanvasLayer — через GlobalPosition (§20.7).
+        _humidityTooltip.GlobalPosition = GetViewport().GetMousePosition() + new Vector2(16, 16);
+        _humidityTooltip.Visible = true;
+    }
+
+    private void SetupSpeedControlsLayer()
+    {
+        // Находим родительский контейнер кнопок времени или поднимаем сами кнопки на верхний слой (ZIndex = 50)
+        Control parent = _stopButton?.GetParent() as Control;
+        if (parent != null && parent != this)
+        {
+            _speedButtonsContainer = parent;
+            _speedButtonsContainer.ZIndex = 50;
+        }
+        else
+        {
+            if (_stopButton != null) _stopButton.ZIndex = 50;
+            if (_speed1xButton != null) _speed1xButton.ZIndex = 50;
+            if (_speed5xButton != null) _speed5xButton.ZIndex = 50;
+            if (_speed25xButton != null) _speed25xButton.ZIndex = 50;
+            if (_speed100xButton != null) _speed100xButton.ZIndex = 50;
+        }
+    }
+
+    private void SetupGardenController()
+    {
+        _gardenController = new FarmController { Name = "GardenController" };
+        AddChild(_gardenController);
+
+        _gardenController.OnOpened += () =>
+        {
+            CloseAllMenus();
+            ClearActiveToolButton();
+            SetMainHUDVisible(false);
+        };
+
+        _gardenController.OnClosed += () =>
+        {
+            SetMainHUDVisible(true);
+        };
+
+        // WorkZone: bootstrap 1-в-1 как Garden (B5: иначе WorkZoneController.Instance == null и весь UI зон мёртв).
+        var workZoneController = new WorkZoneController { Name = "WorkZoneController" };
+        AddChild(workZoneController);
+
+        workZoneController.OnOpened += () =>
+        {
+            CloseAllMenus();
+            ClearActiveToolButton();
+            SetMainHUDVisible(false);
+        };
+
+        workZoneController.OnClosed += () =>
+        {
+            SetMainHUDVisible(true);
+        };
+
+        // Универсальное окно строительства (Build.tscn): открывается при выборе
+        // варианта зоны в ZoneContainer. Bootstrap 1-в-1 как Garden/WorkZone.
+        _buildMenuController = new BuildMenuController { Name = "BuildMenuController" };
+        AddChild(_buildMenuController);
+
+        _buildMenuController.OnOpened += () =>
+        {
+            CloseAllMenus();
+            ClearActiveToolButton();
+            SetMainHUDVisible(false);
+        };
+
+        _buildMenuController.OnClosed += () =>
+        {
+            SetMainHUDVisible(true);
+        };
+    }
+
+    public void SetMainHUDVisible(bool visible)
+    {
+        if (_buttonConstruct != null) _buttonConstruct.Visible = visible;
+        if (_prioritetButton != null) _prioritetButton.Visible = visible;
+        if (_populationLabel != null) _populationLabel.Visible = visible;
+        if (_employmentLabel != null) _employmentLabel.Visible = visible;
+
+        if (_amountOfResourcesPanel != null)
+        {
+            bool shouldShowResources = visible && (_priorityBoard == null || !_priorityBoard.IsOpen);
+            _amountOfResourcesPanel.Visible = shouldShowResources;
+        }
+
+        if (!visible)
+        {
+            CloseAllMenus();
+        }
+    }
+
+    private void SetupHighlightPanel()
+    {
+        _activeHighlightPanel = new Panel
+        {
+            Name = "ActiveButtonHighlight",
+            MouseFilter = MouseFilterEnum.Ignore
+        };
+        _activeHighlightPanel.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+
+        var style = new StyleBoxFlat
+        {
+            BgColor = new Color(0f, 0f, 0f, 0.35f),
+            DrawCenter = true,
+            BorderWidthLeft = 2,
+            BorderWidthTop = 2,
+            BorderWidthRight = 2,
+            BorderWidthBottom = 2,
+            BorderColor = new Color(0.1f, 0.1f, 0.1f, 0.95f),
+            BorderBlend = false
+        };
+        _activeHighlightPanel.AddThemeStyleboxOverride("panel", style);
+    }
+
+    private void SetupPriorityBoard()
+    {
+        _priorityBoard = FindChild("Control", true, false) as PriorityBoardController
+                         ?? FindChild("PriorityBoard", true, false) as PriorityBoardController;
+
+        if (_priorityBoard == null)
+        {
+            var scenePaths = new[]
+            {
+                "res://ui/Prioritet.tscn",
+                "res://scenes/ui/Prioritet.tscn",
+                "res://Prioritet.tscn",
+                "res://scenes/Prioritet.tscn"
+            };
+
+            foreach (var path in scenePaths)
+            {
+                if (ResourceLoader.Exists(path))
+                {
+                    var scene = ResourceLoader.Load<PackedScene>(path);
+                    if (scene != null)
+                    {
+                        var inst = scene.Instantiate();
+                        if (inst is Control ctrl)
+                        {
+                            AddChild(ctrl);
+                            _priorityBoard = new PriorityBoardController();
+                            AddChild(_priorityBoard);
+                            _priorityBoard.Initialize(ctrl);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void OnPrioritetButtonPressed()
+    {
+        if (_priorityBoard == null) return;
+
+        if (_priorityBoard.IsOpen)
+        {
+            _priorityBoard.Close();
+            ClearActiveToolButton();
+            if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen) && (WorkZoneController.Instance == null || !WorkZoneController.Instance.IsOpen))
+                _amountOfResourcesPanel.Visible = true;
+        }
+        else
+        {
+            ToggleToolButton(_prioritetButton, () =>
+            {
+                FarmZoneManager.Instance.DeselectZone();
+                WorkZoneManager.Instance.DeselectZone();
+                if (_amountOfResourcesPanel != null)
+                    _amountOfResourcesPanel.Visible = false;
+                _priorityBoard.Open();
+            });
+        }
+    }
+
+    private void ToggleToolButton(Button button, Action activateAction)
+    {
+        if (_activeToolButton == button)
+        {
+            ClearActiveToolButton();
+            if (_priorityBoard != null && _priorityBoard.IsOpen)
+            {
+                _priorityBoard.Close();
+                if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen) && (WorkZoneController.Instance == null || !WorkZoneController.Instance.IsOpen))
+                    _amountOfResourcesPanel.Visible = true;
+            }
+            PlayerInteractionManager.Instance?.ResetToDefault();
+            return;
+        }
+
+        ClearActiveToolButton();
+        FarmZoneManager.Instance.DeselectZone();
+        WorkZoneManager.Instance.DeselectZone();
+        _activeToolButton = button;
+
+        if (_activeToolButton != null && _activeHighlightPanel != null)
+        {
+            if (_activeHighlightPanel.GetParent() != null)
+                _activeHighlightPanel.GetParent().RemoveChild(_activeHighlightPanel);
+
+            _activeToolButton.AddChild(_activeHighlightPanel);
+            _activeHighlightPanel.Visible = true;
+        }
+
+        activateAction?.Invoke();
+    }
+
+    public void ClearActiveToolButton()
+    {
+        if (_activeHighlightPanel != null && _activeHighlightPanel.GetParent() != null)
+        {
+            _activeHighlightPanel.GetParent().RemoveChild(_activeHighlightPanel);
+            _activeHighlightPanel.Visible = false;
+        }
+        _activeToolButton = null;
+    }
+
+    // Всплывашка влажности/плодородия следует за курсором каждый кадр.
+    // Text не трогаем здесь (только Position) — дёшево.
+    private void FollowHumidityTooltip()
+    {
+        if (_humidityTooltip != null && _humidityTooltip.Visible)
+            _humidityTooltip.GlobalPosition = GetViewport().GetMousePosition() + new Vector2(16, 16);
+    }
+
+    // §20.7: цифра под курсором протухает если мышь стоит, а камера едет (WASD).
+    // SelectTool дёргает Show* только при смене клетки — перезапрашиваем сами
+    // раз в 0.25с для клетки под курсором (дешёво, 4 раза в секунду).
+    private float _soilTipTimer;
+
+    private void TickSoilTooltip()
+    {
+        _soilTipTimer += 1.0f / 60.0f;
+        if (_soilTipTimer < 0.25f)
+            return;
+        _soilTipTimer = 0f;
+        var map = MapRenderer.Instance;
+        if (map?.MapData?.Ground == null)
+            return;
+        // Мышь вьюпорта → мировые координаты через камеру.
+        Vector2 world = GetViewport().GetCamera2D()?.GetScreenCenterPosition()
+            + (GetViewport().GetMousePosition() - GetViewport().GetVisibleRect().Size * 0.5f)
+                / (GetViewport().GetCamera2D()?.Zoom.X ?? 1f) ?? Vector2.Zero;
+        int tx = (int)(world.X / MapRenderer.TileSizePx);
+        int ty = (int)(world.Y / MapRenderer.TileSizePx);
+        var ground = map.MapData.Ground;
+        if ((uint)tx >= (uint)ground.GetLength(0) || (uint)ty >= (uint)ground.GetLength(1))
+        {
+            if (_humidityTooltip != null)
+                _humidityTooltip.Visible = false;
+            return;
+        }
+        if (map.CurrentMapMode == MapMode.Humidity)
+            ShowHumidityAt(tx, ty);
+        else if (map.CurrentMapMode == MapMode.Fertility)
+            ShowFertilityAt(tx, ty);
+    }
+
+    public override void _Process(double delta)
+    {
+        FollowHumidityTooltip();
+        TickSoilTooltip();
+        _statsSyncTimer += (float)delta;
+        // П.8: некритичные показатели (население/занятость) — 1с вместо 250мс,
+        // время мира — отдельно 0.5с (дёргать Label каждый кадр незачем).
+        if (_statsSyncTimer >= 1.0f)
+        {
+            _statsSyncTimer = 0f;
+            RefreshStats();
+        }
+        _timeSyncTimer += (float)delta;
+        if (_timeSyncTimer >= 0.5f)
+        {
+            _timeSyncTimer = 0f;
+            UpdateWorldTimeDisplay();
+        }
+    }
+
+    private void RefreshStats()
+    {
+        // E67: замер HUD-обновлений — Label-строки сами могут тормозить.
+        var swH = System.Diagnostics.Stopwatch.StartNew();
+        int total = _totalPopulation;
+        int unemployed = JobDispatcher.Instance.IdleWorkers.TotalIdleCount;
+        int employed = Math.Max(0, total - unemployed);
+
+        string pop = FormatAmount(total);
+        if (pop != _lastPopText) { _lastPopText = pop; if (_populationLabel != null) _populationLabel.Text = pop; }
+        string emp = FormatAmount(employed) + "/" + FormatAmount(unemployed);
+        // GPU-трек удалён (GpuStatsReduce): строка employment — бит-в-бит как раньше.
+        if (_employmentLabel != null && _employmentLabel.Text != emp) _employmentLabel.Text = emp;
+
+        UpdateWorldTimeDisplayThrottled();
+        swH.Stop();
+        if (swH.Elapsed.TotalMilliseconds > 1.0)
+            Game.Core.SimEvents.Record("render", "HUD.RefreshStats", (float)swH.Elapsed.TotalMilliseconds);
+    }
+
+    private void UpdateWorldTimeDisplayThrottled()
+    {
+        // Время обновляется своим таймером 0.5с — здесь только если таймер уже тикнул.
+        if (_timeSyncTimer <= 0.001f) UpdateWorldTimeDisplay();
+    }
+
+    /// <summary>
+    /// Обновляет «время в мире»: день и часы/минуты суток (сутки = 24 игровых часа).
+    /// Работает при любой скорости: на 100x сутки идут ровно 2 реальные минуты.
+    /// </summary>
+    private void UpdateWorldTimeDisplay()
+    {
+        if (_worldTimeLabel == null || TimeManager.Instance == null)
+            return;
+
+        var tm = TimeManager.Instance;
+        int day = tm.DayNumber;
+        float tod = tm.TimeOfDaySeconds;
+        int hours = (int)(tod / WorldTime.SecondsPerHour);
+        int minutes = (int)((tod % WorldTime.SecondsPerHour) / WorldTime.SecondsPerHour * 60f);
+        string icon = DayNightCycle.IsNight(tod) ? "☾" : "☀";
+
+        string text = $"{icon} День {day}, {hours:00}:{minutes:00}";
+        if (text == _lastTimeText) return;
+        _lastTimeText = text;
+        _worldTimeLabel.Text = text;
+    }
+
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (@event is InputEventKey key && key.Pressed && key.Keycode == Key.Escape)
+        {
+            bool handled = false;
+
+            if (_gardenController != null && _gardenController.IsOpen)
+            {
+                FarmZoneManager.Instance.DeselectZone();
+                handled = true;
+            }
+
+            // T7: 1-в-1 как garden — Escape закрывает рабочую зону.
+            if (WorkZoneController.Instance != null && WorkZoneController.Instance.IsOpen)
+            {
+                WorkZoneManager.Instance.DeselectZone();
+                handled = true;
+            }
+
+            if ((_selectionContainer != null && _selectionContainer.Visible) || _activeToolButton != null || (_priorityBoard != null && _priorityBoard.IsOpen))
+            {
+                CloseAllMenus();
+                if (_priorityBoard != null && _priorityBoard.IsOpen)
+                {
+                    _priorityBoard.Close();
+                    if (_amountOfResourcesPanel != null && (_gardenController == null || !_gardenController.IsOpen) && (WorkZoneController.Instance == null || !WorkZoneController.Instance.IsOpen))
+                        _amountOfResourcesPanel.Visible = true;
+                }
+                ClearActiveToolButton();
+                PlayerInteractionManager.Instance?.ResetToDefault();
+                handled = true;
+            }
+
+            if (handled)
+            {
+                GetViewport().SetInputAsHandled();
+            }
+        }
+    }
+
+    private void OnStockpileItemCountChanged(ItemId itemId, int totalCount)
+    {
+        if (itemId == ItemId.Log)
+        {
+            UpdateWoodDisplay(totalCount);
+        }
+    }
+
+    private void UpdateWoodDisplay(int count)
+    {
+        if (_woodAmountLabel != null)
+        {
+            string text = FormatAmount(count);
+            if (text == _lastWoodText) return;
+            _lastWoodText = text;
+            _woodAmountLabel.Text = text;
+        }
+    }
+
+    private static string FormatAmount(int count)
+    {
+        if (count < 1000)
+            return count.ToString();
+
+        if (count < 1_000_000)
+        {
+            float kValue = count / 1000f;
+            return kValue.ToString("0.##", CultureInfo.InvariantCulture) + "k";
+        }
+
+        float mValue = count / 1_000_000f;
+        return mValue.ToString("0.##", CultureInfo.InvariantCulture) + "M";
+    }
+
+    private void OnButtonConstructPressed()
+    {
+        if (_selectionContainer != null && _selectionContainer.Visible)
+        {
+            CloseAllMenus();
+            ClearActiveToolButton();
+            PlayerInteractionManager.Instance?.ResetToDefault();
+        }
+        else
+        {
+            CloseAllMenus();
+            ShowContainer(_selectionContainer);
+        }
+    }
+
+    private void OnBuildVariantPressed()
+    {
+        if (_buildContainer != null && _buildContainer.Visible)
+        {
+            CloseTier2AndSub();
+        }
+        else
+        {
+            CloseTier2AndSub();
+            HideContainer(_orderContainer);
+            ShowContainer(_buildContainer);
+        }
+    }
+
+    private void OnOrderVariantPressed()
+    {
+        if (_orderContainer != null && _orderContainer.Visible)
+        {
+            HideContainer(_orderContainer);
+        }
+        else
+        {
+            CloseTier2AndSub();
+            ShowContainer(_orderContainer);
+        }
+    }
+
+    private void ToggleSubContainer(Control targetSub)
+    {
+        if (targetSub != null && targetSub.Visible)
+        {
+            HideContainer(targetSub);
+        }
+        else
+        {
+            HideAllSubContainers();
+            ShowContainer(targetSub);
+        }
+    }
+
+    private static void ShowContainer(Control control)
+    {
+        if (control == null) return;
+        control.Visible = true;
+    }
+
+    private static void HideContainer(Control control)
+    {
+        if (control == null) return;
+        control.Visible = false;
+    }
+
+    private void CloseTier2AndSub()
+    {
+        HideContainer(_buildContainer);
+        HideAllSubContainers();
+    }
+
+    private void HideAllSubContainers()
+    {
+        HideContainer(_wallContainer);
+        HideContainer(_zoneContainer);
+        HideContainer(_industrialContainer);
+    }
+
+    private void CloseAllMenus()
+    {
+        HideContainer(_selectionContainer);
+        HideContainer(_buildContainer);
+        HideContainer(_orderContainer);
+        HideAllSubContainers();
+    }
+
+    private void OnWoodWallPressed()
+    {
+        ToggleToolButton(_woodWallButton, () =>
+        {
+            var interaction = PlayerInteractionManager.Instance;
+            var mapRenderer = MapRenderer.Instance;
+            if (interaction == null || mapRenderer?.WallBuildManager == null || mapRenderer?.MapData == null) return;
+
+            var buildTool = new BuildTool(
+                mapRenderer.WallBuildManager,
+                mapRenderer.GhostLayer,
+                mapRenderer.MapData,
+                BuildingType.WoodWall,
+                MapRenderer.SourceWall
+            );
+            interaction.SetTool(buildTool);
+            buildTool.WorldPlacement = WorldPlacement;
+        });
+    }
+
+    private void OnWorkTablePressed()
+    {
+        ToggleToolButton(_workTableButton, () =>
+        {
+            var interaction = PlayerInteractionManager.Instance;
+            var mapRenderer = MapRenderer.Instance;
+            if (interaction == null || mapRenderer?.WallBuildManager == null || mapRenderer?.MapData == null) return;
+
+            var tableTool = new BuildTool(
+                mapRenderer.WallBuildManager,
+                mapRenderer.GhostLayer,
+                mapRenderer.MapData,
+                BuildingType.WorkTable,
+                MapRenderer.SourceWorkTable
+            );
+            interaction.SetTool(tableTool);
+            tableTool.WorldPlacement = WorldPlacement;
+        });
+    }
+
+    /// <summary>
+    /// Кнопки мебели (кровать/скамья/тумбочка) в IndustrialContainer.
+    /// Сцену не трогаем — создаём кодом 1-в-1 как WorkTableButton (100x100).
+    /// Иконки грузятся по тем же UID, что кладутся в мир.
+    /// </summary>
+    private void SetupFurnitureButtons()
+    {
+        if (_industrialContainer == null) return;
+        _bedButton = CreateFurnitureButton("BedButton", "uid://0uf8ok6dxhyi", OnBedPressed);
+        _benchButton = CreateFurnitureButton("BenchButton", "uid://bi667xckuklur", OnBenchPressed);
+        _nightstandButton = CreateFurnitureButton("NightstandButton", "uid://ir5jk74j01fg", OnNightstandPressed);
+    }
+
+    private Button CreateFurnitureButton(string nodeName, string textureUid, Action onPressed)
+    {
+        var btn = new Button { Name = nodeName, CustomMinimumSize = new Vector2(100, 100), ExpandIcon = true };
+        try
+        {
+            var tex = ResourceLoader.Load<Texture2D>(textureUid);
+            if (tex != null) btn.Icon = tex;
+        }
+        catch { /* без иконки кнопка всё равно работает (текст ниже) */ }
+        if (btn.Icon == null) btn.Text = nodeName;
+        btn.MouseFilter = MouseFilterEnum.Stop;
+        btn.Pressed += () => onPressed();
+        _industrialContainer.AddChild(btn);
+        return btn;
+    }
+
+    /// <summary>
+    /// Кнопка добычи камня в OrderContainer рядом с рубкой.
+    /// Иконка — первый квадрант stone.png (тот же, что падает на землю).
+    /// </summary>
+    private void SetupStoneMiningButton()
+    {
+        if (_orderContainer == null) return;
+        _stoneMiningButton = new Button { Name = "StoneMiningButton", CustomMinimumSize = new Vector2(100, 100), ExpandIcon = true };
+        try
+        {
+            var atlas = ResourceLoader.Load<Texture2D>("uid://du6ur8mvtu3le");
+            if (atlas != null)
+                _stoneMiningButton.Icon = new AtlasTexture
+                {
+                    Atlas = atlas,
+                    Region = new Rect2(0, 0, MapRenderer.TileSizePx, MapRenderer.TileSizePx)
+                };
+        }
+        catch { }
+        if (_stoneMiningButton.Icon == null) _stoneMiningButton.Text = "Камень";
+        _stoneMiningButton.MouseFilter = MouseFilterEnum.Stop;
+        _stoneMiningButton.Pressed += OnStoneMiningPressed;
+        _orderContainer.AddChild(_stoneMiningButton);
+    }
+
+    private void StartFurnitureBuild(Button button, BuildingType type, int sourceId)
+    {
+        ToggleToolButton(button, () =>
+        {
+            var interaction = PlayerInteractionManager.Instance;
+            var mapRenderer = MapRenderer.Instance;
+            if (interaction == null || mapRenderer?.WallBuildManager == null || mapRenderer?.MapData == null) return;
+
+            // Ghost мебели — через building-слой (источники 14–16 только там).
+            var tool = new BuildTool(
+                mapRenderer.WallBuildManager,
+                mapRenderer.GhostLayer,
+                mapRenderer.MapData,
+                type,
+                sourceId
+            );
+            interaction.SetTool(tool);
+            tool.WorldPlacement = WorldPlacement;
+        });
+    }
+
+    private void OnBedPressed() => StartFurnitureBuild(_bedButton, BuildingType.Bed, MapRenderer.SourceBed);
+    private void OnBenchPressed() => StartFurnitureBuild(_benchButton, BuildingType.Bench, MapRenderer.SourceBench);
+    private void OnNightstandPressed() => StartFurnitureBuild(_nightstandButton, BuildingType.Nightstand, MapRenderer.SourceNightstand);
+
+    private void OnStoneMiningPressed()
+    {
+        ToggleToolButton(_stoneMiningButton, () =>
+        {
+            var interaction = PlayerInteractionManager.Instance;
+            var mapRenderer = MapRenderer.Instance;
+            if (interaction == null || mapRenderer?.MapData == null) return;
+
+            var stoneTool = new StoneMiningTool(interaction.Selection, mapRenderer.MapData);
+            interaction.SetTool(stoneTool);
+            stoneTool.WorldPlacement = WorldPlacement;
+        });
+    }
+
+    private void OnWarehouseAreaPressed()
+    {
+        // Выбор варианта зоны "Склад": открываем универсальное окно строительства.
+        _buildMenuController?.Open("warehouse", "Склад");
+    }
+
+    private void OnFarmingPressed()
+    {
+        // Выбор варианта зоны "Ферма": открываем универсальное окно строительства.
+        _buildMenuController?.Open("farming", "Ферма");
+    }
+
+    private ZoneDraftTool _draftTool;
+
+    /// <summary>
+    /// Мир за кромкой острова (§26 шаг 2, §28): задаётся из Main.cs после включения
+    /// стримингового мира. null — инструменты работают только по острову, как раньше.
+    /// </summary>
+    public Game.UI.Tools.IToolWorldPlacement WorldPlacement { get; set; }
+
+    /// <summary>Идёт ли черчение зоны (черновик активен как инструмент).</summary>
+    public bool IsDrafting => _draftTool != null
+        && PlayerInteractionManager.Instance != null
+        && !PlayerInteractionManager.Instance.IsDefaultTool;
+
+    /// <summary>
+    /// ZoneButton окна: включить черновик зоны+стен. Окно остаётся открытым.
+    /// Повторный нажим — ничего не сносит (черновик живёт дальше).
+    /// </summary>
+    public void StartZoneDraft(string zoneId)
+    {
+        var interaction = PlayerInteractionManager.Instance;
+        var mapRenderer = MapRenderer.Instance;
+        if (interaction == null || mapRenderer?.MapData == null || mapRenderer?.GhostLayer == null)
+            return;
+        if (string.IsNullOrEmpty(zoneId))
+            zoneId = _buildMenuController?.CurrentZoneId ?? "";
+        // Повторный нажим той же зоны — не пересоздаём инструмент:
+        // иначе черновик и призрак сносились (баг пропажи зон).
+        if (_draftTool != null && _draftTool.ZoneKind == zoneId)
+            return;
+        // Смена типа зоны — старый черновик аккуратно гасим.
+        if (_draftTool != null)
+        {
+            _draftTool.Cancel();
+            _draftTool = null;
+        }
+        _draftTool = new ZoneDraftTool(
+            interaction.Selection, mapRenderer.MapData, mapRenderer.GhostLayer, zoneId);
+        if (_buildMenuController != null)
+        {
+            _draftTool.SetWallMaterial(_buildMenuController.SelectedMaterialId);
+            _draftTool.SetDoorMode(_buildMenuController.DoorMode);
+        }
+        interaction.SetTool(_draftTool);
+        _draftTool.WorldPlacement = WorldPlacement;
+    }
+
+    /// <summary>DoorButton окна: тумблер режима проёма в активном черновике.</summary>
+    public void SetDraftDoorMode(bool enabled)
+    {
+        _draftTool?.SetDoorMode(enabled);
+    }
+
+    /// <summary>Попап материалов: сменить материал в активном черновике.</summary>
+    public void SetDraftMaterial(string materialId)
+    {
+        _draftTool?.SetWallMaterial(materialId);
+    }
+
+    /// <summary>CheckMark окна: коммит черновика, окно закрыть, инструмент сбросить.</summary>
+    public void ConfirmDraft()
+    {
+        bool committed = _draftTool != null && _draftTool.Commit();
+        _draftTool = null;
+        _buildMenuController?.ResetDoorMode();
+        _buildMenuController?.Close();
+        if (committed)
+            PlayerInteractionManager.Instance?.ResetToDefault();
+    }
+
+    /// <summary>Дверь включилась: остановить черчение, но черновик не сносить.</summary>
+    public void StopDraftDrawing()
+    {
+        _draftTool?.StopDrawing();
+    }
+
+    /// <summary>esc окна: отмена черновика БЕЗ удаления (ничего не ставили), инструмент сбросить.</summary>
+    public void CancelDraft()
+    {
+        if (_draftTool != null)
+        {
+            _draftTool.Cancel();
+            _draftTool = null;
+        }
+        PlayerInteractionManager.Instance?.ResetToDefault();
+    }
+
+    /// <summary>Крестик окна: черновик уже поставлен в мир — удалить чертежи+зону.</summary>
+    public void DiscardDraft()
+    {
+        if (_draftTool != null)
+        {
+            _draftTool.Discard();
+            _draftTool = null;
+        }
+        _buildMenuController?.ResetDoorMode();
+        _buildMenuController?.Close();
+        PlayerInteractionManager.Instance?.ResetToDefault();
+    }
+
+    private void OnTreeFellingPressed()
+    {
+        ToggleToolButton(_treeFellingButton, () =>
+        {
+            var interaction = PlayerInteractionManager.Instance;
+            var mapRenderer = MapRenderer.Instance;
+            if (interaction == null || mapRenderer?.MapData == null) return;
+
+            var treeTool = new TreeFellingTool(interaction.Selection, mapRenderer.MapData);
+            interaction.SetTool(treeTool);
+            treeTool.WorldPlacement = WorldPlacement;
+        });
+    }
+
+    private void BindTimeButton(Button button, GameSpeed speed)
+    {
+        if (button != null)
+        {
+            button.MouseFilter = MouseFilterEnum.Stop;
+            button.Pressed += () => TimeManager.Instance?.SetSpeed(speed);
+        }
+    }
+
+    public void Setup(PlayerInteractionManager interactionManager, MapRenderer mapRenderer, int totalPopulation = 550)
+    {
+        _totalPopulation = totalPopulation;
+        if (interactionManager != null)
+        {
+            interactionManager.OnToolReset += ClearActiveToolButton;
+        }
+        RefreshStats();
+    }
+
+    private Button _buttonMap; // Сохраняем ссылку для защиты от дубликатов
+
+    /// <summary>Привязать кнопку ButtonMap (глобальная карта §23/§24) к переключению оверлея.</summary>
+    public void BindWorldMapButton(Action onPressed)
+    {
+        if (onPressed == null || _buttonMap != null) return; // Защита от двойной подписки
+        
+        var button = FindChild("ButtonMap", true, false) as Button;
+        if (button == null)
+        {
+            GD.PrintErr("[HUD] ButtonMap НЕ найден через FindChild!");
+            foreach (var child in GetChildren())
+                GD.Print($"[HUD] Дети: {child.Name} ({child.GetType().Name})");
+            return;
+        }
+        
+        _buttonMap = button;
+        _buttonMap.MouseFilter = Control.MouseFilterEnum.Stop;
+        
+        // Поднимаем кнопку наверх — переносим в конец дерева children
+        // Теперь она рисуется поверх всех PanelContainer'ов
+        RemoveChild(_buttonMap);
+        AddChild(_buttonMap);
+        
+        _buttonMap.Pressed += () =>
+        {
+            GD.Print("[HUD BUTTONMAP!] clicked -> invoking");
+            onPressed?.Invoke();
+        };
+        GD.Print("[HUD] ButtonMap bound OK");
+    }
+
+    private static void SetMouseFilterRecursive(Control control)
+    {
+        if (control is not BaseButton)
+        {
+            control.MouseFilter = MouseFilterEnum.Ignore;
+        }
+
+        foreach (Node child in control.GetChildren())
+        {
+            if (child is Control childControl)
+                SetMouseFilterRecursive(childControl);
+        }
+    }
+
+    public void UpdateUI(CityState state)
+    {
+        if (_populationLabel != null)
+            _populationLabel.Text = state.Population.ToString();
+        if (_employmentLabel != null)
+            _employmentLabel.Text = $"{state.Employed}/{state.Unemployed}";
+    }
+
+    public override void _ExitTree()
+    {
+        if (Instance == this)
+            Instance = null;
+        StockpileManager.Instance.OnItemCountChanged -= OnStockpileItemCountChanged;
+        if (PlayerInteractionManager.Instance != null)
+        {
+            PlayerInteractionManager.Instance.OnToolReset -= ClearActiveToolButton;
+        }
+        base._ExitTree();
+    }
+}

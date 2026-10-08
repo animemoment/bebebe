@@ -31,9 +31,10 @@ public sealed class ProfilerLogService
     /// <summary>Посекундные агрегаты одного метода.</summary>
     public sealed class SecondEntry
     {
-        public double TotalMs;      // сумма времени метода за 1 секунду
+        public double TotalMs;      // сумма времени метода за 1 секунду (мс/с)
         public double MaxMs;        // максимум одиночного замера за секунду
         public int Calls;           // суммарное число вызовов за секунду
+        public int Frames;          // сколько кадров отрисовано за эту секунду
         public int SnapshotCount;   // сколько 10Гц-снапшотов легло в окно
     }
 
@@ -80,20 +81,31 @@ public sealed class ProfilerLogService
     public int InputCount => _inputs.Count;
 
     /// <summary>
-    /// Принимает очередной 10Гц-снапшот и накапливает его в текущее секундное окно.
-    /// Вызывается из <c>_Process</c> оверлея независимо от видимости панели.
+    /// Принимает очередной снапшот профайлера и накапливает его в текущее
+    /// СЕКУНДНОЕ окно. Вызывается из <c>_Process</c> оверлея независимо от
+    /// видимости панели.
+    ///
+    /// ВАЖНО (исправление врущего лога): windowSec — это реальная длина окна
+    /// снапшота, а не delta одного кадра. Раньше сюда приходил delta кадра
+    /// (~0.0167 с), поэтому «секундное» окно набиралось из ~60 снапшотов вместо
+    /// ~10, а суммы методов завышались примерно в 6 раз (и в отчёте «Σ 120ms»
+    /// означало 120 мс за ~6 реальных секунд). Вызовы берутся из явного поля
+    /// Calls, а не через CallsPerSec × delta.
     /// </summary>
-    public void Accumulate(GameProfiler.MetricSnapshot[] metrics, float delta)
+    public void Accumulate(GameProfiler.MetricSnapshot[] metrics, double windowSec, int frames)
     {
         if (_paused || metrics == null || metrics.Length == 0)
             return;
 
-        _windowAccum += delta;
-        double deltaSec = Math.Max(0.016f, delta);
+        if (!double.IsFinite(windowSec) || windowSec <= 0.0)
+            windowSec = 0.016;
+        if (frames < 0) frames = 0;
+
+        _windowAccum += windowSec;
 
         foreach (var m in metrics)
         {
-            if (m.AvgMs < 0.0005 && m.MaxMs < 0.0005 && m.CallsPerSec == 0)
+            if (m.TotalMs < 0.0005 && m.MaxMs < 0.0005 && m.Calls == 0)
                 continue; // пропускаем «мёртвые» записи
 
             if (!_current.TryGetValue(m.Name, out var entry))
@@ -102,13 +114,14 @@ public sealed class ProfilerLogService
                 _current[m.Name] = entry;
             }
 
-            entry.TotalMs += m.AvgMs;
+            entry.TotalMs += m.TotalMs;
             if (m.MaxMs > entry.MaxMs) entry.MaxMs = m.MaxMs;
-            entry.Calls += (int)(m.CallsPerSec * deltaSec);
+            entry.Calls += m.Calls;
+            entry.Frames += frames;
             entry.SnapshotCount++;
         }
 
-        if (_windowAccum >= 1.0f)
+        if (_windowAccum >= 1.0)
             FlushWindow();
     }
 
@@ -448,7 +461,7 @@ public sealed class ProfilerLogService
         int start = Math.Max(0, _seconds.Count - wantSecs);
         // Топ-N отбором без сортировки всего окна: держим отсортированный по
         // убыванию TotalMs буфер размера wantTop, вставка — пузырьком вверх.
-        var topBuf = new List<(string Name, double TotalMs, double MaxMs, int Calls, int Snaps)>(Math.Max(1, wantTop));
+        var topBuf = new List<(string Name, double TotalMs, double MaxMs, int Calls, int Frames)>(Math.Max(1, wantTop));
         for (int i = start; i < _seconds.Count; i++)
         {
             double secTime = _sessionSecs - (_seconds.Count - i);
@@ -460,7 +473,7 @@ public sealed class ProfilerLogService
                 int pos;
                 if (topBuf.Count < wantTop)
                 {
-                    topBuf.Add((name, e.TotalMs, e.MaxMs, e.Calls, e.SnapshotCount));
+                    topBuf.Add((name, e.TotalMs, e.MaxMs, e.Calls, e.Frames));
                     pos = topBuf.Count - 1;
                 }
                 else
@@ -470,7 +483,7 @@ public sealed class ProfilerLogService
                     for (int m = 1; m < wantTop; m++)
                         if (topBuf[m].TotalMs < topBuf[minIdx].TotalMs) minIdx = m;
                     if (e.TotalMs <= topBuf[minIdx].TotalMs) continue;
-                    topBuf[minIdx] = (name, e.TotalMs, e.MaxMs, e.Calls, e.SnapshotCount);
+                    topBuf[minIdx] = (name, e.TotalMs, e.MaxMs, e.Calls, e.Frames);
                     pos = minIdx;
                 }
                 // пузырьком вверх по TotalMs
@@ -482,12 +495,15 @@ public sealed class ProfilerLogService
             }
             for (int t = 0; t < topBuf.Count; t++)
             {
-                var (name, total, peak, calls, snaps) = topBuf[t];
-                double perFramePct = snaps > 0 ? total / snaps / 16.667 * 100.0 : 0.0;
+                var (name, total, peak, calls, frames) = topBuf[t];
+                // Нормировка на кадр: total — мс/с, frames — кадров за эту секунду.
+                double msPerFrame = frames > 0 ? total / frames : 0.0;
+                double perFramePct = msPerFrame / 16.667 * 100.0;
                 sb.Append("    ").Append(name).Append(' ', Math.Max(1, 40 - name.Length))
-                    .Append("Σ ").Append(total.ToString("F1").PadLeft(7)).Append("ms | пик ")
+                    .Append("Σ ").Append(total.ToString("F1").PadLeft(7)).Append("ms/с | пик ")
                     .Append(peak.ToString("F2").PadLeft(6)).Append("ms | вызовов ")
-                    .Append(calls.ToString().PadLeft(6)).Append(" | %кадра ")
+                    .Append(calls.ToString().PadLeft(6)).Append(" | мс/кадр ")
+                    .Append(msPerFrame.ToString("F2").PadLeft(6)).Append(" | %кадра ")
                     .Append(perFramePct.ToString("F1").PadLeft(5)).AppendLine();
             }
         }

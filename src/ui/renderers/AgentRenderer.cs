@@ -24,6 +24,9 @@ public partial class AgentRenderer : Node2D
     // _shadowUseShader=false — fallback на старый CPU-путь матриц
     // (шейдер не загрузился, например headless-юнит вне движка).
     private ShaderMaterial _shadowMaterial;
+    private ShaderMaterial _agentInterpolationMaterial;
+    private float[] _gpuInstanceBuffer;
+    private bool _gpuInterpolationEnabled;
     private bool _shadowUseShader = false;
 
     private int _agentCount;
@@ -50,6 +53,8 @@ public partial class AgentRenderer : Node2D
     private const float AgentQuarter = AgentSize * 0.25f; // 8: сдвиг якоря к ногам
     private const string TexturePath = "uid://clysp24n2dgat";
     private const string ShadowShaderPath = "res://src/ui/renderers/AgentShadow.gdshader";
+    private const string AgentInterpolationShaderPath = "res://src/ui/renderers/AgentInterpolation.gdshader";
+    private const string AgentShadowInterpolatedShaderPath = "res://src/ui/renderers/AgentShadowInterpolated.gdshader";
     // LOD как у Syx (DivRenderer: зум<3 стрелки, дальше точки):
     // при зуме камеры < 0.35 тень 10k агентов считается через кадр (−50% CPU).
     private const float ShadowLodZoom = 0.35f;
@@ -63,7 +68,36 @@ public partial class AgentRenderer : Node2D
 
         _prevPositions = new System.Numerics.Vector2[agentCount];
         _targetPositions = new System.Numerics.Vector2[agentCount];
+
+        Shader interpolationShader = null;
+        Shader interpolatedShadowShader = null;
+        try
+        {
+            interpolationShader = GD.Load<Shader>(AgentInterpolationShaderPath);
+            interpolatedShadowShader = GD.Load<Shader>(AgentShadowInterpolatedShaderPath);
+        }
+        catch (Exception)
+        {
+            // CPU fallback ниже сохраняет исходный MultiMesh-путь.
+        }
+        bool gpuInterpolationRequested = true;
+        try
+        {
+            gpuInterpolationRequested = ProjectSettings
+                .GetSetting("game/rendering/use_gpu_agent_interpolation", true)
+                .AsBool();
+        }
+        catch (Exception)
+        {
+            // Конфиг без пользовательского параметра считается включённым.
+        }
+        _gpuInterpolationEnabled = gpuInterpolationRequested
+            && interpolationShader != null
+            && interpolatedShadowShader != null;
         _renderBuffer = new float[agentCount * 8];
+        _shadowBuffer = new float[agentCount * 8];
+        if (_gpuInterpolationEnabled)
+            _gpuInstanceBuffer = new float[agentCount * 12];
 
         var texture = ResourceLoader.Load<Texture2D>(TexturePath);
         if (texture == null)
@@ -85,7 +119,7 @@ public partial class AgentRenderer : Node2D
             Mesh = quadMesh,
             TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
             UseColors = false,
-            UseCustomData = false,
+            UseCustomData = _gpuInterpolationEnabled,
             InstanceCount = agentCount,
             CustomAabb = mapAabb
         };
@@ -96,19 +130,22 @@ public partial class AgentRenderer : Node2D
             Multimesh = _multiMesh,
             Texture = texture
         };
+        if (_gpuInterpolationEnabled)
+        {
+            _agentInterpolationMaterial = new ShaderMaterial { Shader = interpolationShader };
+            _multiMeshInstance.Material = _agentInterpolationMaterial;
+        }
         AddChild(_multiMeshInstance);
 
-        // Тень-объект: свой MultiMesh с тем же квадом/текстурой. Шаг G4: растяжение
-        // силуэта от ног вдоль солнца делает вершинный шейдер (AgentShadow.gdshader),
-        // CPU пишет только трансляцию с якорем (4 записи/инстанс вместо 8 с арифметикой).
-        // Z ниже тел, чтобы тени лежали под агентами. +1 draw-call.
-        _shadowBuffer = new float[agentCount * 8];
+        // Отдельный MultiMesh теней. При GPU path он использует тот же packed
+        // prev/target buffer, что и тела, а вершинный shader строит клин на GPU.
+        // CPU-вариант сохраняет отдельную матрицу теней для совместимости.
         _shadowMultiMesh = new MultiMesh
         {
             Mesh = quadMesh,
             TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
             UseColors = false,
-            UseCustomData = false,
+            UseCustomData = _gpuInterpolationEnabled,
             InstanceCount = agentCount,
             VisibleInstanceCount = 0,
             CustomAabb = mapAabb
@@ -125,16 +162,28 @@ public partial class AgentRenderer : Node2D
         };
         AddChild(_shadowInstance);
 
-        // Шаг G4: материал тени с вершинным шейдером — кодом, scenes/ не трогаем.
-        // GD.Load вне движка (headless-юнит) вернёт null — тогда fallback на CPU-путь.
-        Shader shadowShader = null;
-        try { shadowShader = GD.Load<Shader>(ShadowShaderPath); }
-        catch (Exception) { shadowShader = null; }
+        // При совместной загрузке новых shaders тела и тени интерполируются GPU.
+        // Иначе оставляем прежний shadow shader и CPU matrix fallback без изменений.
+        Shader shadowShader = interpolatedShadowShader;
+        if (!_gpuInterpolationEnabled)
+        {
+            try { shadowShader = GD.Load<Shader>(ShadowShaderPath); }
+            catch (Exception) { shadowShader = null; }
+        }
         if (shadowShader != null)
         {
             _shadowMaterial = new ShaderMaterial { Shader = shadowShader };
             _shadowInstance.Material = _shadowMaterial;
             _shadowUseShader = true;
+            if (_gpuInterpolationEnabled)
+            {
+                _shadowMaterial.SetShaderParameter("sun_dir", new Vector2(1f, 0f));
+                _shadowMaterial.SetShaderParameter("sun_len_n", 1f);
+                _shadowMaterial.SetShaderParameter("sun_width_n", DayNightCycle.ShadowWidthScale);
+                _shadowMaterial.SetShaderParameter("lerp_factor", 0f);
+                _agentInterpolationMaterial.SetShaderParameter("lerp_factor", 0f);
+                GD.Print("[AgentRenderer] GPU interpolation enabled (agents + shadows).");
+            }
         }
         else
         {
@@ -165,8 +214,9 @@ public partial class AgentRenderer : Node2D
             _shadowInstance.Modulate = new Color(0f, 0f, 0f, sun.Alpha);
         if (!show)
             return;
-        // Finding 2: солнце сменилось — тени пересчитать и залить заново.
-        _shadowsDirty = true;
+        // CPU fallback загружает матрицы на смене солнца; GPU path меняет только uniforms.
+        if (!_gpuInterpolationEnabled)
+            _shadowsDirty = true;
         // Точка привязки тени = ноги агента. Никакого сдвига на CPU:
         // смещение — работа шейдера (клин от ног), иначе тень — отдельный
         // квад рядом с агентом, а не клин от ног.
@@ -180,6 +230,8 @@ public partial class AgentRenderer : Node2D
             _shadowMaterial.SetShaderParameter("sun_len_n", sLen / AgentSize);
             _shadowMaterial.SetShaderParameter("sun_width_n", sun.WidthScale);
             _shadowMaterial.SetShaderParameter("quad_size", new Vector2(AgentSize, AgentSize));
+            if (_gpuInterpolationEnabled)
+                _shadowMaterial.SetShaderParameter("lerp_factor", _lerpFactor);
         }
     }
 
@@ -245,7 +297,9 @@ public partial class AgentRenderer : Node2D
             // @destroyer: инвариант — если тела чистые, _renderBuffer уже залит на
             // GPU в прошлом кадре (Buffer= идёт в том же if). Первый кадр после
             // Initialize: _bodiesDirty=true стартово, заливка гарантирована.
-            bool bodiesNeedUpdate = hasNewSnapshot || _lerpFactor < 1f || _bodiesDirty;
+            bool bodiesNeedUpdate = _gpuInterpolationEnabled
+                ? hasNewSnapshot || _bodiesDirty
+                : hasNewSnapshot || _lerpFactor < 1f || _bodiesDirty;
             if (hasNewSnapshot)
                 _bodiesDirty = true;
 
@@ -279,11 +333,30 @@ public partial class AgentRenderer : Node2D
                 sPx = -sdy; sPy = sdx;
             }
 
-            // Тела: lerp prev→target + заливка единичной матрицы с трансляцией
-            // (скалярный слитый проход — stride-8 scatter memory-bound, см. AgentLerpBatch).
-            // Finding 2: при settled (пауза/idle) проход и upload пропускаются.
-            // E58-E61: замер _Process, instance count, байты и число аплоадов.
-            if (bodiesNeedUpdate)
+            // GPU: отправляем пары prev/target только при новом snapshot, а
+            // lerp-factor обновляем как один uniform на кадр. Без readback.
+            if (_gpuInterpolationEnabled)
+            {
+                _agentInterpolationMaterial.SetShaderParameter("lerp_factor", _lerpFactor);
+                _shadowMaterial.SetShaderParameter("lerp_factor", _lerpFactor);
+                if (bodiesNeedUpdate)
+                {
+                    var swB = System.Diagnostics.Stopwatch.StartNew();
+                    AgentLerpBatch.FillGpuInstanceBuffer(
+                        new Span<float>(_gpuInstanceBuffer, 0, _agentCount * 12),
+                        new ReadOnlySpan<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
+                        new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
+                        _agentCount);
+                    _multiMesh.Buffer = _gpuInstanceBuffer;
+                    swB.Stop();
+                    SimEvents.Record("render", "AgentRenderer.bodies_gpu_upload", (float)swB.Elapsed.TotalMilliseconds,
+                        _agentCount * 12 * 4);
+                    _bodiesDirty = false;
+                    _shadowsDirty = true;
+                }
+            }
+            // CPU fallback: прежняя интерполяция и Transform2D upload каждый lerp-кадр.
+            else if (bodiesNeedUpdate)
             {
                 var swB = System.Diagnostics.Stopwatch.StartNew();
                 AgentLerpBatch.LerpFill(
@@ -294,28 +367,18 @@ public partial class AgentRenderer : Node2D
                     _agentCount);
                 _multiMesh.Buffer = _renderBuffer;
                 swB.Stop();
-                // P0-1: без интерполяции строки и Count — 60/с на главный проход.
-                SimEvents.Record("render", "AgentRenderer.bodies", (float)swB.Elapsed.TotalMilliseconds,
+                SimEvents.Record("render", "AgentRenderer.bodies_cpu", (float)swB.Elapsed.TotalMilliseconds,
                     _agentCount * 8 * 4);
-                _shadowsDirty = true; // позиции тел сменились — тени пересчитать
+                _shadowsDirty = true;
                 if (_lerpFactor >= 1f && !hasNewSnapshot)
                     _bodiesDirty = false;
             }
 
-            // Теневой проход (шаг G4): шейдерный путь — ОДИН скалярный цикл, 4 записи
-            // на инстанс (единичная матрица + трансляция со сдвигом якоря у ног).
-            // Растяжение силуэта делает вершинный шейдер из локальных координат
-            // квада (те же формулы: локальные ±16 дают мировые ±len/2, ±wdt/2).
-            // Fallback без шейдера (_shadowUseShader=false): старый CPU-путь
-            // с матричной арифметикой растяжения (8 записей), визуально идентичен.
-            // При выключенных тенях цикл пропускается целиком (тел он не касается).
-            // Finding 2: троттлинг upload 20 Гц + пропуск при чистых телах.
-            // Тени зависят только от позиций тел и якоря солнца: если тела стоят
-            // (settled) и солнце не двигалось (ApplyShadow не зовут) — upload
-            // пропускаем, картинка та же.
+            // Shadow GPU path переиспользует packed prev/target buffer; upload нужен
+            // только после движения/первого появления. CPU fallback сохраняет старый
+            // 20 Гц shadow upload и матричную геометрию.
             bool shadowNeedsWork = shadowOn && _shadowsDirty;
-            // 20 Гц троттлинг upload: чётные кадры пропускаем (на скорости незаметно).
-            if (shadowNeedsWork)
+            if (!_gpuInterpolationEnabled && shadowNeedsWork)
             {
                 _shadowUploadSkip = !_shadowUploadSkip;
                 if (_shadowUploadSkip && !hasNewSnapshot)
@@ -323,54 +386,49 @@ public partial class AgentRenderer : Node2D
             }
             if (shadowNeedsWork)
             {
-                if (_shadowUseShader)
+                if (_gpuInterpolationEnabled)
                 {
-                    for (int i = 0; i < _agentCount; i++)
-                    {
-                        int idx = i * 8;
-                        float px = _renderBuffer[idx + 3];
-                        float py = _renderBuffer[idx + 7];
-                        _shadowBuffer[idx + 0] = 1.0f;
-                        _shadowBuffer[idx + 1] = 0.0f;
-                        _shadowBuffer[idx + 2] = 0.0f;
-                        _shadowBuffer[idx + 3] = px;
-                        _shadowBuffer[idx + 4] = 0.0f;
-                        _shadowBuffer[idx + 5] = 1.0f;
-                        _shadowBuffer[idx + 6] = 0.0f;
-                        _shadowBuffer[idx + 7] = py + AgentHalf; // ноги
-                    }
+                    _shadowMultiMesh.Buffer = _gpuInstanceBuffer;
                 }
                 else
                 {
-                    for (int i = 0; i < _agentCount; i++)
+                    if (_shadowUseShader)
                     {
-                        int idx = i * 8;
-                        float px = _renderBuffer[idx + 3];
-                        float py = _renderBuffer[idx + 7];
-
-                        // #10: CPU-fallback обязан совпадать с AgentShadow.gdshader:
-                        // в шейдере длина тени идёт по локальной Y
-                        // (height = 16 - VERTEX.y; VERTEX = sun_dir*height*len + perp*(x*wdt)),
-                        // ширина — по X. Старый fallback мапил наоборот (длина в X,
-                        // ширина в Y) и давал горизонтальную тень вместо силуэта.
-                        // Порядок Buffer для Transform2D: x.x, x.y, pad, origin.x, y.x, y.y, pad, origin.y.
-                        // Базис нормирован на размер квада (32px): локальные ±16px дают мировые ±len/2, ±wdt/2.
-                        // Якорь сдвинут вперёд на len/2, чтобы тень начиналась у ног, а не центрировалась на них.
-                        // X-базис = ширина (перпендикуляр солнцу), Y-базис = длина (вдоль солнца).
-                        _shadowBuffer[idx + 0] = sPx * sWdtN;
-                        _shadowBuffer[idx + 1] = sPy * sWdtN;
-                        _shadowBuffer[idx + 2] = 0.0f;
-                        _shadowBuffer[idx + 3] = px + sdx * (sLen * 0.5f - AgentQuarter);
-
-                        _shadowBuffer[idx + 4] = sdx * sLenN;
-                        _shadowBuffer[idx + 5] = sdy * sLenN;
-                        _shadowBuffer[idx + 6] = 0.0f;
-                        _shadowBuffer[idx + 7] = py + AgentHalf + sdy * (sLen * 0.5f - AgentQuarter);
+                        for (int i = 0; i < _agentCount; i++)
+                        {
+                            int idx = i * 8;
+                            float px = _renderBuffer[idx + 3];
+                            float py = _renderBuffer[idx + 7];
+                            _shadowBuffer[idx + 0] = 1.0f;
+                            _shadowBuffer[idx + 1] = 0.0f;
+                            _shadowBuffer[idx + 2] = 0.0f;
+                            _shadowBuffer[idx + 3] = px;
+                            _shadowBuffer[idx + 4] = 0.0f;
+                            _shadowBuffer[idx + 5] = 1.0f;
+                            _shadowBuffer[idx + 6] = 0.0f;
+                            _shadowBuffer[idx + 7] = py + AgentHalf;
+                        }
                     }
+                    else
+                    {
+                        for (int i = 0; i < _agentCount; i++)
+                        {
+                            int idx = i * 8;
+                            float px = _renderBuffer[idx + 3];
+                            float py = _renderBuffer[idx + 7];
+                            _shadowBuffer[idx + 0] = sPx * sWdtN;
+                            _shadowBuffer[idx + 1] = sPy * sWdtN;
+                            _shadowBuffer[idx + 2] = 0.0f;
+                            _shadowBuffer[idx + 3] = px + sdx * (sLen * 0.5f - AgentQuarter);
+                            _shadowBuffer[idx + 4] = sdx * sLenN;
+                            _shadowBuffer[idx + 5] = sdy * sLenN;
+                            _shadowBuffer[idx + 6] = 0.0f;
+                            _shadowBuffer[idx + 7] = py + AgentHalf + sdy * (sLen * 0.5f - AgentQuarter);
+                        }
+                    }
+                    _shadowMultiMesh.Buffer = _shadowBuffer;
                 }
-                _shadowMultiMesh.Buffer = _shadowBuffer;
                 _shadowsDirty = false;
-                // P0-1: без Count/Series — тот же _cLock, 60/с.
             }
         }
     }

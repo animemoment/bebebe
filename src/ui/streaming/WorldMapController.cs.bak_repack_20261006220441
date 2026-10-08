@@ -1,0 +1,153 @@
+using Godot;
+using Game.Core.WorldStreaming;
+using System;
+using System.Collections.Generic;
+
+namespace Game.UI.Streaming;
+
+public partial class WorldMapController : Control
+{
+	[Signal] public delegate void RegionSelectedEventHandler(int x, int y);
+	[Signal] public delegate void CloseRequestedEventHandler();
+
+	[Export] public TileMapLayer MapLayer;
+	[Export] public Button CloseButton;
+	[Export] public ulong WorldSeed = 0x0123456789ABCDEFUL;
+	[Export] public uint GeneratorVersion = 3;
+
+	private ColorRect _backdrop;
+
+	public override void _Ready()
+	{
+		if (GetParent() is not CanvasLayer)
+		{
+			var cl = new CanvasLayer { Layer = 100, Name = "WorldMapCanvas" };
+			GetTree().Root.AddChild(cl);
+			GetParent()?.RemoveChild(this);
+			cl.AddChild(this);
+		}
+
+		SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+		OffsetLeft = 0; OffsetTop = 0; OffsetRight = 0; OffsetBottom = 0;
+		MouseFilter = MouseFilterEnum.Stop;
+		ClipContents = true;
+		ZIndex = 1000;
+
+		_backdrop = new ColorRect
+		{
+			Name = "Backdrop",
+			Color = new Color(0.05f, 0.06f, 0.08f, 1f),
+			MouseFilter = MouseFilterEnum.Ignore
+		};
+		_backdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+		AddChild(_backdrop);
+		MoveChild(_backdrop, 0);
+
+		MapLayer ??= GetNodeOrNull<TileMapLayer>("TileMapLayer");
+		CloseButton ??= GetNodeOrNull<Button>("BtnOpenWorldMap");
+		if (CloseButton == null) CloseButton = GetNodeOrNull<Button>("ButtonMap");
+		if (CloseButton == null)
+			foreach (var c in GetChildren())
+				if (c is Button b) { CloseButton = b; break; }
+
+		if (CloseButton != null)
+		{
+			CloseButton.ZIndex = 10;
+			CloseButton.MouseFilter = MouseFilterEnum.Stop;
+			CloseButton.Pressed += CloseSelf;
+		}
+
+		if (MapLayer != null)
+		{
+			MapLayer.ZIndex = 1;
+			var mapper = new WorldMapTileMapper { Name = "WorldMapTileMapper" };
+			AddChild(mapper);
+			mapper.Initialize(WorldSeed, GeneratorVersion, MapLayer);
+			DumpAndFit();
+		}
+		else GD.PrintErr("[WMC] no TileMapLayer");
+	}
+
+	private void DumpAndFit()
+	{
+		if (MapLayer == null) return;
+		var cells = MapLayer.GetUsedCells();
+		if (cells.Count == 0) { GD.PrintErr("[WMC] usedCells=0"); return; }
+
+		var xs = new List<long>(); var ys = new List<long>();
+		foreach (Variant v in cells)
+		{
+			var c = v.AsVector2I();
+			xs.Add(c.X); ys.Add(c.Y);
+		}
+		xs.Sort(); ys.Sort();
+
+		// уникальные + шаги
+		var ux = Unique(xs); var uy = Unique(ys);
+		GD.Print($"[WMC-COORD] usedCells={cells.Count} uniqX={ux.Count} uniqY={uy.Count}");
+		GD.Print($"[WMC-COORD] X range [{ux[0]}..{ux[^1]}] steps: {StepsStr(ux)}");
+		GD.Print($"[WMC-COORD] Y range [{uy[0]}..{uy[^1]}] steps: {StepsStr(uy)}");
+
+		int minX=(int)ux[0], maxX=(int)ux[^1], minY=(int)uy[0], maxY=(int)uy[^1];
+		var ts = MapLayer.TileSet != null ? MapLayer.TileSet.TileSize : new Vector2I(16,16);
+		if (ts.X<=0) ts.X=16; if (ts.Y<=0) ts.Y=16;
+
+		float pxMinX=minX*ts.X, pxMaxX=(maxX+1)*ts.X, pxMinY=minY*ts.Y, pxMaxY=(maxY+1)*ts.Y;
+		float bw=pxMaxX-pxMinX, bh=pxMaxY-pxMinY; if (bw<=0||bh<=0) return;
+		var vp = GetViewport().GetVisibleRect().Size;
+		float s = Mathf.Min(vp.X/bw, vp.Y/bh);
+		MapLayer.Scale = new Vector2(s,s);
+		float cx=(pxMinX+pxMaxX)*0.5f, cy=(pxMinY+pxMaxY)*0.5f;
+		MapLayer.Position = vp*0.5f - new Vector2(cx,cy)*s;
+		GD.Print($"[WMC-COORD] fit scale={s:F4} pos={MapLayer.Position} (px-per-tile-after-fit={s*ts.X:F2})");
+	}
+
+	private static List<long> Unique(List<long> sorted)
+	{
+		var r = new List<long>();
+		for (int i=0;i<sorted.Count;i++) if (i==0 || sorted[i]!=sorted[i-1]) r.Add(sorted[i]);
+		return r;
+	}
+	private static string StepsStr(List<long> u)
+	{
+		if (u.Count<2) return "n/a";
+		var d = new List<long>();
+		for (int i=1;i<u.Count;i++) d.Add(u[i]-u[i-1]);
+		d.Sort();
+		return $"min={d[0]} max={d[^1]} first5=[{string.Join(",", u.GetRange(0, Math.Min(5,u.Count)))}]";
+	}
+
+	private void CloseSelf()
+	{
+		GD.Print("[WMC] CloseSelf invoked");
+		EmitSignal("close_requested");
+		QueueFree();
+	}
+
+	public override void _Input(InputEvent e)
+	{
+		if (e is InputEventKey k && k.Pressed && !k.Echo && k.Keycode == Key.Escape)
+		{ CloseSelf(); GetViewport().SetInputAsHandled(); }
+	}
+
+	public override void _GuiInput(InputEvent e)
+	{
+		if (e is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
+		{
+			if (TryGetRegion(mb.GlobalPosition, out int rx, out int ry))
+			{ AcceptEvent(); EmitSignal("region_selected", rx, ry); }
+		}
+	}
+
+	private bool TryGetRegion(Vector2 g, out int rx, out int ry)
+	{
+		rx=ry=-1; if (MapLayer==null) return false;
+		Vector2I t = MapLayer.LocalToMap(MapLayer.ToLocal(g));
+		long per = WorldRegions.TilesPerRegionAxis; if (per<=0) per=8;
+		long x=t.X/per, y=t.Y/per;
+		if (x<0)x=0; if (y<0)y=0;
+		if (x>=WorldRegions.WorldRegionsX)x=WorldRegions.WorldRegionsX-1;
+		if (y>=WorldRegions.WorldRegionsY)y=WorldRegions.WorldRegionsY-1;
+		rx=(int)x; ry=(int)y; return true;
+	}
+}

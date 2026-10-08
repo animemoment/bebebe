@@ -29,6 +29,17 @@ public sealed class JobDispatcher
 	// остальные чанки диапазона голодают до следующего вызова.
 	private const int MaxAssignPerChunk = 8;
 
+	/// <summary>
+	/// Радиус кольца поиска работы для бездельника, которому не хватило своего
+	/// чанка (в чанках): 10 → охват ±160 тайлов. Стоимость на рабочего — до
+	/// (2r+1)² = 441 дешёвых чтения GetChunkJobCount (без локов; claim
+	/// пробуется только в непустых чанках), при бюджете 48 рабочих на вызов это
+	/// ~21k чтений, десятые доли миллисекунды. Именно это позволяет рабочей силе
+	/// «растекаться» по большой стройке/ферме, а не стоять без дела там, где
+	/// работа уже кончилась.
+	/// </summary>
+	private const int MaxSpillRing = 10;
+
 	// Буферы для per-chunk сбора (переиспользуемые)
 	// Marker used to atomically reserve an idle worker (CurrentJobId = -2)
 	// before a job claim in the parallel dispatcher.
@@ -123,16 +134,19 @@ public sealed class JobDispatcher
 			// totalAssigned больше не гейтит spill/global (см. ниже) — оставлен
 			// для профайлинга/диагностики.
 
-		// Spill-over: добираем соседними чанками, если chunk-проход оставил
-		// idle-агентов. Гейт по totalAssigned: chunk-проход уже назначил —
-		// добивать нечего, spill сам по себе ≤144 claim-сканов.
-		// (Spill сам капнут spillBudget=8 — дешёвый.)
-		// ВАЖНО: новая эпоха memo перед spill — chunk-проход уже выполнил
-		// OnStart для назначенных (TryReserve/ReleaseReservation мутируют
-		// тоталы Ground._totalAvailableByType и свободные слоты склада),
-		// memo CanAgentExecute от параллельного прохода после этого stale.
-		if (totalAssigned <= 0 && IdleWorkers.TotalIdleCount > 0 && JobIndex.UnclaimedCount > 0)
-		{
+	// Spill-over: бездельники, которым не нашлось работы в СВОЁМ чанке, ищут её
+	// в расширяющемся кольце соседних чанков (то есть идут к ближайшей свободной
+	// работе). Раньше гейт был `totalAssigned <= 0` — то есть спилл запускался,
+	// только если чанк-проход не назначил НИЧЕГО на всей карте. Из-за этого
+	// работа шла только там, где физически стоят бездельники: у фермы в 100k+
+	// клеток дальние чанки (531 из 542 в замере!) не получали ни одного рабочего
+	// и не обрабатывались НИКОГДА — визуально «полосы».
+	// ВАЖНО: новая эпоха memo перед spill — chunk-проход уже выполнил
+	// OnStart для назначенных (TryReserve/ReleaseReservation мутируют
+	// тоталы Ground._totalAvailableByType и свободные слоты склада),
+	// memo CanAgentExecute от параллельного прохода после этого stale.
+	if (IdleWorkers.TotalIdleCount > 0 && JobIndex.UnclaimedCount > 0)
+	{
 			// P0-1: без замера — дешёвый проход, Record дороже него.
 			JobIndex.BeginClaimEpoch();
 			SpillOverPass(pool, ctx);
@@ -289,9 +303,9 @@ public sealed class JobDispatcher
 
 		// Cap spill-прохода: раньше перебирал всех собранных idle (до 48) с кольцом
 		// 3x3 чанка и TryClaim в каждом — до 48*9 claim-сканов за вызов.
-		// Ограничиваем рабочими, остальные дождутся global/chunk следующего тика.
-		// 8 вместо 16: spill — добивка после chunk-прохода, не второй диспетчер.
-		int spillBudget = Math.Min(remaining, 8);
+		// Бюджет рабочих — как у чанк-прохода: спилл теперь основной путь для
+		// «работы есть, а рядом рабочих нет», а не добивка.
+		int spillBudget = Math.Min(remaining, WorkersPerChunkBudget);
 
 		for (int wi = 0; wi < spillBudget; wi++)
 		{
@@ -314,7 +328,7 @@ public sealed class JobDispatcher
 			int centerCx = centerChunk % ChunkDim;
 			int centerCy = centerChunk / ChunkDim;
 
-			for (int r = 0; r <= 1 && !found; r++)
+			for (int r = 0; r <= MaxSpillRing && !found; r++)
 			{
 				int minCx = Math.Max(0, centerCx - r);
 				int maxCx = Math.Min(ChunkDim - 1, centerCx + r);

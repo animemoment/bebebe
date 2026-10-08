@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
@@ -7,14 +7,44 @@ using System.Threading;
 
 namespace Game.Core;
 
+/// <summary>
+/// Профайлер: (1) замеры scope'ов (Scope/ScopeCustom) и (2) баланс параллельных
+/// фаз планировщика.
+///
+/// ГЛАВНОЕ ПРО ОКНА (исправление «врущего» оверлея): снапшот берётся НЕ каждый
+/// кадр, а по таймеру оверлея (~0.1 с). Поэтому «сырая» накопленная сумма — это
+/// миллисекунды ЗА ОКНО снапшота, а не за вызов и не за кадр. Раньше наружу
+/// отдавалось одно поле AvgMs, которое трактовалось то как «на вызов», то как
+/// «за кадр» — отсюда завышение в ~6 раз (6 кадров в окне 0.1 с при 60 FPS).
+/// Теперь наружу отдаются только явные величины:
+///   TotalMs      — мс за окно снапшота;
+///   MsPerFrame   — вклад в ОДИН кадр (TotalMs / кадров в окне);
+///   AvgMs        — среднее на ОДИН вызов (TotalMs / Calls);
+///   MaxMs        — пик одиночного вызова;
+///   Calls        — вызовов за окно;
+///   CallsPerSec  — истинная частота (Calls / windowSec);
+///   PercentLoad  — доля от всего замеренного времени окна.
+/// Вызывающий ОБЯЗАН передать реальную длину окна (windowSec) и число кадров
+/// в нём (frames) — иначе нормировка снова начнёт врать.
+/// </summary>
 public static class GameProfiler
 {
     public struct MetricSnapshot
     {
         public string Name;
+        /// <summary>Суммарно мс за окно снапшота.</summary>
+        public double TotalMs;
+        /// <summary>Вклад в один кадр: TotalMs / число кадров в окне.</summary>
+        public double MsPerFrame;
+        /// <summary>Среднее на один вызов.</summary>
         public double AvgMs;
+        /// <summary>Пик одиночного вызова.</summary>
         public double MaxMs;
+        /// <summary>Вызовов за окно.</summary>
+        public int Calls;
+        /// <summary>Вызовов в секунду (истинное значение).</summary>
         public int CallsPerSec;
+        /// <summary>Доля от всего замеренного времени окна, %.</summary>
         public double PercentLoad;
     }
 
@@ -23,95 +53,62 @@ public static class GameProfiler
         public long TotalTicks;
         public int CallCount;
         public long MaxTicks;
-        public double SmoothedMs;
+        /// <summary>Сглаженные мс за окно (EMA).</summary>
+        public double SmoothedTotalMs;
+        /// <summary>Сглаженный пик одиночного вызова (мс).</summary>
         public double SmoothedMaxMs;
+        /// <summary>Сглаженное число кадров в окне — для нормировки на кадр.</summary>
+        public double SmoothedFrames;
     }
 
     private static readonly ConcurrentDictionary<string, MetricEntry> _metrics = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<(string File, string Member), string> _nameCache = new();
 
     /// <summary>
-    /// Баланс параллельных фаз (пишет симуляция, один вызов на фазу —
-    /// contention нет). AvgMs = wall-time фазы, MaxMs = суммарное CPU-время всех
-    /// потоков, CallsPerSec = дисбаланс в % (0 = идеал, &gt;0 = простой ядер).
+    /// Баланс параллельных фаз (пишет симуляция). WallMs/CpuMs — это НАКОПЛЕННЫЕ
+    /// суммы с последнего снапшота баланса; наружу отдаются дельты за окно и
+    /// нормировка на кадр. ImbalancePct = простой ядер (0 = идеал).
+    /// MaxBatchMs = худший батч окна, StragglerCount = страгглеров за окно.
     /// Хранится отдельно от _metrics, чтобы не искажать PercentLoad.
-    /// MaxBatchMs = самый медленный батч фазы (хвост), StragglerCount = число
-    /// батчей дольше HeavyMs (Шаг 2, без contention — пишет только sim-поток).
     /// </summary>
     public struct BalanceSnapshot
     {
         public string Name;
+        /// <summary>Wall-time фазы за окно (сумма по суб-степам), мс.</summary>
         public double WallMs;
+        /// <summary>CPU-время фазы за окно (сумма по потокам), мс.</summary>
         public double CpuMs;
+        /// <summary>Wall на один кадр, мс.</summary>
+        public double WallMsPerFrame;
+        /// <summary>CPU на один кадр, мс.</summary>
+        public double CpuMsPerFrame;
         public int ImbalancePct;
+        /// <summary>Самый медленный батч окна, мс.</summary>
         public double MaxBatchMs;
+        /// <summary>Число батчей дольше HeavyMs за окно.</summary>
         public int StragglerCount;
     }
 
     private sealed class BalanceEntry
     {
+        // Накопленные (кумулятивные) значения — только растут.
         public double WallMs;
         public double CpuMs;
-        public double MaxBatchMs;
-        public int StragglerCount;
+        // Курсор последнего снапшота: наружу отдаётся разница.
+        public double PrevWallMs;
+        public double PrevCpuMs;
+        // Оконные накопители (сбрасываются на каждом снапшоте баланса).
+        public double WindowMaxBatchMs;
+        public int WindowStragglers;
     }
 
     private static readonly ConcurrentDictionary<string, BalanceEntry> _balance = new(StringComparer.Ordinal);
+    private static BalanceSnapshot[] _balanceCache = Array.Empty<BalanceSnapshot>();
 
     /// <summary>
-    /// Публикация баланса фазы. Вызывать ОДИН раз на фазу (не на батч!).
-    /// Lock-free: GetOrAdd + прямые записи (гонка записей одного ключа
-    /// невозможна — фазы идут последовательно в sim-потоке).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordPhaseBalance(string name, double wallMs, double cpuMs)
-    {
-        var entry = _balance.GetOrAdd(name, static _ => new BalanceEntry());
-        entry.WallMs = wallMs;
-        entry.CpuMs = cpuMs;
-    }
-
-    /// <summary>
-    /// Публикация баланса фазы с метриками хвоста (Шаг 2).
-    /// Вызывать ОДИН раз на фазу из sim-потока. Битые wall/cpu (NaN/Inf/&lt;0)
-    /// санитизируются в 0, ImbalancePct clamp'ится в [0,100].
-    /// </summary>
-    public static void RecordSchedulerStats(string name, double wallMs, double cpuMs, double maxBatchMs, int stragglerCount)
-    {
-        if (name == null)
-            throw new ArgumentNullException(nameof(name));
-        var entry = _balance.GetOrAdd(name, static _ => new BalanceEntry());
-        entry.WallMs = double.IsFinite(wallMs) && wallMs > 0.0 ? wallMs : 0.0;
-        entry.CpuMs = double.IsFinite(cpuMs) && cpuMs > 0.0 ? cpuMs : 0.0;
-        entry.MaxBatchMs = double.IsFinite(maxBatchMs) && maxBatchMs >= 0.0 ? maxBatchMs : 0.0;
-        entry.StragglerCount = Math.Max(0, stragglerCount);
-    }
-
-    // FIX круг-2 №6: Publish планировщика раньше ПЕРЕЗАПИСЫВАЛ баланс 8 раз за тик
-    // (по числу sub-steps) — overlay видел последний sub-step, а не сумму.
-    // Теперь: сброс в начале тика (ResetTickBalance) + аккумуляция каждого sub-step
-    // (AccumulateSchedulerStats: sum wall/cpu, max MaxBatchMs, sum StragglerCount).
-    /// <summary>
-    /// Сброс аккумулятора баланса в начале тика (перед циклом sub-steps).
-    /// Вызывать один раз на тик из sim-потока для каждого публикуемого scope.
-    /// </summary>
-    public static void ResetTickBalance(string name)
-    {
-        if (name == null)
-            throw new ArgumentNullException(nameof(name));
-        var entry = _balance.GetOrAdd(name, static _ => new BalanceEntry());
-        entry.WallMs = 0.0;
-        entry.CpuMs = 0.0;
-        entry.MaxBatchMs = 0.0;
-        entry.StragglerCount = 0;
-    }
-
-    /// <summary>
-    /// Аккумуляция баланса sub-step в тиковый тотал (зовёт планировщик из Publish):
-    /// wall/cpu суммируются, MaxBatchMs берётся максимумом, StragglerCount суммируется.
-    /// Overlay видит сумму тика, а не последний sub-step. Битые значения санитизируются.
-    /// Вызывать из sim-потока после join (гонки записей одного ключа нет —
-    /// фазы идут последовательно).
+    /// Аккумуляция одного суб-степа фазы в кумулятивные суммы scope'а.
+    /// Вызывается планировщиком (Publish) из sim-потока после join воркеров.
+    /// Битые значения санитизируются.
     /// </summary>
     public static void AccumulateSchedulerStats(string name, double wallMs, double cpuMs, double maxBatchMs, int stragglerCount)
     {
@@ -122,42 +119,80 @@ public static class GameProfiler
             entry.WallMs += wallMs;
         if (double.IsFinite(cpuMs) && cpuMs > 0.0)
             entry.CpuMs += cpuMs;
-        if (double.IsFinite(maxBatchMs) && maxBatchMs > entry.MaxBatchMs)
-            entry.MaxBatchMs = maxBatchMs;
+        if (double.IsFinite(maxBatchMs) && maxBatchMs > entry.WindowMaxBatchMs)
+            entry.WindowMaxBatchMs = maxBatchMs;
         if (stragglerCount > 0)
-            entry.StragglerCount += stragglerCount;
+            Interlocked.Add(ref entry.WindowStragglers, stragglerCount);
     }
 
-    public static void SnapshotBalance(out BalanceSnapshot[] results)
+    /// <summary>
+    /// Пересчитывает дельты баланса за прошедшее окно (окно = windowSec секунд
+    /// и frames кадров). Зовётся из SnapshotMetrics, поэтому окно баланса всегда
+    /// совпадает с окном метрик и не «копится», пока панель скрыта (F3).
+    /// </summary>
+    private static void RefreshBalance(double windowSec, int frames)
     {
+        int effDop = Game.Simulation.Scheduling.DynamicWorkScheduler.ComputeEffectiveDop(Environment.ProcessorCount);
+        double perFrameDivisor = frames > 0
+            ? frames
+            : Math.Max(1.0, windowSec * 60.0); // панель не считала кадры — оценка по 60 FPS
+
         var list = new BalanceSnapshot[_balance.Count];
         int idx = 0;
         foreach (var (name, entry) in _balance)
         {
-            double wall = entry.WallMs;
-            double cpu = entry.CpuMs;
+            double curWall = entry.WallMs;
+            double curCpu = entry.CpuMs;
+            double dWall = curWall - entry.PrevWallMs;
+            double dCpu = curCpu - entry.PrevCpuMs;
+            // Защита от внешней перезаписи/сброса счётчиков: ушло в минус — берём как есть.
+            if (dWall < 0.0) dWall = curWall;
+            if (dCpu < 0.0) dCpu = curCpu;
+            entry.PrevWallMs = curWall;
+            entry.PrevCpuMs = curCpu;
+
+            double maxBatch = Interlocked.Exchange(ref entry.WindowMaxBatchMs, 0.0);
+            int stragglers = Interlocked.Exchange(ref entry.WindowStragglers, 0);
+
+            // Фаза в этом окне не публиковалась — не мусорим строкой.
+            if (dWall <= 0.0 && dCpu <= 0.0)
+                continue;
+
             int imb = 0;
-            if (wall > 0.001 && cpu > 0.001)
+            if (dWall > 0.001 && dCpu > 0.001)
             {
-                // PERF F1: идеал считается от эффективного DOP (P-1), а не от
-                // ProcessorCount — иначе на урезанном пуле imbalance всегда > 0.
-                int effDop = Game.Simulation.Scheduling.DynamicWorkScheduler.ComputeEffectiveDop(Environment.ProcessorCount);
-                double ideal = cpu / Math.Max(1, effDop);
-                imb = (int)Math.Round(Math.Max(0.0, (wall - ideal) / wall) * 100.0);
+                double ideal = dCpu / Math.Max(1, effDop);
+                imb = (int)Math.Round(Math.Max(0.0, (dWall - ideal) / dWall) * 100.0);
                 imb = Math.Clamp(imb, 0, 100);
             }
+
             list[idx++] = new BalanceSnapshot
             {
                 Name = name,
-                WallMs = wall,
-                CpuMs = cpu,
+                WallMs = dWall,
+                CpuMs = dCpu,
+                WallMsPerFrame = dWall / perFrameDivisor,
+                CpuMsPerFrame = dCpu / perFrameDivisor,
                 ImbalancePct = imb,
-                MaxBatchMs = entry.MaxBatchMs,
-                StragglerCount = entry.StragglerCount,
+                MaxBatchMs = maxBatch,
+                StragglerCount = stragglers,
             };
         }
-        Array.Sort(list, static (a, b) => b.WallMs.CompareTo(a.WallMs));
-        results = list;
+
+        if (idx != list.Length)
+            Array.Resize(ref list, idx);
+        Array.Sort(list, static (a, b) => b.WallMsPerFrame.CompareTo(a.WallMsPerFrame));
+        _balanceCache = list;
+    }
+
+    /// <summary>
+    /// Баланс фаз по последнему окну (результат последнего SnapshotMetrics).
+    /// Читает кэш и НЕ двигает курсоры дельт — можно звать сколько угодно раз
+    /// (например, только когда панель видима), значения от этого не поедут.
+    /// </summary>
+    public static void SnapshotBalance(out BalanceSnapshot[] results)
+    {
+        results = _balanceCache;
     }
 
     public readonly ref struct ProfileScope
@@ -200,9 +235,7 @@ public static class GameProfiler
         return new ProfileScope(GetCachedName(file, member));
     }
 
-    /// <summary>
-    /// Именованный замер для произвольных блоков: using (GameProfiler.ScopeCustom("MyCategory: Task")) { ... }
-    /// </summary>
+    /// <summary>Именованный замер для произвольных блоков: using (GameProfiler.ScopeCustom("MyCategory: Task")) { ... }</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ProfileScope ScopeCustom(string customName)
     {
@@ -237,10 +270,22 @@ public static class GameProfiler
     }
 
     /// <summary>
-    /// Сбор снапшота метрик с сортировкой по нагрузке (AvgMs descending).
+    /// Сбор снапшота метрик за прошедшее окно.
     /// </summary>
-    public static void SnapshotMetrics(out MetricSnapshot[] results, float delta)
+    /// <param name="results">Метрики, отсортированные по вкладу в кадр (убывание).</param>
+    /// <param name="windowSec">Реальная длина окна в секундах (сколько прошло с прошлого снапшота).</param>
+    /// <param name="frames">Сколько кадров отрисовано за это окно (для нормировки на кадр).</param>
+    public static void SnapshotMetrics(out MetricSnapshot[] results, double windowSec, int frames)
     {
+        if (!double.IsFinite(windowSec) || windowSec <= 0.0)
+            windowSec = 0.016;
+        if (frames < 1)
+            frames = 1;
+
+        // Баланс фаз нормируется по тому же окну — иначе его цифры «плыли»
+        // относительно таблицы методов (это и путало: 0.67ms против 19.62ms).
+        RefreshBalance(windowSec, frames);
+
         var list = new MetricSnapshot[_metrics.Count];
         int idx = 0;
         double totalRecordedMs = 0.0;
@@ -255,17 +300,24 @@ public static class GameProfiler
             double currentMaxMs = (maxTicks / (double)Stopwatch.Frequency) * 1000.0;
 
             // Экспоненциальное сглаживание
-            entry.SmoothedMs = entry.SmoothedMs * 0.82 + currentMs * 0.18;
+            entry.SmoothedTotalMs = entry.SmoothedTotalMs * 0.82 + currentMs * 0.18;
             entry.SmoothedMaxMs = Math.Max(currentMaxMs, entry.SmoothedMaxMs * 0.75);
+            entry.SmoothedFrames = entry.SmoothedFrames * 0.82 + frames * 0.18;
 
-            int callsPerSec = (int)(calls / Math.Max(0.016f, delta));
-            totalRecordedMs += entry.SmoothedMs;
+            double framesInWindow = entry.SmoothedFrames > 0.5 ? entry.SmoothedFrames : frames;
+            int callsPerSec = (int)Math.Round(calls / windowSec);
+            double avgPerCall = calls > 0 ? currentMs / calls : 0.0;
+
+            totalRecordedMs += entry.SmoothedTotalMs;
 
             list[idx++] = new MetricSnapshot
             {
                 Name = name,
-                AvgMs = entry.SmoothedMs,
+                TotalMs = entry.SmoothedTotalMs,
+                MsPerFrame = entry.SmoothedTotalMs / framesInWindow,
+                AvgMs = avgPerCall,
                 MaxMs = entry.SmoothedMaxMs,
+                Calls = calls,
                 CallsPerSec = callsPerSec,
                 PercentLoad = 0.0
             };
@@ -276,12 +328,12 @@ public static class GameProfiler
         {
             for (int i = 0; i < list.Length; i++)
             {
-                list[i].PercentLoad = (list[i].AvgMs / totalRecordedMs) * 100.0;
+                list[i].PercentLoad = (list[i].TotalMs / totalRecordedMs) * 100.0;
             }
         }
 
-        // Сортировка: самые тяжелые методы — в самом верху
-        Array.Sort(list, static (a, b) => b.AvgMs.CompareTo(a.AvgMs));
+        // Сортировка: самые «дорогие» для кадра методы — в самом верху
+        Array.Sort(list, static (a, b) => b.MsPerFrame.CompareTo(a.MsPerFrame));
         results = list;
     }
 }

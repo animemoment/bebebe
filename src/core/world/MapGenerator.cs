@@ -96,7 +96,10 @@ public static class MapGenerator
         for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++)
                 heightMap[x, y] = heightMap[x, y] * 0.75f + ridgeMap[x, y] * 0.25f;
-        ApplyIslandFalloff(heightMap, width, height, seedH);
+        // Применяем радиальный falloff от центра карты (для Generate) или от точки спавна (для GenerateRegion).
+        int falloffCx = (width - 1) / 2;
+        int falloffCy = (height - 1) / 2;
+        ApplySpawnRadialFalloff(heightMap, width, height, seedH, falloffCx, falloffCy);
 
         for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++)
@@ -201,24 +204,19 @@ public static class MapGenerator
     }
 
     /// <summary>
-    /// Остров с неровной кромкой (п.19.2-8): радиус домножается на
-    /// низкочастотный warp-шум — появляются полуострова/бухты вместо
-    /// идеального круга. Warp дешёвый (2 октавы, scale ~200).
+    /// Мягкий спад расстояния от точки центра: суша плотнее ближе к центру, вода дальше.
+    /// Warp-шум создаёт полуострова/бухты вместо идеального круга.
     /// </summary>
-    private static void ApplyIslandFalloff(float[,] hm, int w, int h, uint seed = 0)
+    private static void ApplySpawnRadialFalloff(float[,] hm, int w, int h, uint seed, int spawnCX, int spawnCY)
     {
         float[,] warp = NoiseGenerator.GenerateFbmMap(w, h, seed + 918273u, 200f, 2);
-        float cx = (w - 1) * 0.5f, cy = (h - 1) * 0.5f;
-        float maxD = MathF.Sqrt(cx * cx + cy * cy);
+        float maxD = MathF.Sqrt(w * w + h * h) * 0.7f;
         for (int x = 0; x < w; x++)
             for (int y = 0; y < h; y++)
             {
-                float dx = (x - cx) / maxD, dy = (y - cy) / maxD;
+                float dx = (x - spawnCX) / maxD, dy = (y - spawnCY) / maxD;
                 float d = MathF.Sqrt(dx * dx + dy * dy);
-                // Warp 0..1 → множитель 0.75..1.25: где warp высокий — суша
-                // выпячивается (полуостров), где низкий — море вгрызается (бухта).
                 float dw = d * (0.75f + warp[x, y] * 0.5f);
-                // Море начинается только у самой кромки: до 0.62 радиуса — без изменений.
                 float t = Math.Clamp((dw - 0.62f) / 0.09f, 0f, 1f);
                 float fall = t * t * (3f - 2f * t);
                 hm[x, y] -= fall * 0.35f;
@@ -441,75 +439,93 @@ public static class MapGenerator
         float innerDensity, int groveRadiusMin, int groveRadiusMax, uint forestSeed,
         float[,] moisture = null)
     {
+        // Streaming-friendly forests: no global state, each cell decides by pure hash.
+        // Groves are clusters around hash-determined centers on a regular grid.
         float[,] groveMap = NoiseGenerator.GenerateFbmMap(w, h, forestSeed, groveScale, octaves);
-        // accept-влага: готовый moist-слой от вызывателя (тот же, что уйдёт
-        // в Humidity.Initialize). Если null (старые тесты) — считаем локально.
-        float[,] acceptMoisture = moisture
-            ?? NoiseGenerator.GenerateFbmMap(w, h, forestSeed + 777u, groveScale * 0.7f, 3);
-        int acceptW = acceptMoisture.GetLength(0);
-        int acceptH = acceptMoisture.GetLength(1);
-        var treeRng = new Random(unchecked((int)(seed * 40503u + 7u)));
-        var clusterRng = new Random(unchecked((int)(seed * 2246822519u + 999u)));
+        float[,] acceptMoisture = moisture ?? NoiseGenerator.GenerateFbmMap(w, h, forestSeed + 777u, groveScale * 0.7f, 3);
 
-        var groves = new List<(int X, int Y, int R)>();
-        int minDist = Math.Max(10, groveRadiusMax * 2 + 4);
-        int attempts = (w * h) / (minDist * minDist) * 8;
-        for (int a = 0; a < attempts && groves.Count < 220; a++)
-        {
-            int x = clusterRng.Next(w), y = clusterRng.Next(h);
-            if (data.Ground[x, y] != TileType.Grass) continue;
-            if (groveMap[x, y] <= groveThreshold) continue;
-            bool tooClose = false;
-            foreach (var g in groves)
-            {
-                int dx = g.X - x, dy = g.Y - y;
-                if (dx * dx + dy * dy < minDist * minDist) { tooClose = true; break; }
-            }
-            if (tooClose) continue;
-            int waterNear = 0;
-            for (int oy = -4; oy <= 4 && waterNear < 13; oy++)
-                for (int ox = -4; ox <= 4; ox++)
-                {
-                    int nx = x + ox, ny = y + oy;
-                    if ((uint)nx >= (uint)w || (uint)ny >= (uint)h) continue;
-                    if (data.Ground[nx, ny] == TileType.Water) waterNear++;
-                }
-            float mAccept = (x < acceptW && y < acceptH) ? acceptMoisture[x, y] : 0.5f;
-            double accept = 0.35 + mAccept * 0.5 + Math.Min(1, waterNear / 12f) * 0.35;
-            if (clusterRng.NextDouble() > accept) continue;
-            int r = groveRadiusMin + clusterRng.Next(groveRadiusMax - groveRadiusMin + 1);
-            groves.Add((x, y, r));
-        }
-
-        int[,] groveId = new int[w, h];
-        for (int i = 0; i < groves.Count; i++)
-        {
-            var (gx, gy, r) = groves[i];
-            int rr = r + 2;
-            for (int x = Math.Max(0, gx - rr); x <= Math.Min(w - 1, gx + rr); x++)
-                for (int y = Math.Max(0, gy - rr); y <= Math.Min(h - 1, gy + rr); y++)
-                {
-                    if (groveId[x, y] != 0) continue;
-                    int dx = x - gx, dy = y - gy;
-                    float dist = MathF.Sqrt(dx * dx + dy * dy);
-                    float edgeNeed = groveThreshold - 0.12f + 0.12f * (dist / rr);
-                    if (dist <= r || groveMap[x, y] > edgeNeed)
-                        groveId[x, y] = i + 1;
-                }
-        }
-
-        // Лес не растёт на крутом склоне (п.19.2-5): там скалы/кустарник.
         const float steepForForest = 0.010f;
+        int gridSize = Math.Max(32, groveRadiusMax * 3);
+
         for (int x = 0; x < w; x++)
+        {
             for (int y = 0; y < h; y++)
             {
                 data.TreeVariant[x, y] = (byte)TreeVariantFor(x, y, seed);
-                if (data.Ground[x, y] != TileType.Grass) { data.TreeOnGrass[x, y] = false; continue; }
-                if (groveId[x, y] == 0) { data.TreeOnGrass[x, y] = false; continue; }
-                if (SlopeAt(heightMap, w, h, x, y) > steepForForest) { data.TreeOnGrass[x, y] = false; continue; }
-                bool clearing = groveMap[x, y] < groveThreshold - 0.02f && treeRng.NextDouble() < 0.75;
-                data.TreeOnGrass[x, y] = !clearing && treeRng.NextDouble() < innerDensity;
+                if (data.Ground[x, y] != TileType.Grass) continue;
+                if (SlopeAt(heightMap, w, h, x, y) > steepForForest) continue;
+
+                // Check if cell falls inside any grove cluster using hash-grid
+                // Find the 9 potential grove-center blocks that contain this cell
+                int cellGx = (x / gridSize) * gridSize;
+                int cellGy = (y / gridSize) * gridSize;
+
+                bool inGrove = false;
+                for (int ogx = -gridSize; ogx <= gridSize; ogx += gridSize)
+                    for (int ogy = -gridSize; ogy <= gridSize; ogy += gridSize)
+                    {
+                        int gcx = cellGx + ogx;
+                        int gcy = cellGy + ogy;
+                        // Skip centers outside bbox (but also beyond edge of adjacent chunks)
+                        if (gcx < -gridSize || gcx >= w + gridSize || gcy < -gridSize || gcy >= h + gridSize) continue;
+
+                        // Determine if this block has a grove center via hash
+                        uint blockHash = unchecked(((uint)(Math.Max(0, gcx)) * 2246822519u) ^ 
+                                                   ((uint)(Math.Max(0, gcy)) * 3266489917u) ^ 
+                                                   (forestSeed * 83492791u));
+                        uint localHash = unchecked(blockHash >> 16);
+                        if ((localHash % 3u) != 0) continue; // no grove here
+
+                        // Center position is deterministic from block hash
+                        int centerX = Math.Clamp(gcx + (int)(blockHash % (uint)gridSize), 1, Math.Max(1, w - 2));
+                        int centerY = Math.Clamp(gcy + (int)((blockHash >> 8) % (uint)gridSize), 1, Math.Max(1, h - 2));
+
+                        // Grove radius and threshold
+                        int r = groveRadiusMin + (int)(localHash % (uint)(groveRadiusMax - groveRadiusMin + 1));
+                        float thresh = groveThreshold + ((localHash >> 16) % 100u) / 1000f - 0.05f;
+
+                        // Check if current cell is inside this grove
+                        int ddx = x - centerX, ddy = y - centerY;
+                        float dist = MathF.Sqrt(ddx * ddx + ddy * ddy);
+                        if (dist <= r || dist <= thresh * r)
+                        {
+                            inGrove = true;
+                            break;
+                        }
+                    }
+
+                if (!inGrove) continue;
+
+                // Moisture + water proximity acceptance
+                float mAccept = acceptMoisture[x, y];
+                double waterNear = CountWaterNeighbors(data, w, h, x, y);
+                double accept = 0.35 + mAccept * 0.5 + Math.Min(1, waterNear / 12f) * 0.35;
+
+                // Per-cell deterministic RNG
+                uint rngVal = unchecked(((uint)x * 73856093u) ^ ((uint)y * 19349663u) ^ (seed * 40503u + 7u));
+                uint rngState = unchecked(rngVal * 2654435761u);
+                rngState ^= rngState >> 13;
+                rngState ^= rngState << 5;
+                double roll = (rngState >> 8) / (double)(1UL << 24);
+
+                bool clearing = groveMap[x, y] < groveThreshold - 0.02f && roll < 0.75;
+                data.TreeOnGrass[x, y] = !clearing && roll < innerDensity;
             }
+        }
+    }
+
+    /// <summary>Count water tiles within ±4 radius (streaming-friendly).</summary>
+    private static double CountWaterNeighbors(MapData data, int w, int h, int x, int y)
+    {
+        int count = 0;
+        for (int oy = -4; oy <= 4; oy++)
+            for (int ox = -4; ox <= 4; ox++)
+            {
+                int nx = x + ox, ny = y + oy;
+                if ((uint)nx >= (uint)w || (uint)ny >= (uint)h) continue;
+                if (data.Ground[nx, ny] == TileType.Water) count++;
+            }
+        return count;
     }
 
     /// <summary>
@@ -544,13 +560,11 @@ public static class MapGenerator
     /// </summary>
     private static void ScatterStones(MapData data, float[,] heightMap, int w, int h, uint seed)
     {
-        uint state = seed * 2246822519u + 12345u;
-        if (state == 0) state = 0x9E3779B9u;
+        // Streaming-friendly stones: no sequential state, each cell decides independently.
+        const double baseDensity = 0.012;
         int cx = w / 2, cy = h / 2;
         int r2 = StartClearRadius * StartClearRadius;
-        const double baseDensity = 0.012;
-        int hw = heightMap != null ? heightMap.GetLength(0) : 0;
-        int hh = heightMap != null ? heightMap.GetLength(1) : 0;
+
         for (int x = 0; x < w; x++)
             for (int y = 0; y < h; y++)
             {
@@ -558,7 +572,8 @@ public static class MapGenerator
                 if (data.TreeOnGrass[x, y]) continue;
                 int dx = x - cx, dy = y - cy;
                 if (dx * dx + dy * dy <= r2) continue;
-                // Биом-множитель: рядом гора/вода — чаще.
+
+                // Biome multiplier: near mountain ×4, near water ×2, else ×0.3
                 double mult = 0.3;
                 for (int oy = -2; oy <= 2 && mult < 4.0; oy++)
                     for (int ox = -2; ox <= 2; ox++)
@@ -569,9 +584,15 @@ public static class MapGenerator
                         if (g == TileType.Mountain) { mult = 4.0; break; }
                         if (g == TileType.Water) mult = Math.Max(mult, 2.0);
                     }
-                state ^= state << 13; state ^= state >> 17; state ^= state << 5;
-                double roll = (state >> 8) / (double)(1 << 24);
-                if (roll < baseDensity * mult)
+
+                // Deterministic per-cell RNG from coordinates
+                uint rngVal = unchecked(((uint)x * 2246822519u) ^ ((uint)y * 3266489917u) ^ (seed * 668265263u));
+                uint roll = unchecked(rngVal * 2654435761u);
+                roll ^= roll >> 13;
+                roll ^= roll << 5;
+                double chance = (roll >> 8) / (double)(1UL << 24);
+
+                if (chance < baseDensity * mult)
                     data.StoneOnGrass[x, y] = true;
             }
     }
@@ -617,7 +638,7 @@ public static class MapGenerator
         }
     }
 
-    private static int CountGrass(MapData data, int width, int height)
+    public static int CountGrass(MapData data, int width, int height)
     {
         int count = 0;
         for (int x = 0; x < width; x++)
@@ -625,6 +646,181 @@ public static class MapGenerator
                 if (data.Ground[x, y] == TileType.Grass)
                     count++;
         return count;
+    }
+
+    // === Региональный API (§24-§33): генерация мира по любым long-координатам ===
+
+    /// <summary>
+    /// Генерирует карту для произвольной области. Работает с любыми координатами мира,
+    /// не только с [0..512). Параметры геймплейных гарантий определяются флагом.
+    /// </summary>
+    /// <param name="minTileX">Левая граница области в клетках (может быть отрицательным).</param>
+    /// <param name="maxTileX">Правая граница.</param>
+    /// <param name="minTileY">Верхняя граница.</param>
+    /// <param name="maxTileY">Нижняя граница.</param>
+    /// <param name="seed">Сид мира (общий для всех регионов).</param>
+    /// <param name="isPlayableMap">true — стартовая карта с гарантиями (озёра, связность, поляна);
+    /// false — просто террейн без ограничений.</param>
+    /// <param name="spawnCenterX">Ориентир центра спавна для falloff. -1 = [0,0].</param>
+    /// <param name="spawnCenterY">Ориентир центра спавна для falloff. -1 = [0,0].</param>
+    /// <returns>MapData с размерами width × height, Ground/Tree/Stones/Humidity/Fertility заполнены.</returns>
+    public static MapData GenerateRegion(
+        int minTileX, int maxTileX, int minTileY, int maxTileY,
+        uint seed, bool isPlayableMap = false,
+        int spawnCenterX = -1, int spawnCenterY = -1)
+    {
+        int width = maxTileX - minTileX;
+        int height = maxTileY - minTileY;
+
+        if (width <= 0 || height <= 0)
+            throw new ArgumentException("Ширина и высота должны быть > 0.");
+
+        var paramRng = new Random(unchecked((int)(seed * 2654435761u)));
+
+        float heightScale = 90f + (float)paramRng.NextDouble() * 50f;
+        float groveScale = 60f + (float)paramRng.NextDouble() * 40f;
+        float waterThreshold = 0.38f + (float)paramRng.NextDouble() * 0.04f;
+        float mountainThreshold = 0.70f + (float)paramRng.NextDouble() * 0.06f;
+        float groveThreshold = 0.55f + (float)paramRng.NextDouble() * 0.07f;
+        int octaves = 4 + paramRng.Next(2);
+        float innerDensity = 0.78f + (float)paramRng.NextDouble() * 0.17f;
+        int groveRadiusMin = 5 + paramRng.Next(3);
+        int groveRadiusMax = groveRadiusMin + 2 + paramRng.Next(4);
+
+        // Для isPlayableMap берём seed как есть (детерминировано от выбора игрока);
+        // для бесшовного стриминга добавляем локальное смещение чтобы seed был уникальным на регион.
+        uint adjustedSeed = isPlayableMap ? seed : unchecked((uint)(seed * 2654435761u) ^ (uint)HashCoords(minTileX, minTileY));
+
+        if (isPlayableMap)
+        {
+            // Полная генерация карты с проверками — аналог оригинального Generate(), но поддерживает любой spawnCenter.
+            int cx = spawnCenterX >= 0 ? spawnCenterX : (minTileX + maxTileX) / 2;
+            int cy = spawnCenterY >= 0 ? spawnCenterY : (minTileY + maxTileY) / 2;
+
+            MapData best = null;
+            float bestScore = float.NegativeInfinity;
+
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                float wt = waterThreshold - attempt * 0.015f;
+                uint s = adjustedSeed + (uint)attempt * 7919u;
+                var data = GenerateOnce(width, height, s,
+                    heightScale, groveScale, wt, mountainThreshold, groveThreshold, octaves,
+                    innerDensity, groveRadiusMin, groveRadiusMax,
+                    unchecked((uint)(s * 2246822519u + 999u)),
+                    true, cx - minTileX, cy - minTileY);
+                float score = Score(data, width, height);
+                if (best == null || score > bestScore) { best = data; bestScore = score; }
+                if (MeetsPlayability(data, width, height))
+                    return data;
+            }
+
+            return best;
+        }
+        else
+        {
+            // Бесшовный режим: один проход, без озёрных лимитов, без связности, без стартовой поляны.
+            uint s = adjustedSeed;
+            return GenerateOnce(width, height, s,
+                heightScale, groveScale, waterThreshold, mountainThreshold, groveThreshold, octaves,
+                innerDensity, groveRadiusMin, groveRadiusMax,
+                unchecked((uint)(s * 2246822519u + 999u)),
+                isPlayableMap: false);
+        }
+    }
+
+    /// <summary>Deterministic hash для комбинации координат региона (для seeding стриминговых чанков).</summary>
+    private static uint HashCoords(int x, int y)
+    {
+        unchecked
+        {
+            uint h = 0x811c9dc5u;
+            h ^= (uint)x; h *= 0x01000193u;
+            h ^= (uint)y; h *= 0x01000193u;
+            return h;
+        }
+    }
+
+    /// <summary>
+    /// Обновлённая версия GenerateOnce с поддержкой SpawnRadialFalloff и параметрами playable/unplayable.
+    /// </summary>
+    private static MapData GenerateOnce(
+        int width, int height, uint seed,
+        float heightScale, float groveScale,
+        float waterThreshold, float mountainThreshold, float groveThreshold, int octaves,
+        float innerDensity, int groveRadiusMin, int groveRadiusMax, uint forestSeed,
+        bool isPlayableMap = true, int spawnCX = -1, int spawnCY = -1)
+    {
+        var data = new MapData(width, height);
+        data.Seed = seed;
+
+        uint seedH = seed;
+        uint seedF = forestSeed;
+
+        float[,] heightMap = NoiseGenerator.GenerateFbmMap(width, height, seedH, heightScale, octaves);
+        // Ridged-подмес для гор (п.19.1-1): острые хребты вместо пузырей.
+        float[,] ridgeMap = NoiseGenerator.GenerateRidgedMap(width, height, seedH + 31337u, heightScale * 0.6f, 3);
+        for (int x = 0; x < width; x++)
+            for (int y = 0; y < height; y++)
+                heightMap[x, y] = heightMap[x, y] * 0.75f + ridgeMap[x, y] * 0.25f;
+
+        // Falloff зависит от режима: для playable — относительно точки спавна; для stream — вообще нет.
+        if (isPlayableMap && spawnCX >= 0 && spawnCY >= 0)
+            ApplySpawnRadialFalloff(heightMap, width, height, seedH, spawnCX, spawnCY);
+        // else — без falloff, террейн определяется только шумом
+
+        for (int x = 0; x < width; x++)
+            for (int y = 0; y < height; y++)
+                data.Ground[x, y] = heightMap[x, y] < waterThreshold ? TileType.Water : TileType.Grass;
+
+        EnforceLakeLimit(data, width, height);
+
+        CarveMountains(data, heightMap, width, height, mountainThreshold);
+
+        var river = RiverGenerator.CarveSingleRiver(
+            data.Ground, heightMap, width, height, seed + 5000u, RiverGenerator.MaxBranches);
+        data.MainRiverLength = river.MainLength;
+        data.RiverBranchCount = river.BranchCount;
+
+        // Только для playable карт — мосты и стартовая поляна.
+        if (isPlayableMap)
+        {
+            EnsureLandConnectivity(data, width, height);
+            ClearStartArea(data, width, height, spawnCX, spawnCY);
+        }
+
+        float[,] moistNoise = NoiseGenerator.GenerateFbmMap(width, height, seedF + 777u, groveScale * 0.7f, 3);
+        PlantForests(data, heightMap, width, height, seed, groveScale, groveThreshold, octaves,
+            innerDensity, groveRadiusMin, groveRadiusMax, seedF, moistNoise);
+        ScatterStones(data, heightMap, width, height, seed);
+
+        data.Humidity.Initialize(data.Ground, moistNoise, heightMap);
+        float[,] fertileNoise = NoiseGenerator.GenerateFbmMap(width, height, seedF + 4242u, groveScale * 0.5f, 3);
+        bool[] forestFlat = BuildForestFlatMask(data, width, height);
+        data.Fertility.Initialize(data.Ground, fertileNoise, heightMap, forestFlat,
+            (x, y) => data.Humidity.WaterFeedAt(x, y));
+
+        return data;
+    }
+
+    /// <summary>
+    /// Расширенная ClearStartArea с поддержкой пользовательского центра спавна.
+    /// Если spawnCX/CY вне bbox — используется центр карты.
+    /// </summary>
+    private static void ClearStartArea(MapData data, int w, int h, int spawnCX, int spawnCY)
+    {
+        int cx = spawnCX >= 0 && spawnCX < w ? spawnCX : w / 2;
+        int cy = spawnCY >= 0 && spawnCY < h ? spawnCY : h / 2;
+        int r2 = StartClearRadius * StartClearRadius;
+        for (int x = Math.Max(0, cx - StartClearRadius); x <= Math.Min(w - 1, cx + StartClearRadius); x++)
+            for (int y = Math.Max(0, cy - StartClearRadius); y <= Math.Min(h - 1, cy + StartClearRadius); y++)
+            {
+                int dx = x - cx, dy = y - cy;
+                if (dx * dx + dy * dy > r2) continue;
+                data.Ground[x, y] = TileType.Grass;
+                data.TreeOnGrass[x, y] = false;
+                data.StoneOnGrass[x, y] = false;
+            }
     }
 }
 

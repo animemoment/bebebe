@@ -26,6 +26,12 @@ public partial class PerformanceOverlay : CanvasLayer
 	private bool _isVisible = true;
 	private float _refreshTimer;
 	private float _trendTimer;
+	// Окно снапшота: РЕАЛЬНО прошедшее время и число кадров (а не delta кадра!).
+	// Без этого профайлер врал: сумма за 0.1 с подавалась как «за кадр/за вызов».
+	private double _sinceSnapshot;
+	private int _framesSinceSnapshot;
+	private double _lastWindowSec = 0.1;
+	private int _lastFrames = 6;
 
 	private GameProfiler.MetricSnapshot[] _metrics = Array.Empty<GameProfiler.MetricSnapshot>();
 	private readonly List<ScriptGroup> _groups = new();
@@ -247,24 +253,35 @@ public partial class PerformanceOverlay : CanvasLayer
 	public override void _Process(double delta)
 	{
 		_refreshTimer += (float)delta;
+		_sinceSnapshot += delta;
+		_framesSinceSnapshot++;
 		if (_refreshTimer < 0.10f) // 10 раз в секунду
 			return;
 		_refreshTimer = 0f;
 
+		// Окно снапшота = реально прошедшее время и реальное число кадров.
+		double windowSec = _sinceSnapshot > 0.0 ? _sinceSnapshot : 0.1;
+		int frames = _framesSinceSnapshot;
+		_sinceSnapshot = 0.0;
+		_framesSinceSnapshot = 0;
+		_lastWindowSec = windowSec;
+		_lastFrames = frames;
+
 		// Снапшот и запись в базу идут ВСЕГДА, независимо от видимости панели (F3)
-		GameProfiler.SnapshotMetrics(out _metrics, (float)delta);
-		ProfilerLogService.Instance.Accumulate(_metrics, (float)delta);
+		GameProfiler.SnapshotMetrics(out _metrics, windowSec, frames);
+		ProfilerLogService.Instance.Accumulate(_metrics, windowSec, frames);
 
 		// Тренды: 1 точка в секунду (кольцевой буфер на 60 сек)
 		_trendTimer += (float)delta;
 		if (_trendTimer >= 1.0f)
 		{
 			_trendTimer = 0f;
-			double totalMs = 0.0;
-			foreach (var m in _metrics) totalMs += m.AvgMs;
+			// Суммируем ВКЛАД В КАДР, а не «мс за окно» — иначе график завышался в 6 раз.
+			double totalMsPerFrame = 0.0;
+			foreach (var m in _metrics) totalMsPerFrame += m.MsPerFrame;
 
 			_fpsHistory[_trendIndex] = (float)Engine.GetFramesPerSecond();
-			_loadHistory[_trendIndex] = (float)(totalMs / FrameBudgetMs * 100.0);
+			_loadHistory[_trendIndex] = (float)(totalMsPerFrame / FrameBudgetMs * 100.0);
 			_trendIndex = (_trendIndex + 1) % TrendLength;
 			_trendFilled = Math.Min(_trendFilled + 1, TrendLength);
 		}
@@ -292,7 +309,7 @@ public partial class PerformanceOverlay : CanvasLayer
 		bool useFilter = filter.Length > 0;
 		foreach (var m in _metrics)
 		{
-			if (m.AvgMs < 0.005 && m.CallsPerSec == 0) continue;
+			if (m.TotalMs < 0.005 && m.Calls == 0) continue;
 			// Фича 4: фильтр применяется и к живой таблице, не только к отчёту.
 			if (useFilter && !m.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -307,7 +324,8 @@ public partial class PerformanceOverlay : CanvasLayer
 			}
 
 			group.Methods.Add(m);
-			group.TotalMs += m.AvgMs;
+			// Группа ранжируется по вкладу в кадр (мс/кадр), а не по «мс за окно».
+			group.TotalMs += m.MsPerFrame;
 		}
 
 		_groups.Sort((a, b) => b.TotalMs.CompareTo(a.TotalMs));
@@ -324,6 +342,9 @@ public partial class PerformanceOverlay : CanvasLayer
 		var sb = new StringBuilder(2048);
 		sb.Append("[b][color=#61afef]=== SCRIPT PERFORMANCE PROFILER (F3) ===[/color][/b]\n");
 		sb.Append($"[b]FPS:[/b] {FormatFps(fps)} ({frameTimeMs,4:F1}ms)  |  [b]RAM:[/b] {ramMb} MB  |  [b]База:[/b] {log.SecondCount} сек");
+		// Прозрачность учёта: замеры берутся раз в 0.1 с, поэтому показываем,
+		// за какое окно и сколько кадров собраны цифры ниже.
+		sb.Append($"  |  [color=#5c6370]окно {_lastWindowSec * 1000.0:F0}мс / {_lastFrames} кадр.[/color]");
 		if (log.IsPaused)
 			sb.Append("  [b][color=#e06c75]PAUSED[/color][/b]");
 		sb.Append("\n");
@@ -333,10 +354,12 @@ public partial class PerformanceOverlay : CanvasLayer
 		sb.Append($"[color=#98c379]FPS  :[/color] {RenderTrend(_fpsHistory, maxFps)}  [color=#5c6370](max {maxFps:F0})[/color]\n");
 		sb.Append($"[color=#e5c07b]LOAD :[/color] {RenderTrend(_loadHistory, 100f)}  [color=#5c6370](% бюджета кадра)[/color]\n");
 		// Баланс параллельных фаз: wall vs cpu, дисбаланс = простой ядер (straggler).
+		// Все величины — НА КАДР (окно нормируется), поэтому их можно сравнивать
+		// с таблицей методов и с бюджетом кадра без пересчётов.
 		GameProfiler.SnapshotBalance(out var balance);
 		if (balance.Length > 0)
 		{
-			sb.Append("[color=#c678dd][b]BALANCE[/b] (wall/cpu/простой):[/color]\n");
+			sb.Append("[color=#c678dd][b]BALANCE[/b] (wall/cpu на кадр; idle — простой ядер):[/color]\n");
 			foreach (var b in balance)
 			{
 				string imb = b.ImbalancePct >= 40 ? $"[color=#e06c75][b]{b.ImbalancePct}%[/b][/color]"
@@ -345,7 +368,7 @@ public partial class PerformanceOverlay : CanvasLayer
 				string tail = b.MaxBatchMs >= 3.0 ? $"[color=#e06c75]{b.MaxBatchMs,5:F2}ms[/color]"
 					: b.MaxBatchMs >= 1.5 ? $"[color=#e5c07b]{b.MaxBatchMs,5:F2}ms[/color]"
 					: $"[color=#98c379]{b.MaxBatchMs,5:F2}ms[/color]";
-				sb.Append($"  {FormatMethodName(b.Name, 30)} wall {b.WallMs,6:F2}ms cpu {b.CpuMs,7:F2}ms idle {imb} max {tail} strag {b.StragglerCount}\n");
+				sb.Append($"  {FormatMethodName(b.Name, 30)} W {b.WallMsPerFrame,6:F2} C {b.CpuMsPerFrame,6:F2} мс/кадр idle {imb} max {tail} strag {b.StragglerCount}\n");
 			}
 		}
 		sb.Append("[color=#3e4451]--------------------------------------------------------------------------------[/color]\n");
@@ -357,16 +380,17 @@ public partial class PerformanceOverlay : CanvasLayer
 		}
 
 		var group = _groups[_pageIndex];
-		sb.Append($"[b][color=#61afef]=== {group.Script}[/color][/b]  [color=#5c6370](стр. {_pageIndex + 1}/{_groups.Count} | методов: {group.Methods.Count} | Σ {group.TotalMs:F1}ms)[/color]\n");
-		sb.Append("[color=#abb2bf][b]МЕТОД                           AVG       MAX     CALLS/s    LOAD   %КАДРА[/b][/color]\n");
+		sb.Append($"[b][color=#61afef]=== {group.Script}[/color][/b]  [color=#5c6370](стр. {_pageIndex + 1}/{_groups.Count} | методов: {group.Methods.Count} | Σ {group.TotalMs:F2} мс/кадр)[/color]\n");
+		sb.Append("[color=#abb2bf][b]МЕТОД                            мс/кадр  %кадра   выз/с    avg/выз   max/выз   load[/b][/color]\n");
 
 		foreach (var m in group.Methods)
 		{
-			if (m.AvgMs < 0.005 && m.CallsPerSec == 0) continue;
+			if (m.TotalMs < 0.005 && m.Calls == 0) continue;
 
 			string name = FormatMethodName(m.Name, 31);
-			double framePct = m.AvgMs / FrameBudgetMs * 100.0;
-			sb.Append($"{name}  {FormatMs(m.AvgMs, 6)}  {FormatMs(m.MaxMs, 6)}  {FormatCalls(m.CallsPerSec, 8)}  {FormatLoad(m.PercentLoad, 5)}  {framePct,5:F0}%\n");
+			// %КАДРА теперь честный: вклад метода в бюджет одного кадра.
+			double framePct = m.MsPerFrame / FrameBudgetMs * 100.0;
+			sb.Append($"{name}  {FormatMs(m.MsPerFrame, 7)}  {FormatLoad(framePct, 5)}  {FormatCalls(m.CallsPerSec, 7)}  {FormatMs(m.AvgMs, 8)}  {FormatMs(m.MaxMs, 8)}  {FormatLoad(m.PercentLoad, 4)}\n");
 		}
 		sb.Append("\n");
 

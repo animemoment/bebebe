@@ -1,6 +1,7 @@
-﻿using Godot;
+using Godot;
 using Game.Core;
 using Game.Simulation;
+using System;
 using System.Collections.Generic;
 
 namespace Game.UI.Tools;
@@ -16,6 +17,9 @@ public class BuildTool : ITool
     private bool _isLeftClick = true;
     private readonly HashSet<Vector2I> _previewTiles = new(128);
     private readonly List<(int X, int Y)> _cellBuffer = new(2048);
+
+    /// <summary>Мир за кромкой острова (§26 шаг 2, §28): клетки вне острова ставятся метками мира.</summary>
+    public IToolWorldPlacement WorldPlacement { get; set; }
 
     public BuildTool(
         WallBuildManager wallBuildManager,
@@ -83,10 +87,14 @@ public class BuildTool : ITool
         if (!_isDragging || _ghostLayer == null) return;
         ClearGhost();
 
-        int minX = Mathf.Clamp(Mathf.Min(startTile.X, currentTile.X), 0, MapRenderer.MapWidth - 1);
-        int maxX = Mathf.Clamp(Mathf.Max(startTile.X, currentTile.X), 0, MapRenderer.MapWidth - 1);
-        int minY = Mathf.Clamp(Mathf.Min(startTile.Y, currentTile.Y), 0, MapRenderer.MapHeight - 1);
-        int maxY = Mathf.Clamp(Mathf.Max(startTile.Y, currentTile.Y), 0, MapRenderer.MapHeight - 1);
+        // Пересечение с островом (а не кламп): иначе драг целиком за кромкой рисовал
+        // фантомные клетки по краю острова.
+        int minX = Mathf.Max(Mathf.Min(startTile.X, currentTile.X), 0);
+        int maxX = Mathf.Min(Mathf.Max(startTile.X, currentTile.X), MapRenderer.MapWidth - 1);
+        int minY = Mathf.Max(Mathf.Min(startTile.Y, currentTile.Y), 0);
+        int maxY = Mathf.Min(Mathf.Max(startTile.Y, currentTile.Y), MapRenderer.MapHeight - 1);
+        if (minX > maxX || minY > maxY)
+            return;
 
         if (_buildingType == BuildingType.WoodWall)
         {
@@ -120,10 +128,24 @@ public class BuildTool : ITool
         _isDragging = false;
         ClearGhost();
 
-        int minX = Mathf.Clamp(Mathf.Min(startTile.X, endTile.X), 0, MapRenderer.MapWidth - 1);
-        int maxX = Mathf.Clamp(Mathf.Max(startTile.X, endTile.X), 0, MapRenderer.MapWidth - 1);
-        int minY = Mathf.Clamp(Mathf.Min(startTile.Y, endTile.Y), 0, MapRenderer.MapHeight - 1);
-        int maxY = Mathf.Clamp(Mathf.Max(startTile.Y, endTile.Y), 0, MapRenderer.MapHeight - 1);
+        // §28: сначала мир за кромкой — выделение НЕ клампится к острову.
+        if (WorldPlacement != null)
+        {
+            bool wall = _buildingType == BuildingType.WoodWall;
+            Func<long, long, bool> apply = isLeftClick
+                ? (wall ? WorldPlacement.TryPlaceWall : WorldPlacement.TryPlaceBuilding)
+                : (wall ? WorldPlacement.TryRemoveWall : WorldPlacement.TryRemoveBuilding);
+            WorldPlacementPass.Run(startTile.X, startTile.Y, endTile.X, endTile.Y, WorldPlacement, apply);
+        }
+
+        // Пересечение с островом (а не кламп): иначе драг целиком за кромкой рисовал
+        // фантомные клетки по краю острова.
+        int minX = Mathf.Max(Mathf.Min(startTile.X, endTile.X), 0);
+        int maxX = Mathf.Min(Mathf.Max(startTile.X, endTile.X), MapRenderer.MapWidth - 1);
+        int minY = Mathf.Max(Mathf.Min(startTile.Y, endTile.Y), 0);
+        int maxY = Mathf.Min(Mathf.Max(startTile.Y, endTile.Y), MapRenderer.MapHeight - 1);
+        if (minX > maxX || minY > maxY)
+            return;
 
         _cellBuffer.Clear();
         for (int x = minX; x <= maxX; x++)

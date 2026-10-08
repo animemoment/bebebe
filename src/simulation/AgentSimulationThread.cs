@@ -277,15 +277,12 @@ public sealed class AgentSimulationThread : IDisposable
                     // Буфер JobAudit-печати: GD.Print из горячего пути убран —
                     // копим за цикл шагов, печатаем один раз из sim-потока после фаз.
                     int jobAuditFixedTotal = 0;
-                    // FIX круг-2 №6: сброс тикового аккумулятора баланса в начале тика —
-                    // Publish планировщика аккумулирует sub-steps, overlay видит сумму.
-                    // Phase3a_Balance публикуется дважды за тик (слитый Needs+Cells
-                    // + остаток) через Accumulate Publish — без сброса копился бы
-                    // с начала сессии и врал бы в оверлее.
-                    DynamicWorkScheduler.ResetTickBalance("Simulation.Phase2_Balance");
-                    DynamicWorkScheduler.ResetTickBalance("Simulation.Phase3a_Balance");
-                    DynamicWorkScheduler.ResetTickBalance("Simulation.Phase3b_Balance");
-                    DynamicWorkScheduler.ResetTickBalance("Dispatcher.Balance");
+                    // Баланс фаз больше НЕ сбрасывается на тик: планировщик копит
+                    // кумулятивные суммы, а GameProfiler.SnapshotMetrics берёт дельту
+                    // за своё окно (0.1 с / N кадров) и нормирует её на кадр.
+                    // Раньше сброс на каждый проход петли означал, что BALANCE
+                    // показывал последний тик (часто 1 суб-степ ≈ 0.67ms), а таблица
+                    // методов — сумму окна (19.62ms): числа было не свести.
                     using (GameProfiler.ScopeCustom("Simulation.TotalStepCycle"))
                     {
                         for (int step = 0; step < steps; step++)
@@ -667,6 +664,96 @@ public sealed class AgentSimulationThread : IDisposable
         }
     }
 
+    // ===== Наблюдаемость Phase3a (постоянные счётчики: пригодятся для будущих фич) =====
+    // Считаются ЛОКАЛЬНО в теле диапазона (обычные int), публикуются одним
+    // Interlocked.Add на БАТЧ (не на агента) — горячий путь не нагружают.
+    // Смысл: видеть, сколько агентов реально входят в state-зависимые ветки
+    // (голод/сон/миграция) и сколько меняет клетку, — без этого стоимость
+    // Phase3a не разложить на «структурную» и «зависимую от мира».
+    // Тайминги блоков Phase3a (тики Stopwatch): needs / cells / rest-тело /
+    // wall слитого прохода / wall остаточного прохода.
+    private readonly long[] _dbgTicks = new long[5];
+    private const int DbgTickNeeds = 0;
+    private const int DbgTickCells = 1;
+    private const int DbgTickRest = 2;
+    private const int DbgTickFusedWall = 3;
+    private const int DbgTickRestWall = 4;
+
+    // Счётчики «матрицей»: один массив на все показатели — одна строка кэша,
+    // публикация одним проходом на батч (Interlocked.Add по элементу массива),
+    // чтение и обнуление — тоже проходом. Отдельные поля-счётчики давали столько
+    // же обращений, но хуже ложились в кэш.
+    private readonly long[] _dbgCount = new long[8];
+    private const int DbgAgents = 0;
+    private const int DbgIdle = 1;
+    private const int DbgSlice = 2;
+    private const int DbgHungry = 3;
+    private const int DbgSleepy = 4;
+    private const int DbgEnv = 5;
+    private const int DbgChanged = 6;
+    private const int DbgCalls = 7;
+    private long _dbgReportAt;
+    // Буфер для диагностики диспетчера (только sim-поток, раз в секунду).
+    private readonly int[] _diagIdleBuf = new int[64];
+
+    /// <summary>
+    /// Раз в секунду: сколько чанков ВООБЩЕ имеют работы и сколько из них — без
+    /// единого бездельника рядом.
+    ///
+    /// Зачем: диспетчер сводит пару «работа ↔ рабочий» ТОЛЬКО внутри одного
+    /// чанка (16×16 тайлов): DispatchChunk берёт бездельников своего чанка и
+    /// работы своего же чанка. Дальний глобальный проход — добивка с жёстким
+    /// капом (≤128 кандидатов, ≤8 назначений, не чаще раза в 2 с). Поэтому если
+    /// толпа бездельников стоит в одном месте (еда/склад в центре), а работы
+    /// размазаны по всей карте, дальние чанки не будут взяты НИКОГДА — визуально
+    /// это и выглядит как «полосы»: где-то пашут, где-то не тронуто вообще.
+    /// </summary>
+    private void ReportDispatchDistribution()
+    {
+        var index = JobDispatcher.Instance.JobIndex;
+        var idle = JobDispatcher.Instance.IdleWorkers;
+        const int chunkDim = GenericJobSpatialIndex.ChunkGridDim;
+        int chunksWithJobs = 0, chunksWithIdle = 0, chunksJobsNoIdle = 0;
+        long jobsInNoIdleChunks = 0, idleInJobChunks = 0;
+        int[] buf = _diagIdleBuf;
+        for (int ci = 0; ci < chunkDim * chunkDim; ci++)
+        {
+            int jobs = index.GetChunkJobCount(ci);
+            int workers = idle.CollectIdleWorkersInChunk(ci, buf.Length, buf, _pool);
+            if (jobs > 0)
+            {
+                chunksWithJobs++;
+                idleInJobChunks += workers;
+                if (workers == 0)
+                {
+                    chunksJobsNoIdle++;
+                    jobsInNoIdleChunks += jobs;
+                }
+            }
+            if (workers > 0)
+                chunksWithIdle++;
+        }
+        GD.Print($"[DISP] unclaimed={index.UnclaimedCount} total={index.TotalCount} " +
+                 $"idle={idle.TotalIdleCount} | чанков с работами={chunksWithJobs} " +
+                 $"с бездельниками={chunksWithIdle} работы-без-бездельников={chunksJobsNoIdle} " +
+                 $"(работ там {jobsInNoIdleChunks}, бездельников в чанках с работами {idleInJobChunks})");
+    }
+    // Снимки для отчёта (переиспользуемые — без аллокаций в горячем пути).
+    private readonly long[] _dbgTicksSnap = new long[5];
+    private readonly long[] _dbgCountSnap = new long[8];
+
+    /// <summary>
+    /// Снять и обнулить всю «матрицу» наблюдаемости Phase3a одним проходом.
+    /// Зовётся раз в секунду из sim-потока (воркеры уже joined) — без аллокаций.
+    /// </summary>
+    private void DrainPhase3aCounters()
+    {
+        for (int i = 0; i < _dbgTicks.Length; i++)
+            _dbgTicksSnap[i] = Interlocked.Exchange(ref _dbgTicks[i], 0);
+        for (int i = 0; i < _dbgCount.Length; i++)
+            _dbgCountSnap[i] = Interlocked.Exchange(ref _dbgCount[i], 0);
+    }
+
     private void Phase3a_ParallelBookkeeping(float deltaTime, bool rebuildSpatialGrid, bool updateNeedsEnv = false)
     {
         using (GameProfiler.Scope())
@@ -691,13 +778,23 @@ public sealed class AgentSimulationThread : IDisposable
                 // сумма eNeeds+eCells, теперь один счётчик).
                 // Затем поэлементный остаток (Idle/Evac-ветки, НЕ батчится:
                 // lock/striped UpdateWorkerChunk и тайм-слайсинг со сканами под lock).
-                DynamicWorkBalancer.ForEachRange(count,
-                    (s, e) =>
-                    {
-                        SimdNeedsBatch.UpdateNeeds(_pool, s, e, deltaTime, updateNeedsEnv);
-                        SimdNeedsBatch.UpdateCells(_pool, s, e, deltaTime);
-                    },
-                    "Simulation.Phase3a_Balance");
+                long dbgFused0 = Stopwatch.GetTimestamp();
+                using (GameProfiler.ScopeCustom("Simulation.Phase3a_Fused"))
+                {
+                    DynamicWorkBalancer.ForEachRange(count,
+                        (s, e) =>
+                        {
+                            long tn0 = Stopwatch.GetTimestamp();
+                            SimdNeedsBatch.UpdateNeeds(_pool, s, e, deltaTime, updateNeedsEnv);
+                            long tn1 = Stopwatch.GetTimestamp();
+                            SimdNeedsBatch.UpdateCells(_pool, s, e, deltaTime);
+                            long tn2 = Stopwatch.GetTimestamp();
+                            Interlocked.Add(ref _dbgTicks[DbgTickNeeds], tn1 - tn0);
+                            Interlocked.Add(ref _dbgTicks[DbgTickCells], tn2 - tn1);
+                        },
+                        "Simulation.Phase3a_Fused_Balance");
+                }
+                Interlocked.Add(ref _dbgTicks[DbgTickFusedWall], Stopwatch.GetTimestamp() - dbgFused0);
                 int eFused = DynamicWorkScheduler.Shared.LastPhaseErrorCount;
                 // G3: остаток БЕЗ Needs и БЕЗ записи cell-tracking (уже сделаны
                 // слитым батчем выше). cellChanged для Idle-ветки перевычисляется
@@ -709,9 +806,84 @@ public sealed class AgentSimulationThread : IDisposable
                 // deltaTime > 0 ветка «совпало» даёт Stay > 0). При deltaTime == 0
                 // эвристика может дать ложное срабатывание — UpdateWorkerChunk
                 // идемпотентен (no-op при том же чанке), регрессии поведения нет.
-                DynamicWorkBalancer.ForEach(count,
-                    i => BookkeepSingleAgentRest(i, deltaTime, tickBucket, _pool.CellStayTime[i] == 0f),
-                    "Simulation.Phase3a_Balance");
+                long dbgRest0 = Stopwatch.GetTimestamp();
+                using (GameProfiler.ScopeCustom("Simulation.Phase3a_Rest"))
+                {
+                    DynamicWorkBalancer.ForEachRange(count,
+                        (s, e) =>
+                        {
+                            long t0 = Stopwatch.GetTimestamp();
+                            int idle = 0, slice = 0, hungry = 0, sleepy = 0, env = 0, changed = 0;
+                            for (int i = s; i < e; i++)
+                            {
+                                // Состояние и «смена клетки» читаем по разу на агента.
+                                AgentState state = _pool.States[i];
+                                bool cellChanged = _pool.CellStayTime[i] == 0f;
+                                if (state == AgentState.Idle)
+                                {
+                                    idle++;
+                                    if ((i & 3) == tickBucket)
+                                    {
+                                        slice++;
+                                        if (_pool.Hunger[i] > AgentNeedsConfig.HungerSeekThreshold) hungry++;
+                                        if (_pool.Sleep[i] > AgentNeedsConfig.SleepRestThreshold
+                                            || _pool.Fatigue[i] > AgentNeedsConfig.FatigueRestThreshold) sleepy++;
+                                        if (_pool.EnvironmentSatisfaction[i] < AgentNeedsConfig.EnvironmentMigrateThreshold) env++;
+                                    }
+                                }
+                                if (cellChanged) changed++;
+                                BookkeepSingleAgentRest(i, deltaTime, tickBucket, cellChanged, state);
+                            }
+                            long t1 = Stopwatch.GetTimestamp();
+                            // Публикация наблюдаемости — ОДНИМ проходом по «матрице»
+                            // (7 счётчиков из одного массива = одна строка кэша).
+                            Interlocked.Add(ref _dbgTicks[DbgTickRest], t1 - t0);
+                            long[] cnt = _dbgCount;
+                            Interlocked.Add(ref cnt[DbgAgents], e - s);
+                            Interlocked.Add(ref cnt[DbgIdle], idle);
+                            Interlocked.Add(ref cnt[DbgSlice], slice);
+                            Interlocked.Add(ref cnt[DbgHungry], hungry);
+                            Interlocked.Add(ref cnt[DbgSleepy], sleepy);
+                            Interlocked.Add(ref cnt[DbgEnv], env);
+                            Interlocked.Add(ref cnt[DbgChanged], changed);
+                        },
+                        "Simulation.Phase3a_Rest_Balance");
+                }
+                Interlocked.Add(ref _dbgTicks[DbgTickRestWall], Stopwatch.GetTimestamp() - dbgRest0);
+                Interlocked.Increment(ref _dbgCount[DbgCalls]);
+
+                // --- Отчёт Phase3a раз в секунду из sim-потока (наблюдаемость) ---
+                long dbgNow = Stopwatch.GetTimestamp();
+                if (_dbgReportAt == 0)
+                {
+                    _dbgReportAt = dbgNow;
+                }
+                else
+                {
+                    double dbgWinSec = (dbgNow - _dbgReportAt) / (double)Stopwatch.Frequency;
+                    if (dbgWinSec >= 1.0)
+                    {
+                        _dbgReportAt = dbgNow;
+                        DrainPhase3aCounters();
+                        long calls = _dbgCountSnap[DbgCalls];
+                        if (calls > 0)
+                        {
+                            long tNeeds = _dbgTicksSnap[DbgTickNeeds];
+                            long tCells = _dbgTicksSnap[DbgTickCells];
+                            long tRest = _dbgTicksSnap[DbgTickRest];
+                            double perCall = 1000.0 / Stopwatch.Frequency / calls;
+                            double cpuMsPerSec = (tNeeds + tCells + tRest) / (double)Stopwatch.Frequency * 1000.0 / dbgWinSec;
+                            GD.Print($"[P3A] cap={count} calls/s={calls / dbgWinSec:F0} | ms/call: " +
+                                     $"needs={tNeeds * perCall:F3} cells={tCells * perCall:F3} rest={tRest * perCall:F3} | " +
+                                     $"wall/call: fused={_dbgTicksSnap[DbgTickFusedWall] * perCall:F3} rest={_dbgTicksSnap[DbgTickRestWall] * perCall:F3} | " +
+                                     $"cpu_ms/s={cpuMsPerSec:F1} | rest@call: idle={_dbgCountSnap[DbgIdle] / (double)calls:F0} " +
+                                     $"slice={_dbgCountSnap[DbgSlice] / (double)calls:F0} hungry={_dbgCountSnap[DbgHungry] / (double)calls:F0} " +
+                                     $"sleepy={_dbgCountSnap[DbgSleepy] / (double)calls:F0} env={_dbgCountSnap[DbgEnv] / (double)calls:F0} " +
+                                     $"changed={_dbgCountSnap[DbgChanged] / (double)calls:F0}");
+                            ReportDispatchDistribution();
+                        }
+                    }
+                }
                 int eRest = DynamicWorkScheduler.Shared.LastPhaseErrorCount;
                 int eTotal = eFused + eRest;
                 if (eTotal > 0)
@@ -758,7 +930,17 @@ public sealed class AgentSimulationThread : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void BookkeepSingleAgentRest(int i, float deltaTime, uint tickBucket, bool cellChanged)
     {
-        var state = _pool.States[i];
+        BookkeepSingleAgentRest(i, deltaTime, tickBucket, cellChanged, _pool.States[i]);
+    }
+
+    /// <summary>
+    /// То же, но состояние агента уже прочитано вызывающим: параллельный проход
+    /// Phase3a читает States[i] один раз — и для счётчиков наблюдаемости, и для
+    /// ветки. Так на агента приходится одно чтение States вместо двух.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void BookkeepSingleAgentRest(int i, float deltaTime, uint tickBucket, bool cellChanged, AgentState state)
+    {
         if (state == AgentState.Idle)
         {
             // Свободный агент переместился — обновляем его чанк в сетке бездельников,

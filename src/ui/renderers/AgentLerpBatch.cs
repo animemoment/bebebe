@@ -111,6 +111,42 @@ public static class AgentLerpBatch
     }
 
     /// <summary>
+    /// Пакует identity Transform2D и custom data (prev.x, prev.y, target.x, target.y).
+    /// Vertex shader выполняет lerp на GPU; CPU делает этот проход только при snapshot.
+    /// Формат MultiMesh 2D: 8 float transform + 4 float INSTANCE_CUSTOM.
+    /// </summary>
+    public static void FillGpuInstanceBuffer(
+        Span<float> buffer,
+        ReadOnlySpan<Vector2> prev,
+        ReadOnlySpan<Vector2> target,
+        int count)
+    {
+        if (count < 0)
+            throw new ArgumentOutOfRangeException(nameof(count), "count не может быть отрицательным.");
+        if (count > prev.Length || count > target.Length)
+            throw new ArgumentException("count больше длин спанов позиций.");
+        if ((long)buffer.Length < (long)count * 12)
+            throw new ArgumentException("GPU buffer короче count*12.");
+
+        for (int i = 0; i < count; i++)
+        {
+            int index = i * 12;
+            buffer[index + 0] = 1.0f;
+            buffer[index + 1] = 0.0f;
+            buffer[index + 2] = 0.0f;
+            buffer[index + 3] = 0.0f;
+            buffer[index + 4] = 0.0f;
+            buffer[index + 5] = 1.0f;
+            buffer[index + 6] = 0.0f;
+            buffer[index + 7] = 0.0f;
+            buffer[index + 8] = prev[i].X;
+            buffer[index + 9] = prev[i].Y;
+            buffer[index + 10] = target[i].X;
+            buffer[index + 11] = target[i].Y;
+        }
+    }
+
+    /// <summary>
     /// Слитый проход главного цикла <c>AgentRenderer._Process</c>: lerp
     /// <c>px = prev + (target - prev) * factor</c> на лету + заливка 8 float
     /// на инстанс в буфер. Без промежуточного массива позиций (как и раньше —

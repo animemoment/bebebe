@@ -129,21 +129,22 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 		if (profilerScope == null)
 			return;
 		var st = _monitor.GetStats();
-		// FIX круг-2 №6: аккумуляция sub-steps в тиковый тотал (sum wall/cpu,
-		// max MaxBatchMs, sum StragglerCount) — overlay видит сумму тика, а не
-		// последний sub-step. Сброс — ResetTickBalance в начале тика (sim-поток).
+		// Публикация суб-степа в КУМУЛЯТИВНЫЕ суммы scope'а. Дельта за окно и
+		// нормировка на кадр считаются в GameProfiler.RefreshBalance (вызывается
+		// из SnapshotMetrics) — поэтому сбросов на тик больше нет и BALANCE
+		// меряется тем же окном, что и таблица методов.
 		GameProfiler.AccumulateSchedulerStats(profilerScope, wallMs, cpuMs, st.MaxBatchMs, st.StragglerCount);
 	}
 
 	/// <summary>
-	/// Сброс тикового аккумулятора баланса (зовёт sim-поток один раз в начале
-	/// тика, перед циклом sub-steps — см. FIX круг-2 №6 в GameProfiler).
+	/// Сброс тикового аккумулятора баланса БОЛЬШЕ НЕ НУЖЕН: счётчики фаз
+	/// кумулятивные, а GameProfiler.SnapshotMetrics берёт дельту за своё окно
+	/// (0.1 с / N кадров) и нормирует её на кадр — см. RefreshBalance.
+	/// Оставлено как no-op для совместимости со старыми вызовами.
 	/// </summary>
 	public static void ResetTickBalance(string profilerScope)
 	{
-		if (profilerScope == null)
-			return;
-		GameProfiler.ResetTickBalance(profilerScope);
+		// Намеренно пусто (см. XML-doc выше).
 	}
 
 	/// <inheritdoc/>

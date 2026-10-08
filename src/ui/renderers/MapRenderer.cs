@@ -4,6 +4,7 @@ using Game.Simulation;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Game.UI;
@@ -63,6 +64,26 @@ public partial class MapRenderer : Node2D
     [Export] public int SeedOverride = 0;
 
     public static uint CurrentMapSeed { get; private set; }
+
+    /// <summary>Внешняя карта (выбор спавна игрока на мировой карте). Применяется вместо автогенерации.</summary>
+    public MapData ExternalPendingMap 
+    { 
+        set 
+        { 
+            _hasExternalMap = true;
+            Interlocked.Exchange(ref _pendingMapData, value); 
+            if (value != null) Callable.From(ApplyMap).CallDeferred();
+        } 
+    }
+    
+    /// <summary>Применить внешнюю карту синхронно (вызывается из Main.cs после установки ExternalPendingMap).</summary>
+    public void StartAsync()
+    {
+        if (_pendingMapData != null)
+            ApplyMap();
+    }
+    
+    private volatile bool _hasExternalMap = false;
 
     private const string TextureGrass     = "uid://bw85uoku784o5";
     private const string TextureWater     = "uid://cmi8pjecdx35";
@@ -329,6 +350,9 @@ public partial class MapRenderer : Node2D
         FarmJobManager.Instance.OnPlotUnmarked += _onPlotUnmarked;
         FarmJobManager.Instance.OnPlotsBatchUnmarked += _onPlotsBatchUnmarked;
         FarmJobManager.Instance.OnPlotCompleted += _onPlotCompleted;
+
+        // Если карта уже подана извне — применяем её и пропускаем автогенерацию
+        if (_pendingMapData != null || _hasExternalMap) return;
 
         Task.Run(() =>
         {
