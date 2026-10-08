@@ -157,7 +157,17 @@ public partial class Main : Node2D
 		_mapOverlay = _worldMapScene.Instantiate<WorldMapOverlay>();
 		_mapOverlay.Name = "WorldMapOverlay";
 		_mapOverlay.Initialize(WorldMapSeed, WorldGeneratorVersion);
+		_mapOverlay.RegionSelected += OnMapRegionSelected;
 		AddChild(_mapOverlay);
+	}
+
+	/// <summary>Обработчик сигнала выбора региона с мировой карты.</summary>
+	private void OnMapRegionSelected(long regionX, long regionY)
+	{
+		// Карта закрывается сама (TrySelectRegion → CloseMap), но на всякий случай гарантируем закрытие.
+		if (_mapOverlay != null && _mapOverlay.IsOpen)
+			_mapOverlay.CloseMap();
+		OnRegionSelected(new RegionKey(regionX, regionY));
 	}
 
 	/// <summary>Игрок выбрал регион на мировой карте — генерируем карту и начинаем игру.</summary>
@@ -294,18 +304,11 @@ public partial class Main : Node2D
 	{
 		if (_mapOverlay == null) return;
 
-		if (_mapOverlay.Visible)
-		{
+		// Управление видимостью игрового слоя и состоянием карты инкапсулировано в WorldMapOverlay.
+		if (_mapOverlay.IsOpen)
 			_mapOverlay.CloseMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = true;
-		}
 		else
-		{
 			_mapOverlay.OpenMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = false;
-		}
 	}
 
 	public override void _ExitTree()
