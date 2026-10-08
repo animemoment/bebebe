@@ -12,12 +12,19 @@ namespace Game.Simulation;
 ///   Шаг 2 ПОДНОС: ставим чертежи, агенты везут бревна.
 ///   Шаг 3 СТРОЙКА: строить можно ТОЛЬКО когда привезены ВСЕ 100% бревен
 ///     на ВСЮ стройку (а не по частям). Иначе — ждать, строить нельзя.
+///   ЗОНА (ферма/склад внутри контура): работает ТОЛЬКО когда все её стены
+///   построены (site.IsComplete). Пока здание не достроено — фермеры и
+///   носильщики внутрь не пускаются (IsZoneWorkAllowed).
+/// Правило «не завершив шаг на 100% — дальше нельзя» держится СТАДИЯМИ
+/// клетки: работа другого шага просто не допускается гейтом IsStageAllowed,
+/// а потерянное догоняет ReconcileTick.
 /// Что именно чистим — смотри BuildObstacles.NeedsClear (список легко дополнить).
 /// Все цифры — в BuildConfig (один файл настроек).
-/// Состояние хранится ПО КЛЕТКАМ (а не счётчиками): повторный вызов — без
-/// вреда, пропущенное чинит Reconcile раз в 5 секунд.
-/// Порядок блокировок: lock сайта НИКОГДА не держим во время вызовов
-/// внешних менеджеров.
+/// Состояние хранится ПО КЛЕТКАМ: повторный вызов — без вреда, пропущенное
+/// чинит Reconcile раз в 5 секунд.
+/// Порядок блокировок: lock пайплайна (_lock) НИКОГДА не держим во время
+/// вызовов внешних менеджеров; lock сайта (_sitesLock) — только для
+/// микросекундных операций над словарями (никогда не держим во время _lock).
 /// </summary>
 public sealed class ConstructionPipeline
 {
@@ -39,6 +46,8 @@ public sealed class ConstructionPipeline
         public bool NeedTree;
         public bool NeedStone;
         public bool NeedHaul;
+        // Стена или внутренняя клетка зоны (зоны только чистятся, не строятся).
+        public bool IsWall;
     }
 
     private sealed class SiteState
@@ -46,18 +55,28 @@ public sealed class ConstructionPipeline
         public int Id;
         public BuildingType WallType = BuildingType.WoodWall;
         public Dictionary<(int X, int Y), CellState> Cells = new();
-        // Сколько бревен надо ВСЕГО на стройку и сколько уже привезли.
-        // Когда привезли все — открываем шаг Building сразу всем клеткам.
-        public int LogsNeeded;
-        public int LogsDelivered;
-        public bool AllSupplied;
+        // Внутренние клетки зоны этого сайта (для гейта IsZoneWorkAllowed).
+        public List<(int X, int Y)> ZoneCells;
+        // Все ли стены построены (зоновые клетки к этому не относятся).
+        public bool WallsBuilt;
+        // Сайт полностью завершён (все клетки выбыли) — флаг для дёшевого
+        // чтения из-под _lock (словари сайта при этом ещё живы).
+        public bool Completed;
     }
 
+    // Один замок: все критические секции — микросекундные операции над
+    // словарями БЕЗ внешних вызовов внутри (проверено по всему классу).
+    // Горячие гейты (IsStageAllowed/IsZoneWorkAllowed) берут его на одно
+    // чтение; внешние менеджеры (BlueprintManager, JobDispatcher, …) всегда
+    // вызываются вне lock — порядок блокировок G→S→P не нарушается.
     private readonly object _lock = new();
     private int _nextSiteId = 1;
     private readonly Dictionary<int, SiteState> _sites = new();
     // Обратный индекс клетка → сайт (чтобы FindSiteByCell был O(1)).
     private readonly Dictionary<(int X, int Y), int> _cellToSite = new();
+    // Сайты с живой расчисткой/снабжением: PromoteReadyCells/MaybeOpenBuilding
+    // зовём только для них, а не перебираем все сайты каждый reconcile-тик.
+    private readonly HashSet<int> _activeClearSites = new();
     private long _lastReconcileTicks;
     private static readonly long ReconcileIntervalTicks = System.TimeSpan.FromSeconds(5).Ticks;
 
@@ -78,6 +97,7 @@ public sealed class ConstructionPipeline
         var trees = new List<(int X, int Y)>();
         var stones = new List<(int X, int Y)>();
         var items = new List<(int X, int Y)>();
+        bool anyClearing = false;
 
         lock (_lock)
         {
@@ -88,17 +108,16 @@ public sealed class ConstructionPipeline
             RegisterCells(zoneCells, false, site, treeMask, stoneMask, trees, stones, items);
             if (site.Cells.Count == 0)
                 return 0;
-            // Сколько бревен надо на всю стройку (только стены, зона бревен не ест).
-            int perCell = BuildConfig.LogsFor(wallType);
-            int wallCount = 0;
-            foreach (var kv in site.Cells)
-                if (IsWallCell(site, kv.Key)) wallCount++;
-            site.LogsNeeded = wallCount * perCell;
-            if (site.LogsNeeded <= 0)
+            foreach (var cs in site.Cells.Values)
+                if (cs.Stage == CellStage.Clearing) { anyClearing = true; break; }
+            if (anyClearing)
+                _activeClearSites.Add(site.Id);
+            // Нет стен — «здание» считается построенным сразу (иначе зона
+            // под открытым небом никогда не получила бы разрешение работать).
+            if (!HasAnyWallLocked(site))
             {
-                // Стен нет (например чистая зона без стен) — строить нечего,
-                // но расчистку всё равно делаем, дальше клетки просто уйдут.
-                site.AllSupplied = true;
+                site.WallsBuilt = true;
+                site.Completed = true;
             }
             _sites[site.Id] = site;
         }
@@ -115,9 +134,6 @@ public sealed class ConstructionPipeline
         return site.Id;
     }
 
-    // Клетки зоны помечаем NeedBuild=false через отдельный набор.
-    private readonly HashSet<(int Site, int X, int Y)> _noBuildCells = new();
-
     private void RegisterCells(List<(int X, int Y)> cells, bool needBuild, SiteState site,
         bool[,] treeMask, bool[,] stoneMask,
         List<(int X, int Y)> trees, List<(int X, int Y)> stones, List<(int X, int Y)> items)
@@ -129,9 +145,9 @@ public sealed class ConstructionPipeline
                 continue;
             if (_cellToSite.ContainsKey((x, y)))
                 continue;
-            var cs = new CellState();
-            bool hasTree = treeMask != null && (uint)x < (uint)treeMask.GetLength(0) && (uint)y < (uint)treeMask.GetLength(1) && treeMask[x, y];
-            bool hasStone = stoneMask != null && (uint)x < (uint)stoneMask.GetLength(0) && (uint)y < (uint)stoneMask.GetLength(1) && stoneMask[x, y];
+            var cs = new CellState { IsWall = needBuild };
+            bool hasTree = MaskHas(treeMask, x, y);
+            bool hasStone = MaskHas(stoneMask, x, y);
             bool hasItems = GroundItemManager.Instance.HasItemsAt(x, y);
             cs.NeedTree = hasTree;
             cs.NeedStone = hasStone;
@@ -139,16 +155,29 @@ public sealed class ConstructionPipeline
             site.Cells[(x, y)] = cs;
             _cellToSite[(x, y)] = site.Id;
             if (!needBuild)
-                _noBuildCells.Add((site.Id, x, y));
+            {
+                site.ZoneCells ??= new List<(int X, int Y)>();
+                site.ZoneCells.Add((x, y));
+                _zoneCellsGlobal.Add((x, y));
+            }
             if (hasTree) trees.Add((x, y));
             if (hasStone) stones.Add((x, y));
             if (hasItems) items.Add((x, y));
         }
     }
 
-    private bool IsWallCell(SiteState site, (int X, int Y) cell)
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool MaskHas(bool[,] mask, int x, int y)
+        => mask != null && (uint)x < (uint)mask.GetLength(0) && (uint)y < (uint)mask.GetLength(1)
+           && mask[x, y];
+
+    // Есть ли у сайта ещё живые стеновые клетки (зовётся из-под _lock).
+    private static bool HasAnyWallLocked(SiteState s)
     {
-        return !_noBuildCells.Contains((site.Id, cell.X, cell.Y));
+        foreach (var kv in s.Cells)
+            if (kv.Value.IsWall) return true;
+        return false;
     }
 
     private static void RegisterHaulBatch(List<(int X, int Y)> items)
@@ -176,6 +205,7 @@ public sealed class ConstructionPipeline
     /// <summary>
     /// Клетки без расчистки — в Supply (чертёж + доставка по одной клетке).
     /// Клетки зоны (не стены) чертежей не получают — им только расчистка.
+    /// Вызывается из-под _lock НЕ должен; сам берёт _lock на микросекунды.
     /// </summary>
     private void PromoteReadyCells(int siteId)
     {
@@ -191,7 +221,7 @@ public sealed class ConstructionPipeline
                 var cs = kv.Value;
                 if (cs.Stage == CellStage.Clearing && !cs.NeedTree && !cs.NeedStone && !cs.NeedHaul)
                 {
-                    if (!IsWallCell(site, kv.Key))
+                    if (!cs.IsWall)
                     {
                         // Внутренняя клетка зоны: чистить больше нечего — выбывает.
                         cs.Stage = CellStage.Done;
@@ -203,7 +233,7 @@ public sealed class ConstructionPipeline
                 }
             }
         }
-        // Выбывшие клетки зоны чистим из индексов (вне lock — аккуратный проход).
+        // Выбывшие клетки зоны чистим из индексов.
         CleanupDoneCells(siteId);
         if (toSupply == null || toSupply.Count == 0)
             return;
@@ -244,11 +274,21 @@ public sealed class ConstructionPipeline
             {
                 site.Cells.Remove(c);
                 _cellToSite.Remove(c);
-                _noBuildCells.Remove((siteId, c.X, c.Y));
+                _zoneCellsGlobal.Remove(c);
             }
             if (site.Cells.Count == 0)
-                _sites.Remove(siteId);
+                DropSiteLocked(siteId, site);
         }
+    }
+
+    // Удалить сайт из всех реестров (зовётся из-под _lock). Словарь сайта
+    // при этом остаётся живым: ссылки на него в кэше гейтов сами истлеют
+    // через GatewayTtlMs (见 TryGetGateway).
+    private void DropSiteLocked(int siteId, SiteState site)
+    {
+        site.Completed = true;
+        _sites.Remove(siteId);
+        _activeClearSites.Remove(siteId);
     }
 
     /// <summary>Дерево срублено: снять флаг, при готовности — в Supply.</summary>
@@ -306,16 +346,10 @@ public sealed class ConstructionPipeline
         {
             if (_sites.TryGetValue(site, out var s) && s.Cells.TryGetValue((x, y), out var cs))
             {
-                if (cs.Stage == CellStage.Supply)
-                    cs.Stage = CellStage.WaitingAll;
-                // Считаем привезённые бревна по факту чертежа.
-                s.LogsDelivered = CountDeliveredLocked(s);
-                if (BuildConfig.WaitForAllSiteResources)
-                {
-                    if (s.LogsDelivered >= s.LogsNeeded && s.LogsNeeded > 0)
-                        s.AllSupplied = true;
-                }
-                else
+                if (cs.Stage != CellStage.Supply)
+                    return; // повтор/гонка — игнорируем
+                cs.Stage = CellStage.WaitingAll;
+                if (!BuildConfig.WaitForAllSiteResources)
                 {
                     // Старое поведение (по клеткам) — выключено по умолчанию.
                     cs.Stage = CellStage.Building;
@@ -326,24 +360,11 @@ public sealed class ConstructionPipeline
         MaybeOpenBuilding(site);
     }
 
-    private static int CountDeliveredLocked(SiteState s)
-    {
-        // Считаем по чертежам менеджера: сколько уже довезли на клетки сайта.
-        int sum = 0;
-        foreach (var cell in s.Cells.Keys)
-        {
-            sum += BlueprintManager.Instance.GetDelivered(cell.X, cell.Y);
-            // Клетки в WaitingAll/Building уже снабжены полностью.
-            if (s.Cells.TryGetValue(cell, out var cs)
-                && (cs.Stage == CellStage.WaitingAll || cs.Stage == CellStage.Building))
-                sum += 0; // GetDelivered уже вернул Target (чертёж снабжён)
-        }
-        return sum;
-    }
-
     /// <summary>
-    /// Гейт 100%: если вся стройка снабжена — перевести ВСЕ ждущие клетки
+    /// Гейт 100%: если ВСЕ стеновые клетки снабжены полностью — перевести их
     /// в Building разом. Иначе — ничего не делать (строить нельзя).
+    /// Основание — СТАДИИ клеток (факт полной доставки каждой), а не счётчик
+    /// брёвен: 0.99% недолива не пропустит.
     /// </summary>
     private void MaybeOpenBuilding(int siteId)
     {
@@ -354,21 +375,20 @@ public sealed class ConstructionPipeline
                 return;
             if (!BuildConfig.WaitForAllSiteResources)
                 return;
-            // Пересчёт: сколько клеток уже полностью снабжены.
-            int ready = 0, total = 0;
+            int totalWalls = 0, readyWalls = 0;
             foreach (var kv in s.Cells)
             {
-                if (!IsWallCell(s, kv.Key)) continue;
-                total++;
-                if (kv.Value.Stage == CellStage.WaitingAll || kv.Value.Stage == CellStage.Building)
-                    ready++;
+                if (!kv.Value.IsWall) continue;
+                totalWalls++;
+                var st = kv.Value.Stage;
+                if (st == CellStage.WaitingAll || st == CellStage.Building)
+                    readyWalls++;
             }
-            if (total == 0) return;
-            if (ready < total) return; // ещё не все 100% — строить НЕЛЬЗЯ
-            s.AllSupplied = true;
+            if (totalWalls == 0 || readyWalls < totalWalls)
+                return; // ещё не все 100% — строить НЕЛЬЗЯ
             foreach (var kv in s.Cells)
             {
-                if (!IsWallCell(s, kv.Key)) continue;
+                if (!kv.Value.IsWall) continue;
                 if (kv.Value.Stage == CellStage.WaitingAll)
                 {
                     kv.Value.Stage = CellStage.Building;
@@ -386,9 +406,10 @@ public sealed class ConstructionPipeline
     [System.Obsolete("Use NotifySupplyDone(x, y) per cell")]
     public void NotifySupplyDone(int siteId) { }
 
-    /// <summary>Стена построена: клетка Done, пустые сайты чистим.</summary>
+    /// <summary>Стена построена: клетка Done; все стены готовы — открываем зону.</summary>
     public void NotifyWallBuilt(int x, int y)
     {
+        bool zoneJustOpened = false;
         lock (_lock)
         {
             if (!_cellToSite.TryGetValue((x, y), out int site))
@@ -402,12 +423,41 @@ public sealed class ConstructionPipeline
                 cs.Stage = CellStage.Done;
             s.Cells.Remove((x, y));
             _cellToSite.Remove((x, y));
-            _noBuildCells.Remove((site, x, y));
+            _zoneCellsGlobal.Remove((x, y));
+            if (!HasAnyWallLocked(s) && !s.WallsBuilt)
+            {
+                // Последняя стена сайта готова — зона внутри получает право
+                // работать (открываем работы ниже, вне lock).
+                s.WallsBuilt = true;
+                if (s.Cells.Count == 0)
+                    zoneJustOpened = true; // Completed поставит DropSiteLocked
+            }
             if (s.Cells.Count == 0)
-                _sites.Remove(site);
+                DropSiteLocked(site, s);
         }
         // Прогресс-спрайт гаснет всегда здесь (единая точка — не залипает).
         WorkProgressTracker.Instance.Clear(x, y);
+        if (zoneJustOpened)
+            OpenZoneJobs(x, y);
+    }
+
+    // Момент, когда здание достроено: немедленно выводим клетки зоны из
+    // диспетчерского кулдауна (агенты берут работу за ~2 сек вместо дождика
+    // reconcile-тик 5 сек / аудита 30 сек).
+    private void OpenZoneJobs(int wallX, int wallY)
+    {
+        // Найденный выше сайт уже удалён — координаты зоны берём из кэша
+        // гейта последнего сайта (TryGetGateway ниже его же и обновит).
+        if (!TryGetGateway(wallX, wallY, out _, out var zoneCells) || zoneCells == null)
+            return;
+        var idx = JobDispatcher.Instance.JobIndex;
+        foreach (var (x, y) in zoneCells)
+        {
+            idx.ResetCooldownAt(x, y, JobTypeId.Farming);
+            idx.ResetCooldownAt(x, y, JobTypeId.Planting);
+            idx.ResetCooldownAt(x, y, JobTypeId.Harvesting);
+            idx.ResetCooldownAt(x, y, JobTypeId.StockpileHauling);
+        }
     }
 
     /// <summary>Исключить клетку из стройки. Чистит работы и чертежи. Без вреда при повторе.</summary>
@@ -418,9 +468,9 @@ public sealed class ConstructionPipeline
         {
             had = _sites.TryGetValue(siteId, out var s) && s.Cells.Remove((x, y));
             _cellToSite.Remove((x, y));
-            _noBuildCells.Remove((siteId, x, y));
+            _zoneCellsGlobal.Remove((x, y));
             if (had && s.Cells.Count == 0)
-                _sites.Remove(siteId);
+                DropSiteLocked(siteId, s);
         }
         if (!had) return;
         TreeJobManager.Instance.UnmarkTree(x, y);
@@ -434,7 +484,10 @@ public sealed class ConstructionPipeline
 
     /// <summary>
     /// Самопочинка раз в 5 сек (зовёт sim-поток): сверяет флаги с фактом мира,
-    /// пересоздаёт потерянные работы, добивает гейт 100%.
+    /// пересоздаёт потерянные работы, добивает гейт 100%, открывает зоны после
+    /// достройки стен.
+    /// Поток один (sim), но state меняется из других потоков — все словари
+    /// читаем ТОЛЬКО под _lock короткими снимками (без внешних вызовов внутри).
     /// </summary>
     public void ReconcileTick(SimulationContext ctx)
     {
@@ -445,37 +498,54 @@ public sealed class ConstructionPipeline
         if (ctx == null)
             return;
 
-        List<(int Site, int X, int Y)> snapshot;
+        // Снимок клеток: стадия + флаги + тип клетки — одним проходом под lock.
+        List<(int Site, int X, int Y, CellStage Stage, bool IsWall, bool NeedTree, bool NeedStone, bool NeedHaul)> snapshot;
+        List<(int SiteId, BuildingType WallType)> sites;
+        List<(int SiteId, List<(int X, int Y)> ZoneCells)> completeSitesToOpen;
         lock (_lock)
         {
-            snapshot = new List<(int, int, int)>(_cellToSite.Count);
+            snapshot = new(_cellToSite.Count);
             foreach (var kv in _cellToSite)
-                snapshot.Add((kv.Value, kv.Key.X, kv.Key.Y));
+            {
+                int siteId = kv.Value;
+                if (!_sites.TryGetValue(siteId, out var s)
+                    || !s.Cells.TryGetValue(kv.Key, out var cs))
+                    continue;
+                snapshot.Add((siteId, kv.Key.X, kv.Key.Y, cs.Stage, cs.IsWall,
+                    cs.NeedTree, cs.NeedStone, cs.NeedHaul));
+            }
+            sites = new List<(int, BuildingType)>(_sites.Count);
+            completeSitesToOpen = null;
+            foreach (var kv in _sites)
+            {
+                sites.Add((kv.Key, kv.Value.WallType));
+                // Здание достроено, но зона ещё не открылась (пропущенный
+                // NotifyWallBuilt / сейв-загрузка) — чиним здесь.
+                if (kv.Value.WallsBuilt && !kv.Value.Completed && kv.Value.ZoneCells != null)
+                {
+                    completeSitesToOpen ??= new List<(int, List<(int X, int Y)>)>();
+                    completeSitesToOpen.Add((kv.Key, kv.Value.ZoneCells));
+                }
+            }
         }
+
         var idx = JobDispatcher.Instance.JobIndex;
         bool[,] treeArr = ctx.TreeOnGrass;
         bool[,] stoneArr = ctx.StoneOnGrass;
         int mapW = ctx.MapWidth, mapH = ctx.MapHeight;
-        foreach (var (site, x, y) in snapshot)
+        var wallTypeBySite = new Dictionary<int, BuildingType>(sites.Count);
+        foreach (var (id, wt) in sites)
+            wallTypeBySite[id] = wt;
+
+        foreach (var (site, x, y, stage, isWall, needTree, needStone, needHaul) in snapshot)
         {
-            CellStage stage;
-            bool needTree, needStone, needHaul;
-            lock (_lock)
-            {
-                if (!_sites.TryGetValue(site, out var s) || !s.Cells.TryGetValue((x, y), out var cs))
-                    continue;
-                stage = cs.Stage;
-                needTree = cs.NeedTree; needStone = cs.NeedStone; needHaul = cs.NeedHaul;
-            }
             bool inBounds = (uint)x < (uint)mapW && (uint)y < (uint)mapH;
-            bool hasTree = inBounds && treeArr != null && (uint)x < (uint)treeArr.GetLength(0) && (uint)y < (uint)treeArr.GetLength(1)
-                && treeArr[x, y];
-            bool hasStone = inBounds && stoneArr != null
-                && (uint)x < (uint)stoneArr.GetLength(0) && (uint)y < (uint)stoneArr.GetLength(1) && stoneArr[x, y];
+            bool hasTree = MaskHas(treeArr, x, y);
+            bool hasStone = MaskHas(stoneArr, x, y);
             bool hasItems = GroundItemManager.Instance.HasItemsAt(x, y);
             bool hasWall = BuildingManager.Instance.HasBuildingAt(x, y)
                 || (Game.UI.MapRenderer.Instance?.WallBuildManager?.IsWallAt(x, y) ?? false);
-            if (hasWall)
+            if (hasWall && isWall)
             {
                 NotifyWallBuilt(x, y);
                 continue;
@@ -498,53 +568,22 @@ public sealed class ConstructionPipeline
                     NotifyHaulCleared(x, y);
                 else if (needHaul && hasItems && !idx.HasJobAt(x, y, JobTypeId.StockpileHauling))
                     RegisterHaulBatch(new List<(int X, int Y)> { (x, y) });
-                if (!needTree && hasTree)
-                {
-                    lock (_lock)
-                    {
-                        if (_sites.TryGetValue(site, out var s2) && s2.Cells.TryGetValue((x, y), out var cs2)
-                            && cs2.Stage == CellStage.Clearing && !cs2.NeedTree)
-                        {
-                            cs2.NeedTree = true;
-                            TreeJobManager.Instance.MarkTree(x, y);
-                        }
-                    }
-                }
-                if (!needStone && hasStone)
-                {
-                    lock (_lock)
-                    {
-                        if (_sites.TryGetValue(site, out var s3) && s3.Cells.TryGetValue((x, y), out var cs3)
-                            && cs3.Stage == CellStage.Clearing && !cs3.NeedStone)
-                        {
-                            cs3.NeedStone = true;
-                            StoneJobManager.Instance.MarkStone(x, y, ctx.StoneOnGrass);
-                        }
-                    }
-                }
-                if (!needHaul && hasItems)
-                {
-                    lock (_lock)
-                    {
-                        if (_sites.TryGetValue(site, out var s4) && s4.Cells.TryGetValue((x, y), out var cs4)
-                            && cs4.Stage == CellStage.Clearing && !cs4.NeedHaul)
-                            cs4.NeedHaul = true;
-                    }
+                // Препятствие появилось на уже «чистой» клетке — вернуть флаг
+                // и работу (дерево выросло/принесли вещи после расчистки).
+                if (!needTree && hasTree && inBounds && MarkObstacleBack(site, x, y, Obstacle.Tree))
+                    TreeJobManager.Instance.MarkTree(x, y);
+                if (!needStone && hasStone && inBounds && MarkObstacleBack(site, x, y, Obstacle.Stone))
+                    StoneJobManager.Instance.MarkStone(x, y, ctx.StoneOnGrass);
+                if (!needHaul && hasItems && inBounds && MarkObstacleBack(site, x, y, Obstacle.Items))
                     RegisterHaulBatch(new List<(int X, int Y)> { (x, y) });
-                }
             }
-            else if (stage == CellStage.Supply)
+            else if (stage == CellStage.Supply && isWall)
             {
                 if (!BlueprintManager.Instance.IsBlueprintAt(x, y)
                     && !idx.HasJobAt(x, y, JobTypeId.BlueprintDelivery)
                     && !idx.HasJobAt(x, y, JobTypeId.Construction))
                 {
-                    BuildingType wt;
-                    lock (_lock)
-                    {
-                        if (!_sites.TryGetValue(site, out var s5)) continue;
-                        wt = s5.WallType;
-                    }
+                    BuildingType wt = wallTypeBySite.TryGetValue(site, out var w) ? w : BuildingType.WoodWall;
                     BlueprintManager.Instance.AddBlueprintsBatch(
                         new List<(int X, int Y)> { (x, y) }, wt, ctx.TreeOnGrass, ctx.StoneOnGrass);
                 }
@@ -566,12 +605,55 @@ public sealed class ConstructionPipeline
                 }
             }
         }
-        List<int> siteIds;
-        lock (_lock) { siteIds = new List<int>(_sites.Keys); }
-        foreach (int id in siteIds)
+
+        // Достроенные здания: открыть зону сразу (не ждать, пока агенты сами
+        // соберутся через кулдауны).
+        if (completeSitesToOpen != null)
+        {
+            foreach (var (_, zoneCells) in completeSitesToOpen)
+                ResetZoneCooldowns(zoneCells);
+            lock (_lock)
+            {
+                foreach (var (siteId, _) in completeSitesToOpen)
+                    if (_sites.TryGetValue(siteId, out var s))
+                        s.WallsBuilt = true; // не открывать повторно
+            }
+        }
+
+        // Promote/MaybeOpen — только для сайтов с живой расчисткой/снабжением.
+        List<int> activeIds;
+        lock (_lock) { activeIds = new List<int>(_activeClearSites); }
+        foreach (int id in activeIds)
         {
             PromoteReadyCells(id);
             MaybeOpenBuilding(id);
+        }
+    }
+
+    private enum Obstacle : byte { Tree, Stone, Items }
+
+    // Вернуть флаг препятствия клетке (true — если реально обновили).
+    private bool MarkObstacleBack(int siteId, int x, int y, Obstacle kind)
+    {
+        lock (_lock)
+        {
+            if (!_sites.TryGetValue(siteId, out var s)
+                || !s.Cells.TryGetValue((x, y), out var cs)
+                || cs.Stage != CellStage.Clearing)
+                return false;
+            switch (kind)
+            {
+                case Obstacle.Tree:
+                    if (cs.NeedTree) return false;
+                    cs.NeedTree = true; break;
+                case Obstacle.Stone:
+                    if (cs.NeedStone) return false;
+                    cs.NeedStone = true; break;
+                default:
+                    if (cs.NeedHaul) return false;
+                    cs.NeedHaul = true; break;
+            }
+            return true;
         }
     }
 
@@ -587,9 +669,9 @@ public sealed class ConstructionPipeline
             foreach (var c in cells)
             {
                 _cellToSite.Remove(c);
-                _noBuildCells.Remove((siteId, c.X, c.Y));
+                _zoneCellsGlobal.Remove(c);
             }
-            _sites.Remove(siteId);
+            DropSiteLocked(siteId, site);
         }
         var trees = new List<(int X, int Y)>();
         var stones = new List<(int X, int Y)>();
@@ -626,28 +708,171 @@ public sealed class ConstructionPipeline
     /// Расчистка — только Clearing, доставка — Supply, стройка — Building.
     /// WaitingAll — строить/везти уже НЕЛЬЗЯ (ждём 100%).
     /// Вне стройки — разрешено всё.
+    /// Горячий путь (каждый claim каждого агента) — поэтому сначала быстрая
+    /// проверка «вообще нет активных сайтов» без спина лока.
     /// </summary>
     public bool IsStageAllowed(int x, int y, JobTypeId type)
     {
         CellStage stage;
+        bool isWall;
         lock (_lock)
         {
+            if (_sites.Count == 0)
+                return true;
             if (!_cellToSite.TryGetValue((x, y), out int site)
                 || !_sites.TryGetValue(site, out var s)
                 || !s.Cells.TryGetValue((x, y), out var cs))
                 return true;
             stage = cs.Stage;
+            isWall = cs.IsWall;
         }
-        return type switch
+        switch (type)
         {
-            JobTypeId.TreeChopping or JobTypeId.Mining or JobTypeId.StockpileHauling
-                => stage == CellStage.Clearing,
-            JobTypeId.BlueprintDelivery => stage == CellStage.Supply,
-            // Стройка — только когда ВСЯ стройка снабжена (шаг Building).
-            // WaitingAll = клетка готова, но остальные нет — строить нельзя.
-            JobTypeId.Construction => stage == CellStage.Building,
-            _ => true,
-        };
+            case JobTypeId.TreeChopping:
+            case JobTypeId.Mining:
+                return stage == CellStage.Clearing;
+            case JobTypeId.StockpileHauling:
+                // Уборка мусора разрешена и на стенах, и на клетках зоны.
+                return stage == CellStage.Clearing;
+            case JobTypeId.BlueprintDelivery:
+                return isWall && stage == CellStage.Supply;
+            case JobTypeId.Construction:
+                // Стройка — только когда ВСЯ стройка снабжена (шаг Building).
+                // WaitingAll = клетка готова, но остальные нет — строить нельзя.
+                return isWall && stage == CellStage.Building;
+            default:
+                return true;
+        }
+    }
+
+    // ────────────────────────── ГЕЙТ ЗОНЫ ──────────────────────────
+    // Ферма/склад внутри контура работает ТОЛЬКО когда все стены построены.
+    // Кэш «клетка → (готов ли сайт, список зонных клеток)»: горячий путь
+    // (CanAgentExecute + sweep индекса) ходит только в него, без аллокаций
+    // и без толкания с Notify-вызовами. Обновление кэша — по TTL 250 мс
+    // (стена строится ~игровые 4 часа, задержка незаметна).
+
+    private sealed class GatewayInfo
+    {
+        public int SiteId;      // 0 = клетка вне стройки (разрешено всё)
+        public bool Allowed;    // сайт завершён (все стены построены)
+        public List<(int X, int Y)> ZoneCells; // клетки зоны того же сайта
+        public long StampMs;    // Environment.TickCount64 последнего обновления
+    }
+
+    private const long GatewayTtlMs = 250;
+    private readonly Dictionary<(int X, int Y), GatewayInfo> _gatewayCache = new(256);
+    private readonly Queue<(int X, int Y)> _gatewayKeys = new(256);
+    // Снимок списка сайтов для кэша (обновляется под _lock редко).
+    private long _lastGatewayRefreshMs;
+
+    /// <summary>
+    /// Можно ли работать на этой клетке (ферма/посадка/сбор/уборка склада)?
+    /// False — клетка внутри недостроенного здания. Вне стройки — всегда True.
+    /// </summary>
+    public bool IsZoneWorkAllowed(int x, int y)
+    {
+        if (TryGetGateway(x, y, out bool known, out _) && known)
+            return known && TryGetGatewayAllowed(x, y);
+        return true;
+    }
+
+    // Возвращает (есть ли кэш-запись, разрешена ли работа).
+    private bool TryGetGatewayAllowed(int x, int y)
+    {
+        lock (_lock)
+        {
+            return _gatewayCache.TryGetValue((x, y), out var info) && (info.SiteId == 0 || info.Allowed);
+        }
+    }
+
+    /// <summary>
+    /// Обслуживание кэша гейта: найти запись или обновить её по事实 из _sites.
+    /// Вызывается из hot path; сам lock держит микросекунды (только чтение
+    /// словарей пайплайна, внешних вызовов нет).
+    /// </summary>
+    private bool TryGetGateway(int x, int y, out bool allowed, out List<(int X, int Y)> zoneCells)
+    {
+        allowed = true;
+        zoneCells = null;
+        long nowMs = System.Environment.TickCount64;
+        lock (_lock)
+        {
+            var key = (x, y);
+            if (_gatewayCache.TryGetValue(key, out var info))
+            {
+                if (nowMs - info.StampMs < GatewayTtlMs)
+                {
+                    allowed = info.SiteId == 0 || info.Allowed;
+                    zoneCells = info.ZoneCells;
+                    return true;
+                }
+            }
+            else
+            {
+                info = new GatewayInfo();
+                _gatewayCache[key] = info;
+                _gatewayKeys.Enqueue(key);
+                // Защита от роста кэша на бесконечном числе посещаемых клеток.
+                while (_gatewayKeys.Count > 4096)
+                {
+                    var old = _gatewayKeys.Dequeue();
+                    if (!Equals(old, key))
+                        _gatewayCache.Remove(old);
+                }
+            }
+            info.StampMs = nowMs;
+            if (_cellToSite.TryGetValue(key, out int site) && _sites.TryGetValue(site, out var s))
+            {
+                info.SiteId = site;
+                info.Allowed = s.WallsBuilt;
+                info.ZoneCells = s.ZoneCells;
+            }
+            else
+            {
+                info.SiteId = 0;
+                info.Allowed = true;
+                info.ZoneCells = null;
+            }
+            allowed = info.Allowed;
+            zoneCells = info.ZoneCells;
+            return true;
+        }
+    }
+
+    // Открыть зону: сброс кулдаунов диспетчера по клеткам зоны (вне _lock).
+    private void ResetZoneCooldowns(List<(int X, int Y)> zoneCells)
+    {
+        if (zoneCells == null) return;
+        var idx = JobDispatcher.Instance.JobIndex;
+        foreach (var (x, y) in zoneCells)
+        {
+            idx.ResetCooldownAt(x, y, JobTypeId.Farming);
+            idx.ResetCooldownAt(x, y, JobTypeId.Planting);
+            idx.ResetCooldownAt(x, y, JobTypeId.Harvesting);
+            idx.ResetCooldownAt(x, y, JobTypeId.StockpileHauling);
+        }
+    }
+
+    // Момент, когда здание достроено: немедленно выводим клетки зоны из
+    // диспетчерского кулдауна (агенты берут работу за ~2 сек вместо дождика
+    // reconcile-тик 5 сек / аудита 30 сек).
+    private void OpenZoneJobs(int wallX, int wallY)
+    {
+        // Сайт к этому моменту уже удалён из _sites — координаты зоны берём
+        // из кэша гейтов (запись живёт до TTL, ссылка на List сохранена).
+        if (!TryGetGateway(wallX, wallY, out _, out var zoneCells))
+            return;
+        ResetZoneCooldowns(zoneCells);
+        // Инвалидируем кэш по клеткам зоны: следующий вопрос должен увидеть
+        // «завершено» мгновенно, а не через TTL.
+        lock (_lock)
+        {
+            if (zoneCells != null)
+                foreach (var c in zoneCells)
+                    _gatewayCache.Remove(c);
+            _gatewayCache.Remove((wallX, wallY));
+        }
     }
 
     /// <summary>Сколько процентов ресурсов привезено на стройку (для окна/подсказок).</summary>
@@ -656,12 +881,12 @@ public sealed class ConstructionPipeline
         lock (_lock)
         {
             if (!_cellToSite.TryGetValue((x, y), out int site)
-                || !_sites.TryGetValue(site, out var s) || s.LogsNeeded <= 0)
+                || !_sites.TryGetValue(site, out var s))
                 return 100;
             int ready = 0, total = 0;
             foreach (var kv in s.Cells)
             {
-                if (!IsWallCell(s, kv.Key)) continue;
+                if (!kv.Value.IsWall) continue;
                 total++;
                 if (kv.Value.Stage == CellStage.WaitingAll || kv.Value.Stage == CellStage.Building)
                     ready++;
