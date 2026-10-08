@@ -1,18 +1,17 @@
-[gd_scene format=3 uid="uid://dj8qypoirmgv"]
+[gd_scene load_steps=2 format=3 uid="uid://dj8qypoirmgv"]
 
 [ext_resource type="Script" uid="uid://bj1yprv5nudk" path="res://src/ui/streaming/WorldMapOverlay.cs" id="1_script"]
 
-[node name="WorldMap" type="Node2D"]
+[node name="WorldMap" type="CanvasLayer"]
 script = ExtResource("1_script")
 
-[node name="Camera2D" type="Camera2D" parent="."]
+[node name="WorldRoot" type="Node2D" parent="."]
 
-[node name="TileMapLayer" type="TileMapLayer" parent="."]
+[node name="Camera2D" type="Camera2D" parent="WorldRoot"]
 
-[node name="UI" type="CanvasLayer" parent="."]
-layer = 10
+[node name="TileMapLayer" type="TileMapLayer" parent="WorldRoot"]
 
-[node name="Control" type="Control" parent="UI"]
+[node name="UI" type="Control" parent="."]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -21,7 +20,7 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 
-[node name="BtnClose" type="Button" parent="UI/Control"]
+[node name="BtnClose" type="Button" parent="UI"]
 layout_mode = 0
 anchors_preset = 1
 anchor_left = 1.0

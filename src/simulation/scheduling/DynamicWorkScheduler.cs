@@ -374,6 +374,12 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 	/// <inheritdoc/>
 	public int ForEachRange(int count, Action<int, int> body, WorkKind kind = WorkKind.Fast, string profilerScope = null)
 	{
+		return ForEachRange(count, body, null, kind, profilerScope);
+	}
+
+	/// <inheritdoc/>
+	public int ForEachRange(int count, Action<int, int> body, Func<int, int, float> costOf, WorkKind kind = WorkKind.Fast, string profilerScope = null)
+	{
 		if (body == null)
 			throw new ArgumentNullException(nameof(body));
 		if (count < 0)
@@ -460,10 +466,59 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					continue;
 				}
 				int want = _monitor.SuggestBatchSize(kind, kind == WorkKind.Heavy ? 2.0f : 1.0f);
-				long start = Interlocked.Add(ref batchSeq, want) - want;
+				long start;
+				if (costOf == null)
+				{
+					start = Interlocked.Add(ref batchSeq, want) - want;
+				}
+				else
+				{
+					// Резерв квоты ДО взвешенного набора: следующий поток стартует
+					// не раньше end (back-коррекция сдвигает курсор назад только
+					// до реально взятой границы), пересечений диапазонов нет.
+					start = Interlocked.Add(ref batchSeq, want) - want;
+					if (start >= count)
+					{
+						Interlocked.Add(ref batchSeq, -want);
+						start = count;
+					}
+				}
 				if (start < count)
 				{
-					int end = (int)Math.Min(start + want, count);
+					int end;
+					if (costOf == null)
+					{
+						end = (int)Math.Min(start + want, count);
+					}
+					else
+					{
+						// Шаг 5 (CostHint): курсор режет диапазон ПО ВЕСУ элементов, а не
+						// линейно: батч набирается до суммы весов ~want; нулевой вес (пустой
+						// чанк) добавляется бесплатно. Резерв — ОДИН Add на квоту want, затем
+						// курсор сдвигается ровно на реально взятый размер (back-коррекция).
+						// Гонка при корректировке безопасна: пересечение возможно только в зоне
+						// ещё не прочитанных элементов, а добивку незакрытого хвоста гарантирует
+						// финальный pass (Volatile.Read(ref batchSeq) < count) перед break.
+						float acc = 0f;
+						int we = (int)start;
+						while (we < count)
+						{
+							float wv = costOf(we, count);
+							if (!float.IsFinite(wv) || wv < 0f) wv = 1f;
+							if (wv > 0f)
+							{
+								acc += wv;
+								we++;
+								if (acc >= want) break;
+								continue;
+							}
+							we++;
+						}
+						end = Math.Min(we, count);
+						if (end == (int)start) end = (int)Math.Min((long)start + 1, count);
+						long back = start + want - end;
+						if (back != 0) Interlocked.Add(ref batchSeq, -(int)back);
+					}
 					long t0 = Stopwatch.GetTimestamp();
 					// SCHEDULING RULE: из body(start,end) запрещены ЛЮБЫЕ Godot Node API
 					// (AddChild/GetNode/SetCell/MultiMesh/QueueRedraw/EmitSignal/ResourceLoader).
