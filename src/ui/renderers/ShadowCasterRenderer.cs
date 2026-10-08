@@ -41,8 +41,14 @@ public partial class ShadowCasterRenderer : Node2D
     // Камера и запас обновляются в Tick из вьюпорта (O(1), только главный поток).
     private Vector2 _viewCenter;
     private Vector2 _viewHalf;
+    private Vector2 _viewZoom; // зум камеры для LOD-решений (см. Tick)
     private bool _hasView;
     private Vector2 _lastPushCenter = new(float.NaN, float.NaN);
+    // LOD по зуму: при зуме < 0.35 тайл 64px сжимается в ≤22px, клин тени — шум.
+    // Скрытие всего слоя вычёркивает его из отрисовки ЦЕЛИКОМ (Godot не строит
+    // чанки невидимого CanvasItem) — минус до 65k инстансов на минимальном зуме.
+    private const float ShadowLodZoom = 0.35f;
+    private bool _lodHidden;
 
     public override void _Ready()
     {
@@ -132,7 +138,21 @@ public partial class ShadowCasterRenderer : Node2D
 
     public void Tick(DayNightCycle.SunState sun, float realDeltaSec = 0.016f)
     {
+        // LOD: на мелком зуме тени статики — шум; скрываем слой и пропускаем
+        // всю тяжёлую работу (PushBuffer по 65k якорей). Гистерезис ±0.04 против
+        // дёрганья флага на границе порога при плавном зуме. Камера читается ОДИН
+        // раз за тик (O(1)); UpdateView ниже перезапишет _viewZoom для след. кадра.
+        float lodZoom = GetViewport()?.GetCamera2D()?.Zoom.X ?? -1f;
+        if (lodZoom > 0f)
+        {
+            if (!_lodHidden && lodZoom < ShadowLodZoom)
+                _lodHidden = true;
+            else if (_lodHidden && lodZoom >= ShadowLodZoom + 0.04f)
+                _lodHidden = false;
+        }
         bool show = sun.Alpha > 0.004f && sun.LengthPx >= 0.5f && _anchors.Count > 0;
+        if (_lodHidden)
+            show = false;
         _hasSun = show;
         // Кадр камеры: O(1) на тик. Нет камеры (headless-юнит) — рисуем всех, как раньше.
         UpdateView(sun);
@@ -204,6 +224,7 @@ public partial class ShadowCasterRenderer : Node2D
         }
         // Запас = пол-экрана + макс. длина тени (28px), чтобы тень не обрезалась у края.
         _viewCenter = cam.GetScreenCenterPosition();
+        _viewZoom = zoom;
         _viewHalf = new Vector2(
             vp.X / zoom.X * 0.5f + DayNightCycle.MaxShadowLengthPx,
             vp.Y / zoom.Y * 0.5f + DayNightCycle.MaxShadowLengthPx);

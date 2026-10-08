@@ -243,6 +243,8 @@ public partial class Main : Node2D
 
 	public override void _Process(double delta)
 	{
+		bool mapOpen = _mapOverlay != null && _mapOverlay.Visible;
+
 		// Синхронизация игрового времени (симуляция — в фоновом потоке, UI — в главном).
 		if (_timeManager != null && _agentThread != null)
 		{
@@ -256,7 +258,9 @@ public partial class Main : Node2D
 
 		// День/ночь: тинт мира по игровому времени (троттилинг внутри, O(1) для GPU).
 		// Тикает даже до старта SimThread — тогда GameTimeSeconds=0 (полночь, ночь).
-		if (_dayNightCycle != null && _timeManager != null)
+		// Пока открыта мировая карта — игровой мир полностью скрыт, тени/тинт не видны:
+		// пропускаем весь рендер-тик (экономия CPU на кадрах карты).
+		if (!mapOpen && _dayNightCycle != null && _timeManager != null)
 		{
 			using (GameProfiler.Scope("Render: DayNight"))
 			{
@@ -274,7 +278,9 @@ public partial class Main : Node2D
 		}
 
 		// §24: окно стримингового фона следует за камерой острова (мировые клетки).
-		if (_worldView != null)
+		// Пока открыта мировая карта — весь игровой мир скрыт (Visible=false),
+		// его Update/стриминг не нужен: это главный источник просадок FPS на карте.
+		if (_worldView != null && _mapOverlay != null && !_mapOverlay.Visible)
 		{
 			Rect2 viewport = GetViewport().GetVisibleRect();
 			float scale = (float)MapRenderer.TileSizePx;
@@ -285,7 +291,7 @@ public partial class Main : Node2D
 				(long)Mathf.Floor(_camera.Position.Y / scale - halfH / scale) - 3,
 				(long)Mathf.Ceil(_camera.Position.X / scale + halfW / scale) + 3,
 				(long)Mathf.Ceil(_camera.Position.Y / scale + halfH / scale) + 3);
-			_worldView.Update(visible);
+			_worldView.Update(visible, _camera.Zoom.X);
 		}
 	}
 
@@ -296,16 +302,120 @@ public partial class Main : Node2D
 
 		if (_mapOverlay.Visible)
 		{
+			// Порядок важен: сначала закрываем карту (она гасит свою Camera2D),
+			// ПОТОМ включаем игру — SetGameRenderActive вызывает MakeCurrent на
+			// игровой камере, и она гарантированно становится текущей. Обратный
+			// порядок давал рассинхрон: после закрытия карты не работали
+			// движение/зум, а HUD «слетал» (кадры шли через чужую камеру).
 			_mapOverlay.CloseMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = true;
+			SetGameRenderActive(true);
+			SetAgentsVisible(true);
+			RestoreHudVisibility();
 		}
 		else
 		{
+			// Полная заморозка игрового рендера: скрытие одного лишь CanvasLayer
+			// НЕ убирает Node2D-слои (MapRenderer с ~14 TileMapLayer острова и
+			// стримингового мира, AgentRenderer, тени, урожай, предметы) — они
+			// продолжают отрисовываться под картой. Это главный источник 20 FPS:
+			// GPU тянет два мира одновременно. Visible=false на корневых узлах
+			// исключает все дочерние слои из отрисовки за один флаг.
+			SetGameRenderActive(false);
+			SetAgentsVisible(false);
+			// HUD (CanvasLayer игры) скрываем ПОСЛЕ включения Camera2D мировой карты:
+			// в Godot 4 скрытие CanvasLayer может сделать MakeCurrent «следующей по
+			// приоритету» камере и перехватить текущую камеру у только что открытой
+			// карты. Порядок ниже исключает это — карта остаётся активной камерой.
 			_mapOverlay.OpenMap();
 			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
 			if (canvas != null) canvas.Visible = false;
 		}
+	}
+
+	/// <summary>
+	/// Вкл/выкл ВСЁ рисование игрового мира (остров + стриминг + агенты + тени).
+	/// CameraController глушим через SetProcess(false): его _Process читает Input
+	/// напрямую и двигал бы «текущую камеру» — т.е. камеру мировой карты.
+	/// </summary>
+	private void SetGameRenderActive(bool active)
+	{
+		if (_camera != null && IsInstanceValid(_camera))
+		{
+			_camera.SetProcess(active);
+			_camera.Enabled = active;
+			// При включении игры возвращаем статус текущей камеры игровой
+			// камере: пока была открыта карта, текущей была Camera2D карты.
+			if (active)
+				_camera.MakeCurrent();
+		}
+
+		void Hide(Node n)
+		{
+			if (n != null && IsInstanceValid(n)) n.Visible = active;
+		}
+
+		Hide(_mapRenderer);   // все тайловые слои острова + оверлеи + тени (дочерние)
+		Hide(_worldView);    // стриминговый мир: 6 TileMapLayer по 64×64 тайлов
+		// Рендереры, созданные в _Ready локальными переменными, ищем по имени:
+		Hide(FindChild("FarmZoneRenderer", true, false));
+		Hide(_agentRenderer);
+		Hide(_itemShadows);
+		Hide(_cropRenderer);
+		Hide(_itemRenderer);
+		Hide(_selection);
+		Hide(_dayNightModulate);
+
+		// Стриминг-тик окна чанков (Update вызывается из _Process Main только при
+		// активной игре; внутренний _Process вью тоже глушим для верности).
+		if (_worldView != null && IsInstanceValid(_worldView))
+			_worldView.SetProcess(active);
+	}
+
+	/// <summary>
+	/// Страховка от «слёта интерфейса»: если при открытии карты что-то скрыло
+	/// CanvasLayer/HUD, после закрытия восстанавливаем видимость явно.
+	/// Повторные Visible=true идемпотентны.
+	/// </summary>
+	private void RestoreHudVisibility()
+	{
+		CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
+		if (canvas != null)
+			canvas.Visible = true;
+
+		Node hud = FindChild("hud_tscn", true, false) ?? FindChild("HUDController", true, false);
+		if (hud is Control hc)
+			hc.Visible = true;
+	}
+
+	/// <summary>Вкл/выкл рендер агентов (MultiMesh-тела + тени + все Node2D-рендереры на дереве).</summary>
+	private void SetAgentsVisible(bool visible)
+	{
+		if (_agentRenderer != null && IsInstanceValid(_agentRenderer))
+		{
+			_agentRenderer.Visible = visible;
+			// Обходим всё дерево рендерера: MultiMeshInstance2D (тела/ноги/тени)
+			// могут лежать в вложенных узлах — один флаг на детях 1-го уровня
+			// их не покрывал, и при открытой карте агенты продолжали рисоваться.
+			void ToggleTree(Node n)
+			{
+				foreach (Node child in n.GetChildren())
+				{
+					if (child is CanvasItem c)
+						c.Visible = visible;
+					ToggleTree(child);
+				}
+			}
+			ToggleTree(_agentRenderer);
+		}
+
+		// WorldAgentRenderer/прочие точечные рендереры агентов ищем по имени в дереве.
+		// ВАЖНО: Node.FindNode("Name", recursive=false) ищет НЕ сам узел, а его
+		// ДЕТЕЙ по имени (это аналог GetNode для вложенных путей). Старый вызов
+		// FindNode("WorldAgentRenderer", true, false) возвращал null — рендерер
+		// никогда не скрывался, и агенты стримингового мира рисовались под картой.
+		Node worldAgents = FindChild("WorldAgentRenderer", true, false);
+		if (worldAgents is CanvasItem ci)
+			ci.Visible = visible;
 	}
 
 	public override void _ExitTree()

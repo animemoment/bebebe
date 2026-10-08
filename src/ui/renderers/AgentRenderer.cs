@@ -245,7 +245,8 @@ public partial class AgentRenderer : Node2D
 
     public override void _Process(double delta)
     {
-        if (!_initialized || _simulationThread == null)
+        // Карта мира открыта (Visible=false): не льём позиции/тени — рендер исключён полностью.
+        if (!Visible || !_initialized || _simulationThread == null)
             return;
 
         using (GameProfiler.Scope("Render: Agent MultiMesh"))
