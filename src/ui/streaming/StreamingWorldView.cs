@@ -41,6 +41,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
     [Export] public int MaxWindowChunks = 16;
     // Бюджет покраски/стирания чанков за кадр (1 чанк = 64×64 клетки × 3 слоя).
     [Export] public int MaxChunkOpsPerFrame = 3;
+    // LOD стримингового мира: предельное число КЛЕТОК в видимом окне. При зуме < ~0.5
+    // камера видит больше окна (окно ограничено MaxWindowChunks=16 → 1024 клетки),
+    // дальние края всё равно урезаются планировщиком — рисовать resident-окно на
+    // 4096² клеток (=16 млн тайлов) смысла нет: GPU тянет их каждый кадр даже вне
+    // экрана (TileMapLayer не клипает по видимости камеры, только по CustomAabb).
+    // 1024 = окно целиком при зуме ≈0.5 и выше; ниже — сужаем до 512 (окно 8 чанков).
+    [Export] public long MaxStreamedVisibleCells = 1024;
 
     private ChunkWindowPlanner _planner;
     private WorldChunkStore _store;
@@ -107,12 +114,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
     }
 
     /// <summary>Применить новое видимое окно, дренировать готовые чанки, запланировать выгрузки.</summary>
-    public void Update(WorldRect visibleTileBounds)
+    public void Update(WorldRect visibleTileBounds, float cameraZoom = 0f)
     {
         if (!_initialized)
             return;
         _focusCellX = (visibleTileBounds.MinX + visibleTileBounds.MaxX) / 2;
         _focusCellY = (visibleTileBounds.MinY + visibleTileBounds.MaxY) / 2;
+        ApplyLodVisibility(cameraZoom);
         ApplyAdaptiveWindow(visibleTileBounds);
         _lastPlan = _streamer.Update(ClampVisibleToWindow(visibleTileBounds));
 
@@ -475,12 +483,80 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
     /// </summary>
     private void ApplyAdaptiveWindow(WorldRect visible)
     {
+        // LOD по зуму: сужаем запрос к планировщику до MaxStreamedVisibleCells.
+        // При min-zoom (0.12) камера видит ~4300² клеток; без ограничения окно
+        // разрасталось до 16 чанков = 1024²resident-клеток ≈ 1 млн тайлов на
+        // 6 слоях — GPU перерисовывал их каждый кадр (главная причина просадок
+        // при движении). Дальние края за окном — просто фон-океан, visually
+        // теряется только периферия в 3× меньше экрана.
+        visible = ShrinkToLodBudget(visible);
         long margin = _planner.MarginTiles;
         long needW = ChunkSpan(visible.MinX - margin, visible.MaxX + margin);
         long needH = ChunkSpan(visible.MinY - margin, visible.MaxY + margin);
         long need = Math.Max(needW, needH);
+        int prevSide = _planner.WindowChunks;
         int side = (int)Math.Clamp(need, MinWindowChunks, MaxWindowChunks);
+        // Гистерезис размера окна: уменьшаем окно только при падении потребности
+        // ниже текущего размера МИНУС один чанк (64 клетки). Без этого дрожание
+        // видимого прямоугольника на пару пикселей дёргало side 16→15→16 и
+        // вызывало шторм unload/repaint каждые несколько кадров.
+        if (side < prevSide && (long)side * WorldCoordinates.ChunkSize
+            >= (prevSide - 1) * WorldCoordinates.ChunkSize - WorldCoordinates.ChunkSize)
+            side = prevSide;
         _planner.SetWindowSide(side);
+    }
+
+    /// <summary>Сжать видимый прямоугольник вокруг центра до бюджета LOD (в клетках).</summary>
+    private WorldRect ShrinkToLodBudget(WorldRect visible)
+    {
+        long budget = MaxStreamedVisibleCells;
+        if (budget <= 0)
+            return visible;
+        long width = visible.MaxX - visible.MinX;
+        long height = visible.MaxY - visible.MinY;
+        if (width <= budget && height <= budget)
+            return visible;
+        long centerX = (visible.MinX + visible.MaxX) / 2;
+        long centerY = (visible.MinY + visible.MaxY) / 2;
+        long halfW = Math.Min(width, budget) / 2;
+        long halfH = Math.Min(height, budget) / 2;
+        return new WorldRect(centerX - halfW, centerY - halfH, centerX + halfW, centerY + halfH);
+    }
+
+    // ---------- LOD по зуму камеры ----------
+    // Порог: тайл 64 px при зуме 0.25 = 16 px на экране — дальше декор/метки
+    // читаются как шум, а их отрисовка стоит 2/3 всех тайлов мира.
+    private const float ZoomCullThreshold = 0.25f;
+    private float _decorCullZoom = ZoomCullThreshold + 0.04f;
+
+    /// <summary>
+    /// Вкл/выкл декоративные слои по зуму с гистерезисом (0.04). cameraZoom&lt;=0 —
+    /// управление выключено (стенды вызывают Update без зума). Смена флага —
+    /// единственный источник перестройки чанков слоя; в простое — ноль работы.
+    /// </summary>
+    private void ApplyLodVisibility(float cameraZoom)
+    {
+        if (cameraZoom <= 0f)
+            return;
+        bool showDecor = cameraZoom >= _decorCullZoom;
+        if (showDecor)
+        {
+            if (cameraZoom >= ZoomCullThreshold + 0.08f)
+                _decorCullZoom = ZoomCullThreshold; // вход сверху: порог ниже текущего
+            else
+                _decorCullZoom = ZoomCullThreshold + 0.04f;
+        }
+        else
+        {
+            _decorCullZoom = ZoomCullThreshold + 0.04f; // выход: включать только выше 0.29
+        }
+        bool current = _decorLayer != null && _decorLayer.Visible;
+        if (current == showDecor)
+            return;
+        if (_decorLayer != null) _decorLayer.Visible = showDecor;
+        if (_markLayer != null) _markLayer.Visible = showDecor;
+        if (_planLayer != null) _planLayer.Visible = showDecor;
+        if (_wallLayer != null) _wallLayer.Visible = showDecor;
     }
 
     /// <summary>Сколько чанков покрывает полуинтервал клеток [minCell, maxCellExclusive).</summary>
@@ -703,6 +779,11 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
         _groundLayer = new TileMapLayer { Name = "WorldGround", TileSet = _tileSet };
         _decorLayer = new TileMapLayer { Name = "WorldDecor", TileSet = _tileSet };
         _markLayer = new TileMapLayer { Name = "WorldMark", TileSet = _tileSet };
+        // LOD-видимость: при зуме < ZoomCullThreshold клетки ≤16 px на экране —
+        // декор/метки/планы визуально шум; скрытие слоёв вычёркивает их из отрисовки
+        // ЦЕЛИКОМ (Godot не строит чанки невидимого CanvasItem) — минус ~2/3 тайлов.
+        _decorCullZoom = ZoomCullThreshold + 0.04f; // гистерезис против дёрганья
+        _groundLayer.Visible = true;
         AddChild(_groundLayer);
         AddChild(_decorLayer);
         AddChild(_markLayer);

@@ -291,7 +291,7 @@ public partial class Main : Node2D
 				(long)Mathf.Floor(_camera.Position.Y / scale - halfH / scale) - 3,
 				(long)Mathf.Ceil(_camera.Position.X / scale + halfW / scale) + 3,
 				(long)Mathf.Ceil(_camera.Position.Y / scale + halfH / scale) + 3);
-			_worldView.Update(visible);
+			_worldView.Update(visible, _camera.Zoom.X);
 		}
 	}
 
