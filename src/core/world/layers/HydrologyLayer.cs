@@ -18,12 +18,21 @@ public static class HydrologyLayer
     public const byte FWater = 1, FLake = 2, FRiver = 4;
 
     /// <summary>Данные гидрологии региона: флаги и накопление стока на сетке W×W (с margin).</summary>
-    public sealed record RegionData(byte[] Flags, int[] Flow);
+    public sealed record RegionData(uint Seed, byte[] Flags, int[] Flow);
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(uint Seed, long Rx, long Ry), RegionData> Cache = new();
+    /// <summary>
+    /// Кэш гидрологии: LRU по (seed, rx, ry). Бюджет — 1 регион (640×640 ≈ 5 МБ):
+    /// игрок находится в одном регионе, стриминг окна идёт рядом с ним. При промахе
+    /// регион пересчитывается детерминированно (чистая функция) — корректность не
+    /// зависит от кэша, только скорость. Потокобезопасно (lock).
+    /// </summary>
+    private const long RegionBytes = (long)(S + 2 * M) * (S + 2 * M) * (sizeof(byte) + sizeof(int));
+    public const long MaxCachedBytes = RegionBytes; // ~5 МБ, ровно один регион
+    public static readonly int MaxCachedRegions = 1;
 
-    /// <summary>Максимум кэшируемых регионов; при переполнении кэш очищается целиком.</summary>
-    public const int MaxCachedRegions = 512;
+    private static readonly object CacheLock = new();
+    private static readonly System.Collections.Generic.Dictionary<(uint Seed, long Rx, long Ry), RegionData> Cache = new();
+    private static readonly System.Collections.Generic.LinkedList<(uint Seed, long Rx, long Ry)> Lru = new();
 
     private const int S = WorldRegions.RegionSize;   // 512
     private const int M = WorldLayerParams.HydroMargin; // 64
@@ -55,14 +64,37 @@ public static class HydrologyLayer
         return rd.Flow[(ly + M) * W + (lx + M)];
     }
 
-    /// <summary>Кэш-гет региона (вычисление ленивое, потокобезопасное).</summary>
+    /// <summary>Кэш-гет региона (вычисление ленивое, потокобезопасное, LRU).</summary>
     public static RegionData GetRegion(uint seed, long rx, long ry)
     {
         var key = (seed, rx, ry);
-        if (Cache.TryGetValue(key, out var data)) return data;
-        data = ComputeRegion(seed, rx, ry);
-        if (Cache.Count >= MaxCachedRegions) Cache.Clear();
-        Cache[key] = data;
+        lock (CacheLock)
+        {
+            if (Cache.TryGetValue(key, out var cached))
+            {
+                // touch LRU
+                Lru.Remove(key);
+                Lru.AddFirst(key);
+                return cached;
+            }
+        }
+
+        // Вычисление вне блокировки (дублирование при гонке безопасно — функция чистая).
+        var data = ComputeRegion(seed, rx, ry);
+
+        lock (CacheLock)
+        {
+            if (Cache.TryGetValue(key, out var existing)) return existing;
+            Cache[key] = data;
+            Lru.AddFirst(key);
+            while (Lru.Count > MaxCachedRegions)
+            {
+                var oldest = Lru.Last;
+                if (oldest == null) break;
+                Lru.RemoveLast();
+                Cache.Remove(oldest.Value);
+            }
+        }
         return data;
     }
 
@@ -157,15 +189,28 @@ public static class HydrologyLayer
         var flow = new int[n];
         for (int i = 0; i < n; i++) flow[i] = 1;
 
-        // Сортировка клеток по убыванию заполненной высоты (counting sort по диапазону).
-        int maxH = 1000;
-        var counts = new int[maxH + 2];
-        for (int i = 0; i < n; i++) counts[Math.Min(filled[i], maxH)]++;
-        var order = new int[n];
-        var pos = new int[maxH + 2];
-        for (int v = maxH - 1; v >= 0; v--) pos[v] = pos[v + 1] + counts[v + 1];
+        // Сортировка клеток по убыванию заполненной высоты.
+        // ВАЖНО: clamp только сверху — нижний кламп к 0 схлопывал все подводные/низкие
+        // клетки в одну bucket и ломал порядок стока (впадины становились «реками»).
+        const int MaxH = 2_000_000; // heights stored as elevation*1000, e <= ~1.7 => <= 1_700_000
+        var counts = new int[MaxH + 1];
+        for (int i = 0; i < n; i++)
+        {
+            int v = filled[i];
+            if (v > MaxH) v = MaxH; else if (v < 0) v = 0;
+            counts[v]++;
+        }
+        var pos = new int[MaxH + 1];
+        int acc = 0;
+        for (int v = MaxH; v >= 0; v--) { pos[v] = acc; acc += counts[v]; } // убывание высот
         var cursor = (int[])pos.Clone();
-        for (int i = 0; i < n; i++) order[cursor[Math.Min(filled[i], maxH)]++] = i;
+        var order = new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            int v = filled[i];
+            if (v > MaxH) v = MaxH; else if (v < 0) v = 0;
+            order[cursor[v]++] = i;
+        }
 
         foreach (int i in order)
         {

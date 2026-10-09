@@ -1,6 +1,3 @@
-# Godot/Mono Build Artifacts
-.godot/mono/temp/bin/
-.godot/mono/temp/obj/
-
-# Backup Files
-*.bak_*
+# .NET build artifacts
+bin/
+obj/
