@@ -441,8 +441,7 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
                 return;
             }
 
-            // Генератор синхронный: используем MapGenerator.RegionAPI для единого террейна
-            // вместо старого Value-noise WorldChunkGenerator (§24-§33).
+            // Единый генератор мира v4: WorldLayerStack (абсолютные координаты, бесшовно).
             var chunk = LoadChunkViaRegionApi(key);
             requestToken.ThrowIfCancellationRequested();
             CompleteChunk(key, chunk, snapshot);
@@ -461,58 +460,25 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
     }
 
     /// <summary>
-    /// Загружает базовый чанк через MapGenerator.RegionAPI — единый генератор террейна
-    /// вместо двух разрозненных (MapGenerator + WorldChunkGenerator).
-    /// Загружает ±1 чанков border чтобы реки/леса на границе выглядели плавно.
+    /// Загружает базовый чанк через единый WorldLayerStack (v4): значения клетки —
+    /// чистая функция абсолютных координат (seed, wx, wy). Никакого ±1 bbox-хака и
+    /// локальных сидов: соседние чанки стыкуются точно (P0/P1-фикс швов, рек, озёр).
     /// </summary>
     private WorldChunk LoadChunkViaRegionApi(ChunkKey key)
     {
-        // Загружаем bbox с border-chunks для seamless terrain/reivers/lakes
-        int borderChunks = 1;
-        int minX = (int)(key.X * WorldChunk.Side - borderChunks * WorldChunk.Side);
-        int maxX = (int)((key.X + 1) * WorldChunk.Side + borderChunks * WorldChunk.Side);
-        int minY = (int)(key.Y * WorldChunk.Side - borderChunks * WorldChunk.Side);
-        int maxY = (int)((key.Y + 1) * WorldChunk.Side + borderChunks * WorldChunk.Side);
-
-        // Генерируем весь region через единый MapGenerator (без falloff'а, без геймплейных проверок)
-        var mapData = MapGenerator.GenerateRegion(
-            minX, maxX, minY, maxY,
-            (uint)_worldSeed, isPlayableMap: false,
-            spawnCenterX: -1, spawnCenterY: -1);
-
-        // Извлекаем только целевые клетки чанка
         var cells = new GeneratedCell[WorldChunk.CellCount];
-        int offsetTileX = (int)(key.X * WorldChunk.Side) - minX;
-        int offsetTileY = (int)(key.Y * WorldChunk.Side) - minY;
+        long originX = key.X * WorldChunk.Side;
+        long originY = key.Y * WorldChunk.Side;
+        uint seed = unchecked((uint)_worldSeed);
 
         for (int localY = 0; localY < WorldChunk.Side; localY++)
         {
+            long wy = originY + localY;
+            int row = localY * WorldChunk.Side;
             for (int localX = 0; localX < WorldChunk.Side; localX++)
             {
-                int globalX = (int)(key.X * WorldChunk.Side) + localX;
-                int globalY = (int)(key.Y * WorldChunk.Side) + localY;
-                int mapX = globalX - minX;
-                int mapY = globalY - minY;
-
-                BaseTerrainKind terrain;
-                switch (mapData.Ground[mapX, mapY])
-                {
-                    case TileType.Water: terrain = BaseTerrainKind.Water; break;
-                    case TileType.Mountain: terrain = BaseTerrainKind.Mountain; break;
-                    default: terrain = BaseTerrainKind.Grass; break;
-                }
-
-                int moisture = mapData.Humidity.Get(mapX, mapY);
-                ushort forestVal = (ushort)(mapData.TreeOnGrass[mapX, mapY] ? 50000 : 10000);
-                ushort stoneVal = (ushort)(mapData.StoneOnGrass[mapX, mapY] ? 40000 : 5000);
-
-                cells[localY * WorldChunk.Side + localX] = new GeneratedCell(
-                    terrain,
-                    (ushort)32768,
-                    (ushort)Math.Clamp(moisture, 0, ushort.MaxValue),
-                    forestVal,
-                    stoneVal,
-                    (ushort)32768);
+                long wx = originX + localX;
+                cells[row + localX] = Game.Core.WorldLayers.WorldLayerStack.ToGeneratedCell(seed, wx, wy);
             }
         }
 

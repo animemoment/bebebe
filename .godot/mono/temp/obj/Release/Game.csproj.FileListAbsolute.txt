@@ -1,0 +1,16 @@
+/workspace/.godot/mono/temp/bin/Release/Game.deps.json
+/workspace/.godot/mono/temp/bin/Release/Game.runtimeconfig.json
+/workspace/.godot/mono/temp/bin/Release/Game.dll
+/workspace/.godot/mono/temp/bin/Release/Game.pdb
+/workspace/.godot/mono/temp/bin/Release/GodotSharp.dll
+/workspace/.godot/mono/temp/obj/Release/Game.csproj.AssemblyReference.cache
+/workspace/.godot/mono/temp/obj/Release/Game.GeneratedMSBuildEditorConfig.editorconfig
+/workspace/.godot/mono/temp/obj/Release/Game.AssemblyInfoInputs.cache
+/workspace/.godot/mono/temp/obj/Release/Game.AssemblyInfo.cs
+/workspace/.godot/mono/temp/obj/Release/Game.csproj.CoreCompileInputs.cache
+/workspace/.godot/mono/temp/obj/Release/Game.csproj.Up2Date
+/workspace/.godot/mono/temp/obj/Release/Game.dll
+/workspace/.godot/mono/temp/obj/Release/refint/Game.dll
+/workspace/.godot/mono/temp/obj/Release/Game.pdb
+/workspace/.godot/mono/temp/obj/Release/Game.genruntimeconfig.cache
+/workspace/.godot/mono/temp/obj/Release/ref/Game.dll
