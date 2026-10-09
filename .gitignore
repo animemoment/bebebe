@@ -1,6 +1,7 @@
-# Compiled/Binary files
-*.dll
-*.pdb
+# .NET build artifacts
+bin/
+obj/
 
-# Dependency directories / Build artifacts
-.godot/mono/temp/
+# Logs and temp files
+*.log
+*.tmp

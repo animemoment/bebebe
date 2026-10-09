@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>NoiseLab</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/core/world/streaming/generation/WorldCoordinates.cs" />
+    <Compile Include="../../src/core/world/layers/AbsNoise.cs" />
+    <Compile Include="../../src/core/world/layers/WorldLayerParams.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+</Project>
