@@ -5,7 +5,7 @@ using Game.Core.WorldStreaming;
 
 namespace Game.UI.Streaming;
 
-/// <summary>Мировая карта: чанки TileMapLayer с dirty-state кэшем.</summary>
+/// <summary>Мировая карта: чанки TileMapLayer с dirty-state кэшем.</summary> testt
 public partial class WorldMapOverlay : Node2D
 {
 	private const int TileSizePx = 16;
