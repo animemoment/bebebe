@@ -22,6 +22,11 @@ public partial class DesignationRenderer : Node2D
     private static readonly Color MarkModulate = new Color(1f, 0.25f, 0.2f, 0.9f);
 
     private bool _isDirty = true;
+    // Pending-флаг редрава: ставится каждым событием метки; сливается в _Process.
+    // Guarantee: ни одно изменение не теряется между троттл-окнами 0.1с (FIX «залипших
+    // маркеров» — раньше событие, пришедшее после сброса флага до ближайшего редрава,
+    // не доезжало до экрана).
+    private bool _pendingRebuild = true;
     private float _updateTimer;
     private readonly HashSet<(int X, int Y)> _markedPositions = new(4096);
 
@@ -77,6 +82,7 @@ public partial class DesignationRenderer : Node2D
     {
         _markedPositions.Add(pos);
         _isDirty = true;
+        _pendingRebuild = true;
     }
 
     private void OnTreesBatchMarked(List<(int X, int Y)> positions)
@@ -86,12 +92,14 @@ public partial class DesignationRenderer : Node2D
             _markedPositions.Add(pos);
         }
         _isDirty = true;
+        _pendingRebuild = true;
     }
 
     private void OnTreeUnmarked((int X, int Y) pos)
     {
         _markedPositions.Remove(pos);
         _isDirty = true;
+        _pendingRebuild = true;
     }
 
     private void OnTreesBatchUnmarked(List<(int X, int Y)> positions)
@@ -101,18 +109,28 @@ public partial class DesignationRenderer : Node2D
             _markedPositions.Remove(pos);
         }
         _isDirty = true;
+        _pendingRebuild = true;
     }
 
     public override void _Process(double delta)
     {
-        if (!_isDirty || _multiMesh == null)
+        if (_multiMesh == null)
             return;
 
+        // FIX (залипшие маркеры): раньше редрав выполнялся ТОЛЬКО в кадре, когда флаг
+        // _isDirty ещё был поднят: событие, пришедшее в 0.1с окне между двумя редравами,
+        // сбрасывалось флагом, но сам буфер не пересобирался — метка/снятие «не доезжало»
+        // до экрана до следующего случайного события (крестик на дереве не появлялся,
+        // метка оставалась после рубки). Теперь pending-изменения накапливаются в
+        // _pendingRebuild и гарантированно сливаются в ближайший плановый редрав.
         _updateTimer += (float)delta;
         if (_updateTimer < 0.1f)
             return;
-
         _updateTimer = 0f;
+
+        if (!_pendingRebuild)
+            return;
+        _pendingRebuild = false;
         _isDirty = false;
 
         int count = 0;
@@ -142,8 +160,13 @@ public partial class DesignationRenderer : Node2D
         }
 
         _multiMesh.VisibleInstanceCount = count;
-        if (count > 0)
-            _multiMesh.Buffer = _renderBuffer;
+        // FIX (целостность отрисовки MultiMesh): присваиваем Buffer ВСЕГДА, а не только
+        // при count > 0. Раньше при снятии последней метки VisibleInstanceCount становился
+        // 0, но GPU-буфер оставался с устаревшими трансформациями; при следующем открытии
+        // карты/редраве в окно между записью count и обновлением буфера могли мелькнуть
+        // старые маркеры (и Unity-style артефакт «призрачные Instance»). Один присвоение
+        // буфера целиком согласует VisibleInstanceCount и данные.
+        _multiMesh.Buffer = _renderBuffer;
     }
 
     /// <summary>

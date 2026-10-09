@@ -16,24 +16,32 @@ public sealed class ZoneManager
     public static ZoneManager Instance { get; } = new();
 
     private const int ChunkDim = 32;
+    // Мелочь (комментарий к связи констант): чанки диспатча — 16×16 тайлов, карта
+    // 512×512 → сетка 32×32 чанков. Отсюда >> 4 в CalcChunkIndices и ChunkDim = 32.
+    // При изменении размера карты/чанка обе величины надо пересчитывать согласованно.
     private const int WorkersPerChunkBudget = 48;
     private const int MaxAssignPerChunk = 8;
     private const int AgentReservedMarker = -2;
-
-    private readonly object _lock = new();
-    private readonly Dictionary<int, Zone> _zones = new(256);
-    private readonly Dictionary<(int X, int Y), int> _tileToZoneId = new(4096);
-    private int _nextZoneId = 1;
 
     // Границы карты для клиппа дисков Work-зон (B1: volatile — пишет sim, читает UI).
     private static volatile int _mapW = 512;
     private static volatile int _mapH = 512;
 
     // Round-robin кап зон-бригадиров на тик.
+    // TODO (наблюдаемость): при десятках Work-зон MaxZonesPerPass=4 с round-robin
+    // по ВСЕМ зонам (включая Farm) даёт ощутимое опоздание назначения для дальних
+    // зон — стоит логировать факт «зона не обслужена N проходов».
     private const int MaxZonesPerPass = 4;
     private int _zoneScanIndex;
 
-    private readonly ThreadLocal<int[]> _zoneBuffer = new(() => new int[WorkersPerChunkBudget]);
+    // Мелочь: было ThreadLocal<int[]> — DispatchZones зовётся строго из sim-потока,
+    // обычное поле проще и честнее отражает инвариант одного потока-читателя.
+    private readonly int[] _zoneBuffer = new int[WorkersPerChunkBudget];
+
+    private readonly object _lock = new();
+    private readonly Dictionary<int, Zone> _zones = new(256);
+    private readonly Dictionary<(int X, int Y), int> _tileToZoneId = new(4096);
+    private int _nextZoneId = 1;
 
     public Zone HoveredZone { get; private set; }
     public Zone SelectedZone { get; private set; }
@@ -137,18 +145,33 @@ public sealed class ZoneManager
         List<int> removedZoneIds = null;
         lock (_lock)
         {
+            // FIX #1 (порядок операций): раньше удаление из _tileToZoneId шло ДО
+            // проверки Kind — для Work-зоны тайл выпадал из индекса, но оставался
+            // в zone.Tiles: рассинхрон tileToZoneId ↔ Tiles (TryGetZoneAt говорил
+            // «нет зоны», диспатч продолжал считать тайл частью зоны). Теперь
+            // множество удалённых тайлов каждой зоны пересобирается за один проход.
+            Dictionary<int, HashSet<(int X, int Y)>> removals = null;
             foreach (var pos in tilesToRemove)
             {
-                if (_tileToZoneId.TryGetValue(pos, out int zoneId))
+                if (!_tileToZoneId.TryGetValue(pos, out int zoneId)) continue;
+                if (!_zones.TryGetValue(zoneId, out var zone)) continue;
+                // Work-зоны неделимы: удаление тайлов из них запрещено — ничего не трогаем.
+                if (zone.Kind == ZoneKind.Work) continue;
+                if (removals == null)
+                    removals = new Dictionary<int, HashSet<(int X, int Y)>>(4);
+                if (!removals.TryGetValue(zoneId, out var set))
+                    removals[zoneId] = set = new HashSet<(int X, int Y)>();
+                set.Add(pos);
+                _tileToZoneId.Remove(pos);
+            }
+            if (removals != null)
+            {
+                foreach (var kv in removals)
                 {
-                    _tileToZoneId.Remove(pos);
-                    if (_zones.TryGetValue(zoneId, out var zone))
-                    {
-                        // Work-зоны неделимы: удаление тайлов из них запрещено.
-                        if (zone.Kind == ZoneKind.Work) continue;
-                        zone.Tiles.Remove(pos);
-                        affectedZones.Add(zoneId);
-                    }
+                    if (!_zones.TryGetValue(kv.Key, out var zone)) continue;
+                    // Immutable-swap (FIX #2): см. ApplyTileRemoval_NoLock.
+                    ApplyTileRemoval_NoLock(zone, kv.Value);
+                    affectedZones.Add(kv.Key);
                 }
             }
             foreach (int zoneId in affectedZones)
@@ -257,6 +280,10 @@ public sealed class ZoneManager
             }
             int id = _nextZoneId++;
             zone = new Zone(id, $"Зона #{id}", cx, cy, r, target, maxWorkers, jobMask, tiles, CalcChunkIndices(tiles));
+            // FIX #2 (immutable-swap): снапшот геометрии публикуем ОДНОЙ volatile-записью
+            // ДО добавления зоны в реестр — читатель либо не видит зону вовсе, либо видит
+            // полностью согласованную форму. Дальше ссылки на формы только заменяются.
+            Volatile.Write(ref zone.Shape, BuildWorkShape(zone));
             _zones[id] = zone;
             BumpZonesVersion_NoLock();
             foreach (var t in tiles)
@@ -324,13 +351,16 @@ public sealed class ZoneManager
 
     /// <summary>
     /// Снимок зон для диспатч-прохода: без аллокации, если зоны не менялись.
-    /// Возвращаемый список НЕ модифицировать (кэш). Только для sim-потока.
+    /// Возвращаемый список НЕ модифицировать (кэш). Вызывается строго из sim-потока
+    /// (DispatchZones) — кэш-поля читаются/пишутся только этим потоком; межпотоковую
+    /// корректность обеспечивает барьер Volatile.Read(_zonesVersion) и блокировки
+    /// писателей на _lock.
     /// </summary>
     public List<Zone> GetDispatchSnapshot()
     {
         int v = Volatile.Read(ref _zonesVersion);
-        var snap = Volatile.Read(ref _dispatchSnap);
-        if (snap != null && v == Volatile.Read(ref _dispatchSnapVersion))
+        var snap = _dispatchSnap;
+        if (snap != null && v == _dispatchSnapVersion)
             return snap;
         lock (_lock)
         {
@@ -340,20 +370,55 @@ public sealed class ZoneManager
             var fresh = new List<Zone>(_zones.Values);
             fresh.Sort(static (a, b) => a.Id.CompareTo(b.Id));
             _dispatchSnap = fresh;
-            Volatile.Write(ref _dispatchSnapVersion, v);
+            _dispatchSnapVersion = v;
             return fresh;
         }
     }
 
-    private void BumpZonesVersion()
-    {
-        Interlocked.Increment(ref _zonesVersion);
-    }
-
-    /// <summary>То же, но под уже взятым _lock (инкремент int атомарен и без Interlocked).</summary>
+    // FIX #4: BumpZonesVersion (Interlocked-вариант) удалён — все вызовы шли через
+    // _NoLock под _lock; отдельная «потокобезопасная» версия создавала видимость
+    // вызова вне лока, которого нет.
+    // Мелочь: инкремент под _lock + Volatile.Write публикации — читатели снимка
+    // обязаны видеть новый version ДО пересборки _zones (иначе вечный stale-кэш).
     private void BumpZonesVersion_NoLock()
     {
-        _zonesVersion++;
+        Volatile.Write(ref _zonesVersion, _zonesVersion + 1);
+    }
+
+    // ---------------- Immutable-swap геометрии зон (FIX #2) ----------------
+
+    // Зона формы (ZoneShape) живёт в Zone.cs как публичный неизменяемый тип:
+    // собирается ЦЕЛИКОМ и публикуется одной volatile-заменой ссылки Zone.Shape.
+    // Читатели (UI-рендер вне _lock, SetAutoPlant, диспатч из sim-потока) берут
+    // ссылку один раз и работают с согласованным снапшотом: никаких «Collection
+    // was modified» и разорванных состояний при параллельной пересборке тайлов.
+
+    private static ZoneShape BuildWorkShape(Zone z) => new(
+        z.RadiusTiles, z.TilesTarget, z.MaxWorkers, z.JobMask, z.PriorityOverride,
+        z.Tiles, CalcChunkIndicesArray(z.Tiles));
+
+    private static int[] CalcChunkIndicesArray(HashSet<(int X, int Y)> tiles)
+    {
+        var list = CalcChunkIndices(tiles);
+        var arr = new int[list.Count];
+        for (int i = 0; i < list.Count; i++)
+            arr[i] = list[i];
+        return arr;
+    }
+
+    /// <summary>
+    /// Удалить тайлы из Farm-зоны (immutable-swap): копия множества без указанных
+    /// позиций + замена ссылки. Коллекция Tiles НИКОГДА не мутируется на месте —
+    /// читатели (UI-рендер, SetAutoPlant, диспатч) могут итерировать старый
+    /// снапшот без lock и без «Collection was modified».
+    /// </summary>
+    private static void ApplyTileRemoval_NoLock(Zone zone, HashSet<(int X, int Y)> remove)
+    {
+        var copy = new HashSet<(int X, int Y)>(zone.Tiles.Count);
+        foreach (var t in zone.Tiles)
+            if (!remove.Contains(t))
+                copy.Add(t);
+        zone.Tiles = copy;
     }
 
     public bool SetWorkTiles(int id, int target)
@@ -387,9 +452,15 @@ public sealed class ZoneManager
             foreach (var t in fresh)
                 _tileToZoneId[t] = id;
             zone.Tiles = fresh;
-            zone.ChunkIndices = CalcChunkIndices(fresh);
             zone.TilesTarget = clamped;
             zone.RadiusTiles = r;
+            // FIX #2: единый согласованный снапшот вместо четырёх отдельных сеттеров
+            // (ChunkIndices/TilesTarget/RadiusTiles/Tiles раньше обновлялись раздельно —
+            // параллельный читатель мог увидеть новую геометрию со старыми чанками).
+            Volatile.Write(ref zone.Shape, BuildWorkShape(zone));
+            // FIX AssignedCount-протокола: сброс «назначено за проход» — фаза до
+            // параллельного диспатча (SetWork* вызываются из UI/main-потока между
+            // проходами DispatchZones; RegisterAssigned из воркеров здесь уже не идёт).
             zone.ResetAssigned();
         }
         Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
@@ -403,6 +474,7 @@ public sealed class ZoneManager
             if (!_zones.TryGetValue(id, out var zone) || zone.Kind != ZoneKind.Work)
                 return false;
             zone.MaxWorkers = Math.Clamp(v, 0, 64);
+            Volatile.Write(ref zone.Shape, BuildWorkShape(zone));
             return true;
         }
     }
@@ -417,7 +489,12 @@ public sealed class ZoneManager
                 return false;
             snap = zone.JobMask;
             zone.PriorityOverride = clamped;
+            Volatile.Write(ref zone.Shape, BuildWorkShape(zone));
         }
+        // ВНИМАНИЕ (осознанное поведение): оверрайд приоритета зоны пишется в ГЛОБАЛЬНЫЙ
+        // JobPriorityManager — затрагивает категории всех зон и свободных работ.
+        // Имя обещает зональность; резолвить приоритет в момент клейма — отдельный
+        // рефакторинг (см. отчёт ревью, п. «Мелочи»).
         var seen = new HashSet<JobCategory>();
         for (int t = 1; t <= 10; t++)
         {
@@ -439,6 +516,9 @@ public sealed class ZoneManager
             if (_tileToZoneId.TryGetValue((x, y), out int zoneId))
                 _zones.TryGetValue(zoneId, out newHovered);
         }
+        // Мелочь (намеренно): запись/сравнение HoveredZone ВНЕ _lock — reference
+        // assignment атомарен, единственный писатель (main-поток), максимум stale
+        // на одно событие. Лок здесь лишь создавал бы видимость многопоточных читателей.
         if (HoveredZone != newHovered)
         {
             HoveredZone = newHovered;
@@ -509,18 +589,43 @@ public sealed class ZoneManager
         {
             var zone = zones[(baseIdx + zi) % totalZones];
             if (zone.Kind != ZoneKind.Work) continue;
+            // FIX AssignedCount-протокола: сброс «назначено за проход» строго в фазе
+            // ДО параллельной работы воркеров (DispatchZones вызывается из sim-потока
+            // между проходами; RegisterAssigned из воркеров к этому моменту завершён).
+            // ResetAssigned() также вызывается из SetWork* — это безопасно только потому,
+            // что эти методы идут из main/UI-потока в паузе между диспатчами.
             zone.ResetAssigned();
             int zoneAssigned = 0;
-            var chunks = zone.ChunkIndices;
-            var tiles = zone.Tiles;
-            if (chunks == null || tiles == null) continue;
+            // FIX #2 (immutable-swap): берём ОДИН согласованный снапшот формы зоны.
+            // Раньше chunks/tiles/MaxWorkers читались отдельными полями — параллельная
+            // пересборка из UI давала разорванное состояние (новая геометрия + старые
+            // чанки) и гонку на мутабельном HashSet («Collection was modified»).
+            var shape = Volatile.Read(ref zone.Shape);
+            if (shape == null)
+            {
+                // Страховка: зона создана встарую (до публикации Shape) или писатель
+                // не прошёл через CreateWorkZoneAt/SetWork*. Собираем и публикуем сами
+                // (идемпотентно: пересборка снапшота из текущих полей безвредна).
+                lock (_lock)
+                {
+                    shape = zone.Shape ?? BuildWorkShape(zone);
+                    Volatile.Write(ref zone.Shape, shape);
+                }
+            }
+            var chunks = shape.ChunkIndices;
+            // О(1) проверка принадлежности тайла зоне + плотный массив чанков —
+            // всё из одного согласованного снапшота (immutable-swap).
+            var tileSet = shape.TileSet;
+            if (chunks == null || tileSet == null) continue;
             foreach (int chunkIdx in chunks)
             {
-                if (zone.MaxWorkers > 0 && zoneAssigned >= zone.MaxWorkers)
+                if (shape.MaxWorkers > 0 && zoneAssigned >= shape.MaxWorkers)
                     break;
                 if (JobDispatcher.Instance.JobIndex.GetChunkJobCount(chunkIdx) == 0)
                     continue;
-                int[] buf = _zoneBuffer.Value;
+                // Мелочь: ThreadLocal<int[]> заменён обычным полем — DispatchZones
+                // зовётся строго из sim-потока, TLS лишь скрывала это инвариант.
+                int[] buf = _zoneBuffer;
                 int workerCount = JobDispatcher.Instance.IdleWorkers.CollectIdleWorkersInChunk(chunkIdx, WorkersPerChunkBudget, buf, pool);
                 if (workerCount == 0) continue;
                 int assigned = 0;
@@ -528,7 +633,7 @@ public sealed class ZoneManager
                 {
                     if (assigned >= MaxAssignPerChunk)
                         break;
-                    if (zone.MaxWorkers > 0 && zoneAssigned >= zone.MaxWorkers)
+                    if (shape.MaxWorkers > 0 && zoneAssigned >= shape.MaxWorkers)
                         break;
                     int agentIndex = buf[wi];
                     if (agentIndex < 0 || agentIndex >= pool.Capacity)
@@ -541,11 +646,16 @@ public sealed class ZoneManager
                     {
                         int workerTx = pool.CurrentCellX[agentIndex];
                         int workerTy = pool.CurrentCellY[agentIndex];
+                        // FIX #3 (claim → cancel-чернилка): раньше клеймился ЛЮБОЙ лучший
+                        // job чанка (чанк 16×16 шире диска зоны), а работы вне зоны/маски
+                        // отменялись после OnStart — лишние claim/release циклы. Теперь
+                        // предикат «принадлежит зоне» отсеивает кандидатов ДО CAS-захвата.
                         if (JobDispatcher.Instance.JobIndex.TryClaimForWorkerInChunk(
                             chunkIdx, workerTx, workerTy,
                             pool.EquippedTools[agentIndex],
                             pool, agentIndex, ctx,
-                            out var activeJob))
+                            out var activeJob,
+                            filter: j => shape.JobMaskBitSet((int)j.TypeId) && tileSet.Contains((j.TargetX, j.TargetY))))
                         {
                             JobDispatcher.Instance.IdleWorkers.RemoveIdleWorker(agentIndex, pool);
                             pool.CurrentJobId[agentIndex] = activeJob.Id;
@@ -568,7 +678,10 @@ public sealed class ZoneManager
                                     }
                                     else
                                     {
-                                        if (!zone.Matches(activeJob.TypeId) || !tiles.Contains((activeJob.TargetX, activeJob.TargetY)))
+                                        // Ревалидация под shape — дешёвая страховка от TOCTOU:
+                                        // job мог выпасть из зоны между фильтром клейма и OnStart.
+                                        // Основной отсев теперь делает filter в TryClaim (FIX #3).
+                                        if (!shape.JobMaskBitSet((int)activeJob.TypeId) || !tileSet.Contains((activeJob.TargetX, activeJob.TargetY)))
                                         {
                                             try { handler.OnCancel(agentIndex, pool, ctx); }
                                             catch (Exception ex)

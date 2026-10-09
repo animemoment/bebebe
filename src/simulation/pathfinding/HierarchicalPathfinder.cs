@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Game.Core;
 
@@ -51,16 +52,30 @@ public sealed class HierarchicalPathfinder
     // Детальное окно: до 3x3 регионов = (3*16)^2 = 2304 клетки.
     private const int LocalCapacity = (3 * RegionSize) * (3 * RegionSize);
 
-    private int _mapWidth;
-    private int _mapHeight;
-    private int _regionDimX;
-    private int _regionDimY;
+    // FIX #3: оверлей свёрнут в неизменяемый снапшот. Публикация — одна
+    // volatile-запись ссылки по завершении построения; читатели берут ссылку
+    // ОДИН раз и работают с согласованным набором данных. Это снимает класс
+    // гонок «новый _cost + старые _portals/_mapWidth» на weak-memory (ARM)
+    // и ABA при смене карты (старый массив больше не смешивается со свежими
+    // размерами). Снапшот никогда не мутируется после публикации.
+    private sealed class OverlaySnapshot
+    {
+        public readonly byte[] Cost;       // [W*H]
+        public readonly int W, H;
+        public readonly int DimX, DimY;    // размеры региональной сетки
+        public readonly int[] EdgeStart;   // [regions*4] стартовый индекс в Portals
+        public readonly int[] EdgeCount;   // [regions*4] число порталов у (регион, направление)
+        public readonly int[] Portals;     // плоский массив якорей порталов (packed cell)
 
-    private byte[] _cost;              // [mapWidth*mapHeight]
-    private int[] _edgeStart;          // [regions*4] стартовый индекс в _portals
-    private int[] _edgeCount;          // [regions*4] число порталов у (регион, направление)
-    private int[] _portals;            // плоский массив якорей порталов (packed cell)
-    private int _portalCount;
+        public OverlaySnapshot(byte[] cost, int w, int h, int dimX, int dimY,
+            int[] edgeStart, int[] edgeCount, int[] portals)
+        {
+            Cost = cost; W = w; H = h; DimX = dimX; DimY = dimY;
+            EdgeStart = edgeStart; EdgeCount = edgeCount; Portals = portals;
+        }
+    }
+
+    private volatile OverlaySnapshot _overlay;
     private int _buildVersion;
 
     private SimulationContext _ctx;
@@ -70,7 +85,9 @@ public sealed class HierarchicalPathfinder
     // _cacheLock сериализовал все 16 потоков Parallel-фаз на КАЖДОМ запросе пути:
     // один «тяжёлый» ComputeLocalSegment держал lock, остальные 15 ждали —
     // классический straggler при низкой средней загрузке CPU.
-    private readonly ConcurrentDictionary<int, int[]> _regionPathCache = new(4, 1024);
+    // FIX #4: ключ ulong ((sr << 32) | tr) — старый int-ключ sr * 4096 + tr
+    // давал коллизии при числе регионов > 4096 (чужой путь для другой пары).
+    private readonly ConcurrentDictionary<ulong, int[]> _regionPathCache = new(4, 1024);
     private readonly ConcurrentDictionary<ulong, int[]> _segmentCache = new(4, 4096);
 
     private sealed class SearchBuffers
@@ -82,20 +99,59 @@ public sealed class HierarchicalPathfinder
         public readonly bool[] Closed = new bool[LocalCapacity + 1];
         public readonly int[] Value = new int[LocalCapacity + 1];
 
-        // Грубый A* (граф регионов).
-        public readonly int[] RG = new int[4096];
-        public readonly int[] RParent = new int[4096];
-        public readonly int[] ROpen = new int[4096];
-        public readonly bool[] RClosed = new bool[4096];
-        public readonly int[] RValue = new int[4096];
+        // Грубый A* (граф регионов). Динамические: на карте >64M тайлов
+        // (регионов > 4096) фиксированные буферы молча отказывали в пути
+        // (FIX #5). Grow-до-RegionCap поднимает ёмкость под фактическое
+        // число регионов карты (с запасом), ReadIndex гарантирует
+        // корректную публикацию grow'а другим потокам этого же A*.
+        public readonly IndexableBuffer<int> RG = new(4096);
+        public readonly IndexableBuffer<int> RParent = new(4096);
+        public readonly IndexableBuffer<int> ROpen = new(4096);
+        public readonly IndexableBuffer<bool> RClosed = new(4096);
+        public readonly IndexableBuffer<int> RValue = new(4096);
 
         // PERF F4: scratch для TryFindPath/SmoothPath. Переиспользуемые буферы
-        // вместо new int[]/List<int>/ToArray в горячем пути. Капасити: якоря ≤ 256
-        // переходов регионов; сборка пути и сглаживание ≤ 4096 точек.
-        public readonly int[] Anchor = new int[512];
+        // вместо new int[]/List<int>/ToArray в горячем пути. Сборка пути и
+        // сглаживание ≤ 4096 точек; якоря — динамически до числа переходов
+        // регионов (FIX #5: потолок 256 пар убран, змеистый путь на 512×512
+        // раньше молча не строился).
+        public readonly IndexableBuffer<int> Anchor = new(512);
         public readonly int[] PathScratch = new int[4096];
         public readonly int[] SmoothScratch = new int[4096];
         public readonly int[] RevScratch = new int[4096];
+    }
+
+    /// <summary>
+    /// Растущий индексный буфер для ThreadLocal scratch A*. При EnsureCapacity
+    /// старый массив копируется в новый (данные сохранены), а Volatile.Write
+    /// корректно публикует ссылку. Все индексы в пределах Capacity валидны.
+    /// </summary>
+    private sealed class IndexableBuffer<T>
+    {
+        private T[] _data;
+
+        public IndexableBuffer(int capacity) => _data = new T[capacity];
+
+        public T[] Data => _data;
+
+        /// <summary>Текущая ёмкость (для проверок лимитов).</summary>
+        public int Capacity => Volatile.Read(ref _data).Length;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ref T this[int index] => ref Volatile.Read(ref _data)[index];
+
+        public void EnsureCapacity(int required)
+        {
+            var cur = Volatile.Read(ref _data);
+            if (cur.Length >= required)
+                return;
+            int cap = cur.Length;
+            while (cap < required)
+                cap *= 2;
+            var fresh = new T[cap];
+            Array.Copy(cur, fresh, cur.Length);
+            Volatile.Write(ref _data, fresh);
+        }
     }
 
     private readonly ThreadLocal<SearchBuffers> _buffers = new(() => new SearchBuffers());
@@ -122,8 +178,15 @@ public sealed class HierarchicalPathfinder
         lock (_buildLock)
         {
             _ctx = ctx;
-            _cost = null;
+            _overlay = null;
             _buildVersion++;
+            // FIX #2: кэши ОБЯЗАТЕЛЬНО чистятся. Ключи сегментов — упакованные
+            // координаты под СТАРЫЕ размеры карты: при перезапуске на карте
+            // другого размера устаревшие сегменты дали бы маршруты «в никуда»
+            // или IndexOutOfRange. Регион-пути привязаны к старой региональной
+            // сетке — тоже протухают.
+            _regionPathCache.Clear();
+            _segmentCache.Clear();
         }
     }
 
@@ -147,7 +210,7 @@ public sealed class HierarchicalPathfinder
                 return;
             _lastInvalidateMs = now;
             _buildVersion++;
-            _cost = null;
+            _overlay = null;
             _regionPathCache.Clear();
             _segmentCache.Clear();
         }
@@ -168,13 +231,12 @@ public sealed class HierarchicalPathfinder
         if (sx == tx && sy == ty)
             return true;
 
-        // Деградация при «пустом» оверлее (симуляция не инициализирована).
-        if (_cost == null)
-        {
-            EnsureOverlay();
-            if (_cost == null)
-                return false;
-        }
+        // FIX #3: ссылка на оверлей читается ОДИН раз — весь проход работает
+        // с согласованным неизменяемым снапшотом, даже если параллельный
+        // Invalidate()/rebuild подменит _overlay.
+        OverlaySnapshot ov = EnsureOverlay();
+        if (ov == null)
+            return false; // симуляция не инициализирована / карта недоступна
 
         // Прямая видимость — дешёвый путь без построения.
         // НО: вода в LOS раньше игнорировалась — агент шёл напрямик через
@@ -184,14 +246,36 @@ public sealed class HierarchicalPathfinder
         // #14: один проход Брезенхема вместо двух (HasLineOfSight +
         // WaterCrossingLength дублировали обход) — LineOfSightWithWater
         // возвращает и флаг стен, и длину водного отрезка сразу.
-        if (LineOfSightWithWater(sx, sy, tx, ty, out int directWater)
+        if (LineOfSightWithWater(ov, sx, sy, tx, ty, out int directWater)
             && directWater <= MaxDirectWaterTiles)
             return true;
 
-        int sr = RegionOfCell(sx, sy);
-        int tr = RegionOfCell(tx, ty);
+        int sr = RegionOfCell(ov, sx, sy);
+        int tr = RegionOfCell(ov, tx, ty);
 
-        int[] regionPath = GetRegionPathCached(sr, tr);
+        // FIX #1: старт и цель в одном регионе. Грубый A* возвращает тривиальный
+        // путь длины 1 ([sr]) — старый код тут же возвращал false, хотя локальный
+        // A* в окне региона легко находит обход стены/изгиба. Симптом был:
+        // агент «не может» дойти до соседней клетки через препятствие.
+        // Строим сегмент напрямую, минуя регион-граф и выбор порталов.
+        if (sr == tr)
+        {
+            int[] onlySeg = GetSegmentCached(ov, sx, sy, tx, ty);
+            if (onlySeg == null || onlySeg.Length < 2)
+                return false;
+
+            // Сегмент включает стартовую клетку — в результат она не входит.
+            int onlyLen = onlySeg.Length - 1;
+            if (onlyLen <= 0)
+                return true;
+            var onlyResult = new int[onlyLen];
+            Array.Copy(onlySeg, 1, onlyResult, 0, onlyLen);
+            outPath = onlyResult;
+            count = onlyLen;
+            return true;
+        }
+
+        int[] regionPath = GetRegionPathCached(ov, sr, tr);
         if (regionPath == null || regionPath.Length < 2)
             return false;
 
@@ -207,16 +291,20 @@ public sealed class HierarchicalPathfinder
         // @destroyer: anchorPairs<=0 невозможен (regionPath.Length>=2 проверен
         // выше), но оставляем guard — дешевле, чем доказывать инвариант.
         // Переполнение int при anchorPairs*2: regionCount ограничен числом
-        // регионов карты (≤1024), переполнения нет.
-        if (anchorPairs <= 0 || anchorPairs * 2 > scratch.Anchor.Length)
+        // регионов карты, переполнения нет.
+        if (anchorPairs <= 0)
             return false; // регион-путь патологичен — retry на следующем кадре
-        Span<int> anchors = scratch.Anchor.AsSpan(0, anchorPairs * 2);
+        // FIX #5: потолок 256 пар убран — буфер растёт до фактической длины
+        // регион-пути (змеистый путь на больших картах больше не молча отваливается).
+        scratch.Anchor.EnsureCapacity(anchorPairs * 2);
+        var anchorData = scratch.Anchor.Data;
+        Span<int> anchors = anchorData.AsSpan(0, anchorPairs * 2);
         Span<int> anchorX = anchors.Slice(0, anchorPairs);
         Span<int> anchorY = anchors.Slice(anchorPairs, anchorPairs);
 
         for (int t = 0; t < regionCount - 1; t++)
         {
-            if (!PickBestPortal(regionPath[t], regionPath[t + 1], sx, sy, tx, ty,
+            if (!PickBestPortal(ov, regionPath[t], regionPath[t + 1], sx, sy, tx, ty,
                 out anchorX[t], out anchorY[t]))
             {
                 return false; // порталы между соседями исчезли — пересчёт на след. кадре
@@ -236,7 +324,7 @@ public sealed class HierarchicalPathfinder
             if (fromX == toX && fromY == toY)
                 continue;
 
-            int[] seg = GetSegmentCached(fromX, fromY, toX, toY);
+            int[] seg = GetSegmentCached(ov, fromX, fromY, toX, toY);
             if (seg == null || seg.Length < 2)
                 return false;
 
@@ -253,7 +341,7 @@ public sealed class HierarchicalPathfinder
         if (pathLen == 0)
             return true;
 
-        int smoothed = SmoothPath(sx, sy, tx, ty, path.Slice(0, pathLen), scratch.SmoothScratch);
+        int smoothed = SmoothPath(ov, sx, sy, tx, ty, path.Slice(0, pathLen), scratch.SmoothScratch);
         if (smoothed <= 0)
             return false;
 
@@ -273,17 +361,28 @@ public sealed class HierarchicalPathfinder
     // Построение оверлея (стоимости + порталы регионов)
     // ------------------------------------------------------------------
 
-    private void EnsureOverlay()
+    /// <summary>
+    /// Возвращает актуальный оверлей, при необходимости строя его под lock.
+    /// FIX #3: результат — неизменяемый снапшот; построение идёт в локальные
+    /// массивы, наружу публикуется ОДНА volatile-ссылка по завершении.
+    /// Читатели вне лока видят либо целиком старый, либо целиком новый оверлей.
+    /// </summary>
+    private OverlaySnapshot EnsureOverlay()
     {
+        // Быстрый путь без лока: свежий снапшот уже опубликован.
+        OverlaySnapshot ov = _overlay;
+        if (ov != null)
+            return ov;
+
         lock (_buildLock)
         {
-            if (_cost != null)
-                return;
+            if (_overlay != null)
+                return _overlay;
 
             if (_ctx == null)
             {
                 // Симуляция ещё не стартовала — оверлей недоступен.
-                return;
+                return null;
             }
 
             int w = _ctx.MapWidth;
@@ -307,70 +406,75 @@ public sealed class HierarchicalPathfinder
                 }
             }
 
-            _mapWidth = w;
-            _mapHeight = h;
-            _regionDimX = (w + RegionSize - 1) >> RegionShift;
-            _regionDimY = (h + RegionSize - 1) >> RegionShift;
-            _cost = cost;
+            int dimX = (w + RegionSize - 1) >> RegionShift;
+            int dimY = (h + RegionSize - 1) >> RegionShift;
 
             // ---- Портал: проходимый отрезок общей границы двух регионов.
             // Каждую общую границу регистрируем от «юго-восточной» стороны,
             // чтобы обратный переход пользовался тем же набором якорей.
-            int regionCount = _regionDimX * _regionDimY;
-            _edgeStart = new int[regionCount * 4];
-            _edgeCount = new int[regionCount * 4];
-            Array.Fill(_edgeStart, -1);
-            Array.Clear(_edgeCount, 0, _edgeCount.Length);
-            _portals = new int[regionCount * 4 * 16];
-            _portalCount = 0;
+            int regionCount = dimX * dimY;
+            int[] edgeStart = new int[regionCount * 4];
+            int[] edgeCount = new int[regionCount * 4];
+            Array.Fill(edgeStart, -1);
+            Array.Clear(edgeCount, 0, edgeCount.Length);
+            int[] portals = new int[regionCount * 4 * 16];
+            int portalCount = 0;
 
-            for (int ry = 0; ry < _regionDimY; ry++)
+            for (int ry = 0; ry < dimY; ry++)
             {
-                for (int rx = 0; rx < _regionDimX; rx++)
+                for (int rx = 0; rx < dimX; rx++)
                 {
-                    int rid = ry * _regionDimX + rx;
+                    int rid = ry * dimX + rx;
 
                     // Восточная граница (сосед справа).
-                    if (rx + 1 < _regionDimX)
+                    if (rx + 1 < dimX)
                     {
-                        _edgeStart[rid * 4 + (byte)Dir.East] = _portalCount;
-                        _edgeCount[rid * 4 + (byte)Dir.East] =
-                            BuildEdgePortals(rx, ry, Dir.East, cost, w, h);
+                        edgeStart[rid * 4 + (byte)Dir.East] = portalCount;
+                        edgeCount[rid * 4 + (byte)Dir.East] =
+                            BuildEdgePortals(portals, ref portalCount, rx, ry, Dir.East, cost, w, h, dimX);
                     }
 
                     // Южная граница.
-                    if (ry + 1 < _regionDimY)
+                    if (ry + 1 < dimY)
                     {
-                        _edgeStart[rid * 4 + (byte)Dir.South] = _portalCount;
-                        _edgeCount[rid * 4 + (byte)Dir.South] =
-                            BuildEdgePortals(rx, ry, Dir.South, cost, w, h);
+                        edgeStart[rid * 4 + (byte)Dir.South] = portalCount;
+                        edgeCount[rid * 4 + (byte)Dir.South] =
+                            BuildEdgePortals(portals, ref portalCount, rx, ry, Dir.South, cost, w, h, dimX);
                     }
 
                     // Северная/западная — те же якоря, что у верхнего/левого
                     // соседа (их ребра South/East).
                     if (ry > 0)
                     {
-                        int northNeighborBase = (ry - 1) * _regionDimX * 4 + rx * 4 + (byte)Dir.South;
-                        _edgeStart[rid * 4 + (byte)Dir.North] = _edgeStart[northNeighborBase];
-                        _edgeCount[rid * 4 + (byte)Dir.North] = _edgeCount[northNeighborBase];
+                        int northNeighborBase = (ry - 1) * dimX * 4 + rx * 4 + (byte)Dir.South;
+                        edgeStart[rid * 4 + (byte)Dir.North] = edgeStart[northNeighborBase];
+                        edgeCount[rid * 4 + (byte)Dir.North] = edgeCount[northNeighborBase];
                     }
                     if (rx > 0)
                     {
-                        _edgeStart[rid * 4 + (byte)Dir.West] = _edgeStart[rid * 4 - 4 + (byte)Dir.East];
-                        _edgeCount[rid * 4 + (byte)Dir.West] = _edgeCount[rid * 4 - 4 + (byte)Dir.East];
+                        edgeStart[rid * 4 + (byte)Dir.West] = edgeStart[rid * 4 - 4 + (byte)Dir.East];
+                        edgeCount[rid * 4 + (byte)Dir.West] = edgeCount[rid * 4 - 4 + (byte)Dir.East];
                     }
                 }
             }
+
+            // Единственная публикация: до этой точки снапшот невидим читателям,
+            // после — все поля гарантированно согласованы (volatile write + using
+            // semantics на readonly-полях конструктора).
+            var snapshot = new OverlaySnapshot(cost, w, h, dimX, dimY, edgeStart, edgeCount, portals);
+            _overlay = snapshot;
+            return snapshot;
         }
     }
 
     /// <summary>
     /// Находит непрерывные проходимые отрезки общей границы региона (rx, ry)
     /// с соседом в направлении <paramref name="dir"/> (East или South) и
-    /// записывает якоря (центральную клетку отрезка, packed) в _portals.
+    /// записывает якоря (центральную клетку отрезка, packed) в portals.
     /// Возвращает число порталов.
     /// </summary>
-    private int BuildEdgePortals(int rx, int ry, Dir dir, byte[] cost, int w, int h)
+    private static int BuildEdgePortals(int[] portals, ref int portalCount,
+        int rx, int ry, Dir dir, byte[] cost, int w, int h, int dimX)
     {
         int x0 = rx << RegionShift;
         int y0 = ry << RegionShift;
@@ -393,14 +497,14 @@ public sealed class HierarchicalPathfinder
                 }
                 else if (runStartY >= 0)
                 {
-                    _portals[_portalCount++] = ((runStartY + y - 1) >> 1) * w + x1;
+                    portals[portalCount++] = ((runStartY + y - 1) >> 1) * w + x1;
                     count++;
                     runStartY = -1;
                 }
             }
             if (runStartY >= 0)
             {
-                _portals[_portalCount++] = ((runStartY + y1) >> 1) * w + x1;
+                portals[portalCount++] = ((runStartY + y1) >> 1) * w + x1;
                 count++;
             }
         }
@@ -418,14 +522,14 @@ public sealed class HierarchicalPathfinder
                 }
                 else if (runStartX >= 0)
                 {
-                    _portals[_portalCount++] = y1 * w + ((runStartX + x - 1) >> 1);
+                    portals[portalCount++] = y1 * w + ((runStartX + x - 1) >> 1);
                     count++;
                     runStartX = -1;
                 }
             }
             if (runStartX >= 0)
             {
-                _portals[_portalCount++] = y1 * w + ((runStartX + x1) >> 1);
+                portals[portalCount++] = y1 * w + ((runStartX + x1) >> 1);
                 count++;
             }
         }
@@ -438,22 +542,22 @@ public sealed class HierarchicalPathfinder
     // ------------------------------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int RegionOfCell(int tx, int ty)
+    private static int RegionOfCell(OverlaySnapshot ov, int tx, int ty)
     {
-        return (ty >> RegionShift) * _regionDimX + (tx >> RegionShift);
+        return (ty >> RegionShift) * ov.DimX + (tx >> RegionShift);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int RegionCoordX(int regionId) => regionId % _regionDimX;
+    private static int RegionCoordX(OverlaySnapshot ov, int regionId) => regionId % ov.DimX;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int RegionCoordY(int regionId) => regionId / _regionDimX;
+    private static int RegionCoordY(OverlaySnapshot ov, int regionId) => regionId / ov.DimX;
 
     /// <summary>Направление от региона ra к соседнему региону rb (или None).</summary>
-    private Dir DirectionBetween(int ra, int rb)
+    private static Dir DirectionBetween(OverlaySnapshot ov, int ra, int rb)
     {
-        int ax = RegionCoordX(ra), ay = RegionCoordY(ra);
-        int bx = RegionCoordX(rb), by = RegionCoordY(rb);
+        int ax = RegionCoordX(ov, ra), ay = RegionCoordY(ov, ra);
+        int bx = RegionCoordX(ov, rb), by = RegionCoordY(ov, rb);
         if (by == ay)
         {
             if (bx == ax + 1) return Dir.East;
@@ -472,19 +576,19 @@ public sealed class HierarchicalPathfinder
     /// якорь, ближайший к прямой (sx,sy)-(tx,ty). Якорь возвращается в
     /// координатах клетки региона ra.
     /// </summary>
-    private bool PickBestPortal(int ra, int rb, int sx, int sy, int tx, int ty,
+    private static bool PickBestPortal(OverlaySnapshot ov, int ra, int rb, int sx, int sy, int tx, int ty,
         out int anchorX, out int anchorY)
     {
         anchorX = -1;
         anchorY = -1;
 
-        Dir dir = DirectionBetween(ra, rb);
+        Dir dir = DirectionBetween(ov, ra, rb);
         if (dir == Dir.None)
             return false;
 
         int idx = ra * 4 + (byte)dir;
-        int start = _edgeStart[idx];
-        int cnt = _edgeCount[idx];
+        int start = ov.EdgeStart[idx];
+        int cnt = ov.EdgeCount[idx];
         if (start < 0 || cnt <= 0)
             return false;
 
@@ -494,9 +598,9 @@ public sealed class HierarchicalPathfinder
 
         for (int i = 0; i < cnt; i++)
         {
-            int portalPacked = _portals[start + i];
-            int px = portalPacked % _mapWidth;
-            int py = portalPacked / _mapWidth;
+            int portalPacked = ov.Portals[start + i];
+            int px = portalPacked % ov.W;
+            int py = portalPacked / ov.W;
 
             // Расстояние от якоря до прямой S-T (упрощённо: до отрезка через
             // проекцию). Достаточно точности для выбора портала.
@@ -512,8 +616,8 @@ public sealed class HierarchicalPathfinder
         if (best < 0)
             return false;
 
-        anchorX = bestPacked % _mapWidth;
-        anchorY = bestPacked / _mapWidth;
+        anchorX = bestPacked % ov.W;
+        anchorY = bestPacked / ov.W;
         return true;
     }
 
@@ -539,16 +643,21 @@ public sealed class HierarchicalPathfinder
     // Грубый уровень: A* по графу регионов
     // ------------------------------------------------------------------
 
-    private int[] GetRegionPathCached(int sr, int tr)
+    private int[] GetRegionPathCached(OverlaySnapshot ov, int sr, int tr)
     {
         // P0-1: без счётчиков кэша — вызываются из тысяч A* в параллельных фазах.
-        int key = sr * 4096 + tr;
+        // FIX #4: ключ упакован в ulong ((sr << 32) | tr). Старый int-ключ
+        // sr * 4096 + tr давал коллизии на картах >64M тайлов (регионов >4096):
+        // чужой закэшированный путь возвращался для другой пары регионов.
+        // Долгие региональные пути (>256 регионов) раньше молча отваливались
+        // по потолку Anchor — снято в TryFindPath (FIX #5).
+        ulong key = ((ulong)(uint)sr << 32) | (uint)tr;
         if (_regionPathCache.TryGetValue(key, out int[] cached))
         {
             return cached;
         }
 
-        int[] path = ComputeRegionPath(sr, tr);
+        int[] path = ComputeRegionPath(ov, sr, tr);
         if (path == null)
             return null;
 
@@ -573,36 +682,42 @@ public sealed class HierarchicalPathfinder
     /// регионами есть хотя бы один портал. Гедонистика — клеточное расстояние
     /// между центрами регионов.
     /// </summary>
-    private int[] ComputeRegionPath(int sr, int tr)
+    private int[] ComputeRegionPath(OverlaySnapshot ov, int sr, int tr)
     {
         var b = _buffers.Value;
-        int[] g = b.RG;
-        int[] parent = b.RParent;
-        int[] open = b.ROpen;
-        bool[] closed = b.RClosed;
+        int cap = ov.DimX * ov.DimY;
+        // FIX #5: динамические буферы грубого уровня — ёмкость растёт до
+        // фактического числа регионов карты (было жёсткое 4096 регионов =
+        // карта 64M тайлов, выше — тихий отказ маршрутизации).
+        b.RG.EnsureCapacity(cap);
+        b.RParent.EnsureCapacity(cap);
+        b.RClosed.EnsureCapacity(cap);
+        b.RValue.EnsureCapacity(cap);
+        b.ROpen.EnsureCapacity(cap);
+        var g = b.RG.Data;
+        var parent = b.RParent.Data;
+        var closed = b.RClosed.Data;
+        int[] open = b.ROpen.Data;
 
-        int cap = _regionDimX * _regionDimY;
-        if (cap > g.Length)
-            return null;
-
-        Array.Fill(g, int.MaxValue);
-        Array.Fill(parent, -1);
-        Array.Fill(closed, false);
+        Array.Fill(g, 0, 0, cap);
+        Array.Fill(g, int.MaxValue, 0, cap);
+        Array.Fill(parent, -1, 0, cap);
+        Array.Fill(closed, false, 0, cap);
 
         int openCount = 0;
         open[0] = sr;
         openCount = 1;
         g[sr] = 0;
 
-        int trx = RegionCoordX(tr);
-        int tryRegionY = RegionCoordY(tr);
+        int trx = RegionCoordX(ov, tr);
+        int tryRegionY = RegionCoordY(ov, tr);
 
         const int MaxExpand = 4096;
         int expanded = 0;
 
         while (openCount > 0 && expanded < MaxExpand)
         {
-            int cur = RegionPop(open, ref openCount);
+            int cur = RegionPop(b, open, ref openCount);
             if (cur == tr)
                 break;
             if (closed[cur])
@@ -610,17 +725,17 @@ public sealed class HierarchicalPathfinder
             closed[cur] = true;
             expanded++;
 
-            int cx = RegionCoordX(cur);
-            int cy = RegionCoordY(cur);
+            int cx = RegionCoordX(ov, cur);
+            int cy = RegionCoordY(ov, cur);
 
             // 4 соседа по региональной сетке.
-            TryRelaxRegion(cur, cy * _regionDimX + (cx + 1), cx + 1 < _regionDimX,
+            TryRelaxRegion(ov, cur, cy * ov.DimX + (cx + 1), cx + 1 < ov.DimX,
                 trx, tryRegionY, b, open, ref openCount);
-            TryRelaxRegion(cur, cy * _regionDimX + (cx - 1), cx > 0,
+            TryRelaxRegion(ov, cur, cy * ov.DimX + (cx - 1), cx > 0,
                 trx, tryRegionY, b, open, ref openCount);
-            TryRelaxRegion(cur, (cy + 1) * _regionDimX + cx, cy + 1 < _regionDimY,
+            TryRelaxRegion(ov, cur, (cy + 1) * ov.DimX + cx, cy + 1 < ov.DimY,
                 trx, tryRegionY, b, open, ref openCount);
-            TryRelaxRegion(cur, (cy - 1) * _regionDimX + cx, cy > 0,
+            TryRelaxRegion(ov, cur, (cy - 1) * ov.DimX + cx, cy > 0,
                 trx, tryRegionY, b, open, ref openCount);
         }
 
@@ -649,19 +764,19 @@ public sealed class HierarchicalPathfinder
         return result;
     }
 
-    private void TryRelaxRegion(int from, int to, bool valid,
+    private static void TryRelaxRegion(OverlaySnapshot ov, int from, int to, bool valid,
         int trx, int tryRegionY, SearchBuffers b, int[] open, ref int openCount)
     {
         if (!valid)
             return;
 
         // Ребро существует только если между регионами есть портал.
-        Dir dir = DirectionBetween(from, to);
+        Dir dir = DirectionBetween(ov, from, to);
         if (dir == Dir.None)
             return;
 
         int idx = from * 4 + (byte)dir;
-        if (_edgeCount[idx] <= 0)
+        if (ov.EdgeCount[idx] <= 0)
             return;
 
         if (b.RClosed[to])
@@ -675,15 +790,15 @@ public sealed class HierarchicalPathfinder
         b.RParent[to] = from;
 
         // Индекс по f = g + h в куче.
-        long f = (long)tentative + RegionHeuristic(to, trx, tryRegionY);
-        RegionPush(open, ref openCount, to, (int)Math.Min(f, int.MaxValue));
+        long f = (long)tentative + RegionHeuristic(ov, to, trx, tryRegionY);
+        RegionPush(b, open, ref openCount, to, (int)Math.Min(f, int.MaxValue));
     }
 
     /// <summary>Клеточная (чебышёва) оценка между регионами, в узлах.</summary>
-    private int RegionHeuristic(int regionId, int trx, int tryRegionY)
+    private static int RegionHeuristic(OverlaySnapshot ov, int regionId, int trx, int tryRegionY)
     {
-        int dx = Math.Abs(RegionCoordX(regionId) - trx);
-        int dy = Math.Abs(RegionCoordY(regionId) - tryRegionY);
+        int dx = Math.Abs(RegionCoordX(ov, regionId) - trx);
+        int dy = Math.Abs(RegionCoordY(ov, regionId) - tryRegionY);
         return Math.Max(dx, dy);
     }
 
@@ -691,10 +806,10 @@ public sealed class HierarchicalPathfinder
     // Детальный уровень: A* по клеткам локального окна
     // ------------------------------------------------------------------
 
-    private int[] GetSegmentCached(int fx, int fy, int tx, int ty)
+    private int[] GetSegmentCached(OverlaySnapshot ov, int fx, int fy, int tx, int ty)
     {
-        int packedFrom = fy * _mapWidth + fx;
-        int packedTo = ty * _mapWidth + tx;
+        int packedFrom = fy * ov.W + fx;
+        int packedTo = ty * ov.W + tx;
         ulong key = ((ulong)packedFrom << 32) | (uint)packedTo;
 
         // P0-1: без счётчиков кэша (горячий параллельный путь).
@@ -703,7 +818,7 @@ public sealed class HierarchicalPathfinder
             return cached;
         }
 
-        int[] seg = ComputeLocalSegment(fx, fy, tx, ty);
+        int[] seg = ComputeLocalSegment(ov, fx, fy, tx, ty);
         if (seg == null)
             return null;
 
@@ -725,7 +840,7 @@ public sealed class HierarchicalPathfinder
     // Бинарные кучи (lazy-deletion A*)
     // ------------------------------------------------------------------
 
-    private static void PushMin(int[] open, SearchBuffers b, int[] value, ref int openCount, int node, int key)
+    private static void PushMin(SearchBuffers b, int[] open, Span<int> value, ref int openCount, int node, int key)
     {
         int i = openCount;
         open[openCount++] = node;
@@ -741,7 +856,7 @@ public sealed class HierarchicalPathfinder
         open[i] = node;
     }
 
-    private static int PopMin(int[] open, SearchBuffers b, int[] value, ref int openCount)
+    private static int PopMin(SearchBuffers b, int[] open, Span<int> value, ref int openCount)
     {
         int root = open[0];
         openCount--;
@@ -769,28 +884,28 @@ public sealed class HierarchicalPathfinder
         return root;
     }
 
-    private void RegionPush(int[] open, ref int openCount, int node, int key)
+    // Region-куча: буферы динамические (IndexableBuffer), value передаётся
+    // как Span — резолвит ref-поле один раз на операцию heap'а.
+    private static void RegionPush(SearchBuffers b, int[] open, ref int openCount, int node, int key)
     {
-        var b = _buffers.Value;
-        PushMin(open, b, b.RValue, ref openCount, node, key);
+        PushMin(b, open, b.RValue.Data.AsSpan(0, b.RValue.Capacity), ref openCount, node, key);
     }
 
-    private int RegionPop(int[] open, ref int openCount)
+    private static int RegionPop(SearchBuffers b, int[] open, ref int openCount)
     {
-        var b = _buffers.Value;
-        return PopMin(open, b, b.RValue, ref openCount);
+        return PopMin(b, open, b.RValue.Data.AsSpan(0, b.RValue.Capacity), ref openCount);
     }
 
     private void LocalPush(int[] open, ref int openCount, int node, int key)
     {
         var b = _buffers.Value;
-        PushMin(open, b, b.Value, ref openCount, node, key);
+        PushMin(b, open, b.Value, ref openCount, node, key);
     }
 
     private int LocalPop(int[] open, ref int openCount)
     {
         var b = _buffers.Value;
-        return PopMin(open, b, b.Value, ref openCount);
+        return PopMin(b, open, b.Value, ref openCount);
     }
 
     /// <summary>
@@ -800,25 +915,25 @@ public sealed class HierarchicalPathfinder
     /// окно включает оба региона, поэтому путь может свободно пересекать
     /// границу в любом легальном месте.
     /// </summary>
-    private int[] ComputeLocalSegment(int fx, int fy, int tx, int ty)
+    private int[] ComputeLocalSegment(OverlaySnapshot ov, int fx, int fy, int tx, int ty)
     {
-        if (tx < 0 || ty < 0 || tx >= _mapWidth || ty >= _mapHeight)
+        if (tx < 0 || ty < 0 || tx >= ov.W || ty >= ov.H)
             return null;
-        if (IsCellBlocked(tx, ty))
+        if (IsCellBlocked(ov, tx, ty))
             return null;
 
         int rx0 = fx >> RegionShift, ry0 = fy >> RegionShift;
         int rx1 = tx >> RegionShift, ry1 = ty >> RegionShift;
 
         int minRX = Math.Max(0, Math.Min(rx0, rx1) - 1);
-        int maxRX = Math.Min(_regionDimX - 1, Math.Max(rx0, rx1) + 1);
+        int maxRX = Math.Min(ov.DimX - 1, Math.Max(rx0, rx1) + 1);
         int minRY = Math.Max(0, Math.Min(ry0, ry1) - 1);
-        int maxRY = Math.Min(_regionDimY - 1, Math.Max(ry0, ry1) + 1);
+        int maxRY = Math.Min(ov.DimY - 1, Math.Max(ry0, ry1) + 1);
 
         int minX = minRX << RegionShift;
         int minY = minRY << RegionShift;
-        int maxX = Math.Min(((maxRX + 1) << RegionShift) - 1, _mapWidth - 1);
-        int maxY = Math.Min(((maxRY + 1) << RegionShift) - 1, _mapHeight - 1);
+        int maxX = Math.Min(((maxRX + 1) << RegionShift) - 1, ov.W - 1);
+        int maxY = Math.Min(((maxRY + 1) << RegionShift) - 1, ov.H - 1);
 
         int ww = maxX - minX + 1;
         int hh = maxY - minY + 1;
@@ -868,7 +983,7 @@ public sealed class HierarchicalPathfinder
                 int ny = uy + dy;
                 if (ny < minY || ny > maxY)
                     continue;
-                int nyw = ny * _mapWidth;
+                int nyw = ny * ov.W;
                 for (int dx = -1; dx <= 1; dx++)
                 {
                     if (dx == 0 && dy == 0)
@@ -877,11 +992,20 @@ public sealed class HierarchicalPathfinder
                     if (nx < minX || nx > maxX)
                         continue;
 
-                    int cellCost = _cost[nyw + nx];
+                    int cellCost = ov.Cost[nyw + nx];
                     if (cellCost == CostBlocked)
                         continue;
 
-                    int step = (dx != 0 && dy != 0) ? 14 : 10;
+                    bool diagonal = dx != 0 && dy != 0;
+                    // FIX #6: запрет «протискивания» по диагонали между двумя
+                    // стенами (corner cutting): оба ортогональных соседа должны
+                    // быть проходимы, иначе агент проскакивал щель насквозь.
+                    if (diagonal
+                        && (ov.Cost[uy * ov.W + nx] == CostBlocked
+                            || ov.Cost[nyw + ux] == CostBlocked))
+                        continue;
+
+                    int step = diagonal ? 14 : 10;
                     if (cellCost == CostWater)
                         step *= 3;
 
@@ -924,7 +1048,7 @@ public sealed class HierarchicalPathfinder
             int loc = b.RevScratch[n - 1 - i];
             int lx = loc % ww + minX;
             int ly = loc / ww + minY;
-            result[i] = ly * _mapWidth + lx;
+            result[i] = ly * ov.W + lx;
         }
         return result;
     }
@@ -938,11 +1062,11 @@ public sealed class HierarchicalPathfinder
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool IsCellBlocked(int tx, int ty)
+    private static bool IsCellBlocked(OverlaySnapshot ov, int tx, int ty)
     {
-        if ((uint)tx >= (uint)_mapWidth || (uint)ty >= (uint)_mapHeight)
+        if ((uint)tx >= (uint)ov.W || (uint)ty >= (uint)ov.H)
             return true;
-        return _cost[ty * _mapWidth + tx] == CostBlocked;
+        return ov.Cost[ty * ov.W + tx] == CostBlocked;
     }
 
     // ------------------------------------------------------------------
@@ -953,13 +1077,11 @@ public sealed class HierarchicalPathfinder
     /// Клеточная прямая видимость по Брезенхэму: сегмент свободен, если ни
     /// одна клетка по пути не блокирована стеной (вода допустима — движение
     /// напрямую сквозь воду разрешено, лишь медленнее).
-    /// </summary>
-    /// <summary>
     /// Целочисленный Брезенхем: ~5ns на клетку вместо ~30 (float-деление +
     /// Math.Round ~15ns на шаг). SmoothPath делает LOS на каждый узел пути —
     /// при 200 узлах × 30 шагов это был главный жор сглаживания.
     /// </summary>
-    private bool HasLineOfSight(int x0, int y0, int x1, int y1)
+    private static bool HasLineOfSight(OverlaySnapshot ov, int x0, int y0, int x1, int y1)
     {
         int dx = Math.Abs(x1 - x0);
         int dy = Math.Abs(y1 - y0);
@@ -968,37 +1090,10 @@ public sealed class HierarchicalPathfinder
         int err = dx - dy;
         while (true)
         {
-            if (IsCellBlocked(x0, y0))
+            if (IsCellBlocked(ov, x0, y0))
                 return false;
             if (x0 == x1 && y0 == y1)
                 return true;
-            int e2 = err << 1;
-            if (e2 > -dy) { err -= dy; x0 += sx; }
-            if (e2 < dx) { err += dx; y0 += sy; }
-        }
-    }
-
-    /// <summary>
-    /// Длина водного отрезка вдоль LOS (тайлы воды по Брезенхему).
-    /// Стены здесь не проверяем — их уже отсеял HasLineOfSight.
-    /// #14: оставлен для совместимости; горячий путь TryFindPath использует
-    /// LineOfSightWithWater (один проход вместо двух).
-    /// </summary>
-    private int WaterCrossingLength(int x0, int y0, int x1, int y1)
-    {
-        int dx = Math.Abs(x1 - x0);
-        int dy = Math.Abs(y1 - y0);
-        int sx = x0 < x1 ? 1 : -1;
-        int sy = y0 < y1 ? 1 : -1;
-        int err = dx - dy;
-        int water = 0;
-        while (true)
-        {
-            if ((uint)x0 < (uint)_mapWidth && (uint)y0 < (uint)_mapHeight
-                && _cost[y0 * _mapWidth + x0] == CostWater)
-                water++;
-            if (x0 == x1 && y0 == y1)
-                return water;
             int e2 = err << 1;
             if (e2 > -dy) { err -= dy; x0 += sx; }
             if (e2 < dx) { err += dx; y0 += sy; }
@@ -1011,7 +1106,7 @@ public sealed class HierarchicalPathfinder
     /// тайлов отрезка в <paramref name="waterLength"/>. Экономит ~50% работы
     /// прямого коридора против пары HasLineOfSight + WaterCrossingLength.
     /// </summary>
-    private bool LineOfSightWithWater(int x0, int y0, int x1, int y1, out int waterLength)
+    private static bool LineOfSightWithWater(OverlaySnapshot ov, int x0, int y0, int x1, int y1, out int waterLength)
     {
         waterLength = 0;
         int dx = Math.Abs(x1 - x0);
@@ -1021,10 +1116,12 @@ public sealed class HierarchicalPathfinder
         int err = dx - dy;
         while (true)
         {
-            if (IsCellBlocked(x0, y0))
+            if ((uint)x0 >= (uint)ov.W || (uint)y0 >= (uint)ov.H)
+                return false; // вышли за карту — LOS нет
+            int cell = ov.Cost[y0 * ov.W + x0];
+            if (cell == CostBlocked)
                 return false;
-            if ((uint)x0 < (uint)_mapWidth && (uint)y0 < (uint)_mapHeight
-                && _cost[y0 * _mapWidth + x0] == CostWater)
+            if (cell == CostWater)
                 waterLength++;
             if (x0 == x1 && y0 == y1)
                 return true;
@@ -1041,7 +1138,7 @@ public sealed class HierarchicalPathfinder
     /// scratch вызывателя), возвращает число точек. Семантика 1-в-1 со старым
     /// List-вариантом (включая финал и fallback на последнюю точку).
     /// </summary>
-    private int SmoothPath(int sx, int sy, int tx, int ty, Span<int> path, Span<int> destination)
+    private static int SmoothPath(OverlaySnapshot ov, int sx, int sy, int tx, int ty, Span<int> path, Span<int> destination)
     {
         int outLen = 0;
         int curX = sx;
@@ -1052,10 +1149,10 @@ public sealed class HierarchicalPathfinder
         for (int i = 0; i < path.Length; i++)
         {
             int packed = path[i];
-            int px = packed % _mapWidth;
-            int py = packed / _mapWidth;
+            int px = packed % ov.W;
+            int py = packed / ov.W;
 
-            if (HasLineOfSight(curX, curY, px, py))
+            if (HasLineOfSight(ov, curX, curY, px, py))
             {
                 lastX = px;
                 lastY = py;
@@ -1066,7 +1163,7 @@ public sealed class HierarchicalPathfinder
             {
                 if ((uint)outLen >= (uint)destination.Length)
                     return 0; // scratch переполнен — вызыватель retry'ит
-                destination[outLen++] = lastY * _mapWidth + lastX;
+                destination[outLen++] = lastY * ov.W + lastX;
                 curX = lastX;
                 curY = lastY;
             }
@@ -1078,17 +1175,17 @@ public sealed class HierarchicalPathfinder
         }
 
         // Финал: марш мимо последней опорной к цели.
-        if (HasLineOfSight(curX, curY, tx, ty))
+        if (HasLineOfSight(ov, curX, curY, tx, ty))
         {
             if ((uint)outLen >= (uint)destination.Length)
                 return 0;
-            destination[outLen++] = ty * _mapWidth + tx;
+            destination[outLen++] = ty * ov.W + tx;
         }
         else if (lastX >= 0 && !(lastX == tx && lastY == ty))
         {
             if ((uint)outLen >= (uint)destination.Length)
                 return 0;
-            destination[outLen++] = lastY * _mapWidth + lastX;
+            destination[outLen++] = lastY * ov.W + lastX;
         }
         else if (outLen == 0)
         {

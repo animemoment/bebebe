@@ -43,12 +43,30 @@ public sealed class WorkZoneManager
     private static WorkZone AdaptWork(Zone z)
     {
         if (z == null || z.Kind != ZoneKind.Work) return null;
-        var w = new WorkZone(z.Id, z.Name, z.CenterX, z.CenterY, z.RadiusTiles,
-            z.TilesTarget, z.MaxWorkers, z.JobMask, ToIntTiles(z.Tiles), z.ChunkIndices);
-        w.PriorityOverride = z.PriorityOverride;
+        // DTO собирается из ОДНОГО согласованного immutable-снапшота формы зоны
+        // (Zone.Shape публикуется volatile-заменой ссылки в ZoneManager). Раньше
+        // поля читались по отдельности — параллельная пересборка из UI давала
+        // разорванное состояние, а общий мутабельный HashSet тайлов мог «гореть»
+        // при итерации воркерами («Collection was modified»).
+        var shape = Volatile.Read(ref z.Shape);
+        if (shape != null)
+        {
+            var tiles = new HashSet<(int, int)>(shape.TileSet.Count);
+            foreach (var t in shape.TileSet)
+                tiles.Add((t.X, t.Y));
+            var w = new WorkZone(z.Id, z.Name, z.CenterX, z.CenterY, shape.RadiusTiles,
+                shape.TilesTarget, shape.MaxWorkers, shape.JobMask, tiles, shape.ChunkIndices);
+            w.PriorityOverride = shape.PriorityOverride;
+            w.AssignedCount = Volatile.Read(ref z.AssignedCount);
+            return w;
+        }
+        // Страховка: Shape не опубликован (зона создана вне ZoneManager) — старый путь.
+        var legacy = new WorkZone(z.Id, z.Name, z.CenterX, z.CenterY, z.RadiusTiles,
+            z.TilesTarget, z.MaxWorkers, z.JobMask, ToIntTiles(z.Tiles), z.ChunkIndices ?? new List<int>());
+        legacy.PriorityOverride = z.PriorityOverride;
         // AssignedCount — поле; копируем текущее значение для чтения.
-        w.AssignedCount = Volatile.Read(ref z.AssignedCount);
-        return w;
+        legacy.AssignedCount = Volatile.Read(ref z.AssignedCount);
+        return legacy;
     }
 
     private static HashSet<(int, int)> ToIntTiles(HashSet<(int X, int Y)> tiles)

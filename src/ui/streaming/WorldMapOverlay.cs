@@ -24,6 +24,9 @@ public partial class WorldMapOverlay : Node2D
 	private CanvasLayer _uiLayer;
 	private Button _closeBtn;
 	private readonly HashSet<Vector2I> _visibleChunksThisFrame = new();
+	// Буфер выгрузки чанков: ключи копируются сюда перед UnloadChunk, чтобы не мутировать
+	// _chunkTileCache во время итерации по его Keys (InvalidOperationException).
+	private readonly List<Vector2I> _evictBuffer = new(64);
 	private ulong _seed;
 	private uint _version;
 	private bool _isDragging;
@@ -63,14 +66,24 @@ public partial class WorldMapOverlay : Node2D
 		if (!EnsureTileSet())
 			return;
 
-		HideGameLayer();
+		// FIX: единый симметричный переключатель видимости мира (см. GameLayerVisibility).
+		// Раньше здесь были SetGameCanvasVisible(false)+HideGameLayer(): CanvasLayer HUD
+		// скрывался, а при закрытии его некому было включать обратно — интерфейс игры
+		// «пропадал» после CloseMap(). Плюс HideGameLayer прятал только прямые TileMapLayer
+		// детей Main: агенты (AgentRenderer) и прочие Node2D-рендереры оставались видимыми
+		// и рисовались ПОВЕРХ интерфейса мировой карты.
+		// Теперь одним вызовом: весь игровой мир (тайлы, АГЕНТЫ, предметы, тени, фон,
+		// камера) И HUD-слой скрыты; порядок вызовов важен — сначала гасим мир/HUD, потом
+		// включаем карту, чтобы ни на один кадр ничего не осталось поверх интерфейса карты.
+		GameLayerVisibility.SetGameVisible(this, false);
+
 		ClearAllCache();
 		Visible = true;
+		_mapLayer.Visible = true; // на случай reopen: CloseMap гасит слой карты
 		_uiLayer.Visible = true;
 		_camera.Enabled = true;
 		_camera.MakeCurrent();
 		ClampCamera();
-		SetGameCanvasVisible(false);
 		LoadVisibleChunks();
 	}
 
@@ -81,14 +94,17 @@ public partial class WorldMapOverlay : Node2D
 		_uiLayer.Visible = false;
 		_camera.Enabled = false;
 		_isDragging = false;
-		SetGameCanvasVisible(true);
-		ShowGameLayer();
 
-		Node main = GetTree().Root.GetChild(0);
-		Camera2D baseCam = main.GetNodeOrNull<Camera2D>("Camera");
+		// FIX #1 (интерфейс пропадал): зеркальный вызов к OpenMap — показываем ВСЕ игровые
+		// слои, включая CanvasLayer/HUD. Ни один узел не может остаться скрытым: набор
+		// скрываемых на открытии и на закрытии задан одним методом.
+		GameLayerVisibility.SetGameVisible(this, true);
+
+		Camera2D baseCam = GameLayerVisibility.FindGameCamera(this);
 		if (baseCam != null)
 		{
 			baseCam.Enabled = true;
+			baseCam.Visible = true;
 			baseCam.MakeCurrent();
 		}
 	}
@@ -211,14 +227,20 @@ public partial class WorldMapOverlay : Node2D
 			}
 		}
 
-		// Удаление невидимых чанков
+		// Удаление невидимых чанков.
+		// FIX: UnloadChunk() делает _chunkTileCache.Remove(chk) — раньше это выполнялось
+		// прямо во время foreach по _chunkTileCache.Keys, что на каждом панорамном движении
+		// камеры (при любом выгружаемом чанке) роняло симуляцию с
+		// InvalidOperationException ("Collection was modified"). Ключи копируем в список
+		// перед удалением.
+		_evictBuffer.Clear();
 		foreach (var chk in _chunkTileCache.Keys)
 		{
 			if (!_visibleChunksThisFrame.Contains(chk))
-			{
-				UnloadChunk(chk);
-			}
+				_evictBuffer.Add(chk);
 		}
+		for (int i = 0; i < _evictBuffer.Count; i++)
+			UnloadChunk(_evictBuffer[i]);
 
 		// Загрузка/обновление видимых чанков
 		foreach (var chk in _visibleChunksThisFrame)
@@ -267,6 +289,12 @@ public partial class WorldMapOverlay : Node2D
 
 	private void UnloadChunk(Vector2I chunk)
 	{
+		// FIX: SetCell(..., sourceId=-1) в Godot 4 НЕ стирает клетку (стереть можно только
+		// EraseCell). Раньше здесь и в ClearAllCache стоял «-1» — клетки оставались в
+		// тайлмапе со старыми атлас-координатами. При выгрузке/загрузке соседних чанков
+		// (панорамирование, зум) на карте накапливались «призрачные» тайлы биомов из уже
+		// невидимых областей; после CloseMap() они продолжали висеть поверх игровой карты
+		// до следующего открытия. Теперь — корректная очистка через EraseCell.
 		_chunkTileCache.Remove(chunk);
 
 		int startX = chunk.X * ChunkSize;
@@ -276,13 +304,13 @@ public partial class WorldMapOverlay : Node2D
 		for (int y = startY; y < endY; y++)
 		{
 			for (int x = startX; x < endX; x++)
-				_mapLayer.SetCell(new Vector2I(x, y), -1, new Vector2I(-1, -1));
+				_mapLayer.EraseCell(new Vector2I(x, y));
 		}
 	}
 
 	private void ClearAllCache()
 	{
-		// Очищаем TileMapLayer для всех ранее загруженных чанков
+		// Очищаем TileMapLayer для всех ранее загруженных чанков (EraseCell — см. FIX выше).
 		foreach (var kvp in _chunkTileCache)
 		{
 			Vector2I chunk = kvp.Key;
@@ -293,7 +321,7 @@ public partial class WorldMapOverlay : Node2D
 			for (int y = startY; y < endY; y++)
 			{
 				for (int x = startX; x < endX; x++)
-					_mapLayer.SetCell(new Vector2I(x, y), -1, new Vector2I(-1, -1));
+					_mapLayer.EraseCell(new Vector2I(x, y));
 			}
 		}
 		_chunkTileCache.Clear();
@@ -320,49 +348,25 @@ public partial class WorldMapOverlay : Node2D
 			halfHeight * 2f >= mapHeight ? mapHeight / 2f : Mathf.Clamp(_camera.Position.Y, halfHeight, mapHeight - halfHeight));
 	}
 
-	private void SetGameCanvasVisible(bool visible)
-	{
-		Node main = GetTree().Root.GetChild(0);
-		main.GetNodeOrNull<CanvasLayer>("CanvasLayer")?.Set("visible", visible);
-	}
-
-	private void HideGameLayer()
-	{
-		Node main = GetTree().Root.GetChild(0);
-		if (main == null) return;
-
-		foreach (var child in main.GetChildren())
-		{
-			if (child is TileMapLayer tml)
-				tml.Visible = false;
-		}
-
-		var cam = main.GetNodeOrNull<Camera2D>("Camera");
-		if (cam != null && cam.IsInsideTree())
-			cam.Visible = false;
-	}
-
-	private void ShowGameLayer()
-	{
-		Node main = GetTree().Root.GetChild(0);
-		if (main == null) return;
-
-		foreach (var child in main.GetChildren())
-		{
-			if (child is TileMapLayer tml)
-				tml.Visible = true;
-		}
-
-		var cam = main.GetNodeOrNull<Camera2D>("Camera");
-		if (cam != null && cam.IsInsideTree())
-			cam.Visible = true;
-	}
+	// Удалённые SetGameCanvasVisible/HideGameLayer/ShowGameLayer: они искали ноды через
+	// GetTree().Root.GetChild(0) (неверный путь — см. шапку файла) и покрывали только
+	// TileMapLayer-детей; логика целиком переехала в GameLayerVisibility.SetGameVisible,
+	// вызываемую симметрично из OpenMap()/CloseMap().
 
 	private static Vector2I GetAtlasCoordsRaw(int tileIndex)
 	{
-		if (tileIndex < 3) return new Vector2I(0, tileIndex);
-		if (tileIndex < 6) return new Vector2I(1, tileIndex - 3);
-		if (tileIndex < 9) return new Vector2I(2, tileIndex - 6);
-		return new Vector2I(tileIndex - 6, 0);
+		// Раскладка атласа ForWorldMap.png проверена попиксельно (тайлы 16px):
+		//   col0 rows0-2 = Sand, col1 rows0-2 = Steppe, col2 rows0-2 = Water,
+		//   col3 row0 = Mountain (серый), col4 row0 = Plains (ярко-зелёный),
+		//   col5 row0 = Swamp, col6..col9 row0 = Forest variants.
+		// Остальное пространство — прозрачный деджен (alpha=0).
+		// FIX: добавлена защита от выхода за диапазон — раньше неожиданный tileId
+		// молча читал пустые ячейки атласа (прозрачные дыры на карте).
+		if (tileIndex < 0 || tileIndex >= 16)
+			return new Vector2I(0, 0);
+		if (tileIndex < 3) return new Vector2I(0, tileIndex);        // Sand variants
+		if (tileIndex < 6) return new Vector2I(1, tileIndex - 3);    // Steppe variants
+		if (tileIndex < 9) return new Vector2I(2, tileIndex - 6);    // Water variants
+		return new Vector2I(tileIndex - 6, 0);                       // Mountain/Plains/Swamp/Forest (row 0)
 	}
 }
