@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "G/Sr+90y9E8=",
+  "success": true,
+  "projectFilePath": "/workspace/Game.csproj",
+  "expectedPackageFiles": [
+    "/root/.nuget/packages/godot.sourcegenerators/4.7.0/godot.sourcegenerators.4.7.0.nupkg.sha512",
+    "/root/.nuget/packages/godotsharp/4.7.0/godotsharp.4.7.0.nupkg.sha512",
+    "/root/.nuget/packages/godotsharpeditor/4.7.0/godotsharpeditor.4.7.0.nupkg.sha512"
+  ],
+  "logs": []
+}

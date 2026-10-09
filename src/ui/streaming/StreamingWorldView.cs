@@ -31,7 +31,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
     private const int TilePx = 64;
 
     [Export] public ulong WorldSeed = 0x0123456789ABCDEFUL;
-    [Export] public uint GeneratorVersion = 3;
+    [Export] public uint GeneratorVersion = Game.Core.WorldStreaming.Layers.WorldLayerStack.GeneratorVersion; // v4 — единый конвейер WorldLayerStack
     [Export] public int MaxConcurrency = 4;
     [Export] public string SaveDirectory = ""; // "" => user://infinite_world_lab_cache
     [Export] public bool WipeStoreOnStart = false; // true — стенд стартует с чистого хранилища

@@ -1,10 +1,20 @@
-﻿# Godot 4 & C# ignores
-.godot/
-.mono/
-bin/
-obj/
-*.sln.DotSettings.user
-.vs/
-.idea/
-*.tmp
-*.log
+# Godot/Mono Build Artifacts
+.godot/mono/temp/
+*.dll
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+*.cache
+*.AssemblyInfo.cs
+*.AssemblyAttributes.cs
+*.GeneratedMSBuildEditorConfig.editorconfig
+*.FileListAbsolute.txt
+*.Up2Date
+*.genruntimeconfig.cache
+project.assets.json
+project.nuget.cache
+Game.csproj.nuget.*
+
+# Backup Files
+*.bak
+*.bak_*

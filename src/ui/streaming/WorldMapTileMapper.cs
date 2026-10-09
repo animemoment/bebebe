@@ -27,6 +27,11 @@ public static class WorldMapTileMapper
             BiomeType.Plains    => 10,
             BiomeType.Forest    => 12 + Math.Clamp(variant, 0, 3),
             BiomeType.Swamp     => 11,
+            // Новые биомы Уиттакера: снежных/хвойных атлас-тайлов нет — рендер существующими (план §4).
+            BiomeType.Tundra    => 3 + Math.Clamp(variant, 0, 2),   // степной тайл (светлая трава)
+            BiomeType.Taiga     => 12 + Math.Clamp(variant, 0, 3),  // лесной тайл
+            BiomeType.Savanna   => 3 + Math.Clamp(variant, 0, 2),   // степной тайл
+            BiomeType.Grassland => 10,                              // поляной тайл
             _                   => 10
         };
     }

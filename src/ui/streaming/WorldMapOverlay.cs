@@ -406,7 +406,10 @@ public partial class WorldMapOverlay : Node2D
 							regionTraits[sw], regionTraits[sw + 1],
 							u, v);
 
-						TilePick pick = BiomeMapper.Pick(seed, version, x, y, traits);
+						// Единый конвейер (план §3.3): мировая карта рисуется из WorldLayerStack.SampleMacro.
+						var macro = Game.Core.WorldStreaming.Layers.WorldLayerStack.SampleMacro(seed, version, x, y);
+						TilePick pick = new TilePick(macro.Biome,
+							Game.Core.WorldStreaming.Layers.BiomeClassifier.Variant(seed, version, x, y, macro.Biome));
 						int t = WorldMapTileMapper.GetTileId(pick.Biome, pick.Variant);
 
 						int i = y * GridWidth + x;

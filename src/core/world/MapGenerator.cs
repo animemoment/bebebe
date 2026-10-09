@@ -664,6 +664,7 @@ public static class MapGenerator
     /// <param name="spawnCenterX">Ориентир центра спавна для falloff. -1 = [0,0].</param>
     /// <param name="spawnCenterY">Ориентир центра спавна для falloff. -1 = [0,0].</param>
     /// <returns>MapData с размерами width × height, Ground/Tree/Stones/Humidity/Fertility заполнены.</returns>
+    [Obsolete("P0-seam: adjustedSeed зависит от bbox → чанки не стыкуются. Используйте WorldLayerStack/LocalMapBuilder (план §3.1).")]
     public static MapData GenerateRegion(
         int minTileX, int maxTileX, int minTileY, int maxTileY,
         uint seed, bool isPlayableMap = false,
