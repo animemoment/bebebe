@@ -19,8 +19,14 @@ public static class MapGenerator
     public const float MinGrassRatio = 0.55f;
     public const float MinLandConnectivity = 0.92f;
 
+    /// <summary>Флаг отката: true — старый островной генератор, false (по умолчанию) — WorldLayerStack.</summary>
+    public static bool UseLegacyIslandGenerator { get; set; } = false;
+
     public static MapData Generate(int width, int height, uint seed)
     {
+        if (!UseLegacyIslandGenerator)
+            return LocalMapBuilder.Build(seed, 0, 0, width, height, playable: true);
+
         var paramRng = new Random(unchecked((int)(seed * 2654435761u)));
 
         float heightScale = 90f + (float)paramRng.NextDouble() * 50f;
@@ -651,19 +657,12 @@ public static class MapGenerator
     // === Региональный API (§24-§33): генерация мира по любым long-координатам ===
 
     /// <summary>
-    /// Генерирует карту для произвольной области. Работает с любыми координатами мира,
-    /// не только с [0..512). Параметры геймплейных гарантий определяются флагом.
+    /// УСТАРЕЛО (P0-фикс швов): раньше генерировало регион с локальным сидом от bbox —
+    /// соседние чанки не стыковались. Теперь — тонкая обёртка над WorldLayerStack:
+    /// значения зависят только от (seed, абсолютные координаты), без adjustedSeed.
+    /// isPlayableMap=true добавляет стартовые гарантии (поляна, поиск суши).
     /// </summary>
-    /// <param name="minTileX">Левая граница области в клетках (может быть отрицательным).</param>
-    /// <param name="maxTileX">Правая граница.</param>
-    /// <param name="minTileY">Верхняя граница.</param>
-    /// <param name="maxTileY">Нижняя граница.</param>
-    /// <param name="seed">Сид мира (общий для всех регионов).</param>
-    /// <param name="isPlayableMap">true — стартовая карта с гарантиями (озёра, связность, поляна);
-    /// false — просто террейн без ограничений.</param>
-    /// <param name="spawnCenterX">Ориентир центра спавна для falloff. -1 = [0,0].</param>
-    /// <param name="spawnCenterY">Ориентир центра спавна для falloff. -1 = [0,0].</param>
-    /// <returns>MapData с размерами width × height, Ground/Tree/Stones/Humidity/Fertility заполнены.</returns>
+    [System.Obsolete("Используйте LocalMapBuilder.Build или WorldLayerStack.SampleLocal напрямую.", false)]
     public static MapData GenerateRegion(
         int minTileX, int maxTileX, int minTileY, int maxTileY,
         uint seed, bool isPlayableMap = false,
@@ -671,74 +670,12 @@ public static class MapGenerator
     {
         int width = maxTileX - minTileX;
         int height = maxTileY - minTileY;
-
         if (width <= 0 || height <= 0)
-            throw new ArgumentException("Ширина и высота должны быть > 0.");
-
-        var paramRng = new Random(unchecked((int)(seed * 2654435761u)));
-
-        float heightScale = 90f + (float)paramRng.NextDouble() * 50f;
-        float groveScale = 60f + (float)paramRng.NextDouble() * 40f;
-        float waterThreshold = 0.38f + (float)paramRng.NextDouble() * 0.04f;
-        float mountainThreshold = 0.70f + (float)paramRng.NextDouble() * 0.06f;
-        float groveThreshold = 0.55f + (float)paramRng.NextDouble() * 0.07f;
-        int octaves = 4 + paramRng.Next(2);
-        float innerDensity = 0.78f + (float)paramRng.NextDouble() * 0.17f;
-        int groveRadiusMin = 5 + paramRng.Next(3);
-        int groveRadiusMax = groveRadiusMin + 2 + paramRng.Next(4);
-
-        // Для isPlayableMap берём seed как есть (детерминировано от выбора игрока);
-        // для бесшовного стриминга добавляем локальное смещение чтобы seed был уникальным на регион.
-        uint adjustedSeed = isPlayableMap ? seed : unchecked((uint)(seed * 2654435761u) ^ (uint)HashCoords(minTileX, minTileY));
-
-        if (isPlayableMap)
-        {
-            // Полная генерация карты с проверками — аналог оригинального Generate(), но поддерживает любой spawnCenter.
-            int cx = spawnCenterX >= 0 ? spawnCenterX : (minTileX + maxTileX) / 2;
-            int cy = spawnCenterY >= 0 ? spawnCenterY : (minTileY + maxTileY) / 2;
-
-            MapData best = null;
-            float bestScore = float.NegativeInfinity;
-
-            for (int attempt = 0; attempt < 4; attempt++)
-            {
-                float wt = waterThreshold - attempt * 0.015f;
-                uint s = adjustedSeed + (uint)attempt * 7919u;
-                var data = GenerateOnce(width, height, s,
-                    heightScale, groveScale, wt, mountainThreshold, groveThreshold, octaves,
-                    innerDensity, groveRadiusMin, groveRadiusMax,
-                    unchecked((uint)(s * 2246822519u + 999u)),
-                    true, cx - minTileX, cy - minTileY);
-                float score = Score(data, width, height);
-                if (best == null || score > bestScore) { best = data; bestScore = score; }
-                if (MeetsPlayability(data, width, height))
-                    return data;
-            }
-
-            return best;
-        }
-        else
-        {
-            // Бесшовный режим: один проход, без озёрных лимитов, без связности, без стартовой поляны.
-            uint s = adjustedSeed;
-            return GenerateOnce(width, height, s,
-                heightScale, groveScale, waterThreshold, mountainThreshold, groveThreshold, octaves,
-                innerDensity, groveRadiusMin, groveRadiusMax,
-                unchecked((uint)(s * 2246822519u + 999u)),
-                isPlayableMap: false);
-        }
-    }
-
-    /// <summary>Deterministic hash для комбинации координат региона (для seeding стриминговых чанков).</summary>
-    private static uint HashCoords(int x, int y)
-    {
-        unchecked
-        {
-            uint h = 0x811c9dc5u;
-            h ^= (uint)x; h *= 0x01000193u;
-            h ^= (uint)y; h *= 0x01000193u;
-            return h;
-        }
+            throw new System.ArgumentException("Ширина и высота должны быть > 0.");
+        return LocalMapBuilder.Build(seed, minTileX, minTileY, width, height,
+            playable: isPlayableMap,
+            spawnX: spawnCenterX >= 0 ? spawnCenterX : (minTileX + maxTileX) / 2,
+            spawnY: spawnCenterY >= 0 ? spawnCenterY : (minTileY + maxTileY) / 2);
     }
 
     /// <summary>

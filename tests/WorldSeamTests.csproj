@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WorldSeamTests</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>CS0618;CS0612;CS0169;CS0414;CS8632;CS0649</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Заглушка Godot API (создана на этапе аудита, вне репозитория) -->
+    <Compile Include="/tmp/godotstub/GodotStubs.cs" />
+    <!-- Ядро world: новый стек слоёв + зависимости без UI -->
+    <Compile Include="../src/core/world/WorldNoise.cs" />
+    <Compile Include="../src/core/world/layers/*.cs" />
+    <Compile Include="../src/core/world/BiomeType.cs" />
+    <Compile Include="../src/core/world/BiomeMapper.cs" />
+    <Compile Include="../src/core/world/TileType.cs" />
+    <Compile Include="../src/core/world/MapData.cs" />
+    <Compile Include="../src/core/world/HumidityMap.cs" />
+    <Compile Include="../src/core/world/FertilityMap.cs" />
+    <Compile Include="../src/core/world/GridHelper.cs" />
+    <Compile Include="../src/core/world/LocalMapBuilder.cs" />
+    <Compile Include="../src/core/world/MapGenerator.cs" />
+    <Compile Include="../src/core/world/RiverGenerator.cs" />
+    <Compile Include="../src/core/world/NoiseGenerator.cs" />
+    <Compile Include="../src/core/world/MountainTileHelper.cs" />
+    <Compile Include="../src/core/world/WallTileHelper.cs" />
+    <Compile Include="../src/core/world/BuildingType.cs" />
+    <Compile Include="../src/core/world/FarmYield.cs" />
+    <!-- Стриминг мира -->
+    <Compile Include="../src/core/world/streaming/generation/RegionKey.cs" />
+    <Compile Include="../src/core/world/streaming/generation/RegionTraits.cs" />
+    <Compile Include="../src/core/world/streaming/generation/WorldChunk.cs" />
+    <Compile Include="../src/core/world/streaming/generation/GeneratedCell.cs" />
+    <Compile Include="../src/core/world/streaming/generation/WorldCoordinates.cs" />
+    <Compile Include="../src/core/world/streaming/generation/WorldRegions.cs" />
+    <Compile Include="../src/core/world/streaming/generation/WorldFeatures.cs" />
+    <Compile Include="../src/core/world/streaming/generation/WorldFeatureGenerator.cs" />
+    <Compile Include="../src/core/world/streaming/generation/GpuChunkGenerator.cs" />
+    <Compile Include="../src/core/world/streaming/generation/WorldChunkGeneratorTiming.cs" />
+    <Compile Include="../src/core/world/streaming/generation/WorldChunkGenerator.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+</Project>
