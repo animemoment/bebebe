@@ -17,21 +17,25 @@ public partial class WorldMapOverlay : Node2D
 	private const float ZoomFactor = 1.2f;
 	private const float PanSpeed = 900f;
 
-	// --- Dirty-state cache: на каждый загруженный чанк храним cached tile index ---
-	private readonly Dictionary<Vector2I, short[]> _chunkTileCache = new();
+	// Кэш загруженных чанков: seed/version меняются только через Initialize→ClearAllCache,
+	// поэтому готовый чанк достаточно сгенерировать один раз — пересчёт клеток не нужен.
+	private readonly HashSet<Vector2I> _loadedChunks = new();
+	private readonly List<Vector2I> _toUnload = new();
 	private Camera2D _camera;
 	private TileMapLayer _mapLayer;
 	private CanvasLayer _uiLayer;
 	private Button _closeBtn;
 	private readonly HashSet<Vector2I> _visibleChunksThisFrame = new();
 	private readonly Dictionary<CanvasItem, bool> _savedCanvasItemVisibility = new();
-	private CanvasLayer _gameCanvasLayer;
-	private bool _savedCanvasLayerVisibility;
-	private bool _hasSavedCanvasLayerVisibility;
+	private readonly Dictionary<CanvasLayer, bool> _savedCanvasLayerVisibility = new();
 	private bool _savedGameCameraEnabled;
+	private bool _gameCameraSaved;
 	private ulong _seed;
 	private uint _version;
 	private bool _isDragging;
+	private Vector2 _lastCameraPosition = Vector2.Zero;
+	private Vector2 _lastZoom = Vector2.Zero;
+	private Vector2 _lastViewportSize = Vector2.Zero;
 
 	// Пресчитанный atlas-coord lookup (16 элементов)
 	private static readonly Vector2I[] AtlasCoordsCached = new Vector2I[16];
@@ -72,23 +76,25 @@ public partial class WorldMapOverlay : Node2D
 			return;
 
 		HideGameLayer();
-		ClearAllCache();
 		_mapLayer.Visible = true;
 		Visible = true;
 		_uiLayer.Visible = true;
 		_camera.Enabled = true;
 		_camera.MakeCurrent();
 		ClampCamera();
+		// Принудительно пересчитываем видимую область (позиция/зум могли не измениться).
+		_lastCameraPosition = Vector2.Zero;
+		_lastZoom = Vector2.Zero;
+		_lastViewportSize = Vector2.Zero;
 		LoadVisibleChunks();
 	}
 
 	public void CloseMap()
 	{
-		if (!Visible && _savedCanvasItemVisibility.Count == 0 && !_hasSavedCanvasLayerVisibility)
+		if (!Visible && _savedCanvasItemVisibility.Count == 0 && _savedCanvasLayerVisibility.Count == 0)
 			return;
 
 		Visible = false;
-		_mapLayer.Visible = true;
 		_uiLayer.Visible = false;
 		_camera.Enabled = false;
 		_isDragging = false;
@@ -100,6 +106,12 @@ public partial class WorldMapOverlay : Node2D
 			baseCam.MakeCurrent();
 	}
 
+	public override void _ExitTree()
+	{
+		if (_closeBtn != null)
+			_closeBtn.Pressed -= CloseMap;
+	}
+
 	public override void _UnhandledInput(InputEvent @event)
 	{
 		if (!Visible || !IsInsideTree())
@@ -109,6 +121,8 @@ public partial class WorldMapOverlay : Node2D
 		{
 			if (mouse.ButtonIndex is MouseButton.Middle or MouseButton.Right)
 			{
+				// Держим флаг в актуальном состоянии: если событие отпускания
+				// перехвачено UI, _Process проверит фактическое нажатие и сбросит залипание.
 				_isDragging = mouse.Pressed;
 				GetViewport().SetInputAsHandled();
 				return;
