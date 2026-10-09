@@ -11,8 +11,11 @@ namespace Game.Main;
 
 public partial class Main : Node2D
 {
-	private const ulong WorldMapSeed = 0x0123456789ABCDEFUL;
-	private const uint WorldGeneratorVersion = 3;
+	// Единый сид текущего запуска: КАЖДЫЙ старт процесса — новый случайный сид
+	// (WorldSeedProvider), один источник истины для мировой карты, стримера чанков
+	// и локальной карты («окна» в мир). Порядок «сверху вниз»: сначала мир, потом всё остальное.
+	private static ulong WorldMapSeed => Game.Core.WorldStreaming.Layers.WorldSeedProvider.Current;
+	private const uint WorldGeneratorVersion = Game.Core.WorldStreaming.Layers.WorldLayerStack.GeneratorVersion; // v4: единый конвейер слоёв (старые сохранения несовместимы)
 	private const long WorldRegionsX = 2048; // регионов по X (мировая карта §23)
 	private const long WorldRegionsY = 1024; // регионов по Y
 	private const long WorldRegionCells = 512; // клеток в регионе
@@ -178,15 +181,13 @@ public partial class Main : Node2D
 		int spawnTileX = (int)(region.X * WorldRegionCells + WorldRegionCells / 2);
 		int spawnTileY = (int)(region.Y * WorldRegionCells + WorldRegionCells / 2);
 
-		var mapData = MapGenerator.GenerateRegion(
-			spawnTileX - MapRenderer.MapWidth / 2,
-			spawnTileX + MapRenderer.MapWidth / 2,
-			spawnTileY - MapRenderer.MapHeight / 2,
-			spawnTileY + MapRenderer.MapHeight / 2,
-			unchecked((uint)WorldMapSeed),
-			isPlayableMap: true,
-			spawnCenterX: spawnTileX,
-			spawnCenterY: spawnTileY);
+		// Единый генератор (план §3.2): локальная карта = «окно» в мир из WorldLayerStack.
+		// Детерминировано только от (WorldMapSeed, WorldGeneratorVersion, центр региона);
+		// совпадает с мировой картой на тех же координатах (лес в мире → деревья в локале).
+		var mapData = Game.Core.WorldStreaming.Layers.LocalMapBuilder.BuildPlayableWindow(
+				WorldMapSeed, WorldGeneratorVersion,
+				spawnTileX, spawnTileY,
+				MapRenderer.MapWidth, MapRenderer.MapHeight);
 
 		// Задаём внешнюю карту ДО вызова StartAsync, чтобы StartAsync увидел _hasExternalMap
 		_mapRenderer.ExternalPendingMap = mapData;

@@ -1,10 +1,7 @@
-﻿# Godot 4 & C# ignores
-.godot/
-.mono/
+# .NET build artifacts
 bin/
 obj/
-*.sln.DotSettings.user
-.vs/
-.idea/
-*.tmp
+
+# Logs and temp files
 *.log
+*.tmp

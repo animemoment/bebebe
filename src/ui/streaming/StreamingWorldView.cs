@@ -30,8 +30,11 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
     // на клетку это давало «пиксельную кашу» вместо тайлов.
     private const int TilePx = 64;
 
-    [Export] public ulong WorldSeed = 0x0123456789ABCDEFUL;
-    [Export] public uint GeneratorVersion = 3;
+    // Сид мира: 0 (или не задан в сцене) ⇒ брать сид текущего запуска из WorldSeedProvider
+    // («каждый раз новый мир»). Явный ненулевой сид в [Export] позволяет зафиксировать мир
+    // для отладки/стендов — детерминизм сохраняется.
+    [Export] public ulong WorldSeed = 0UL;
+    [Export] public uint GeneratorVersion = Game.Core.WorldStreaming.Layers.WorldLayerStack.GeneratorVersion; // v4 — единый конвейер WorldLayerStack
     [Export] public int MaxConcurrency = 4;
     [Export] public string SaveDirectory = ""; // "" => user://infinite_world_lab_cache
     [Export] public bool WipeStoreOnStart = false; // true — стенд стартует с чистого хранилища
@@ -81,6 +84,10 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
     public override void _Ready()
     {
+        // Сид текущего запуска (0 в сцене ⇒ новый случайный на каждый старт процесса).
+        if (WorldSeed == 0UL)
+            WorldSeed = Game.Core.WorldStreaming.Layers.WorldSeedProvider.Current;
+
         string dir = SaveDirectory;
         if (string.IsNullOrWhiteSpace(dir))
         {

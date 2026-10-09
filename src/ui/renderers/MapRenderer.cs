@@ -361,8 +361,12 @@ public partial class MapRenderer : Node2D
                 : unchecked((uint)Random.Shared.Next(int.MinValue, int.MaxValue));
             CurrentMapSeed = seed;
 
-            // GPU-трек удалён: генерация карты — чистый CPU (NoiseGenerator fBm).
-            _pendingMapData = MapGenerator.Generate(MapWidth, MapHeight, seed);
+            // Единый генератор (план §3.2): локальная карта = «окно» в мир WorldLayerStack.
+            // Сид карты = world-seed конвейера; окно центрировано в (0,0) мира.
+            // GPU-трек удалён: генерация — чистый CPU, детерминирована от (seed, version, abs coords).
+            _pendingMapData = Game.Core.WorldStreaming.Layers.LocalMapBuilder.BuildPlayableWindow(
+                seed, Game.Core.WorldStreaming.Layers.WorldLayerStack.GeneratorVersion,
+                MapWidth / 2, MapHeight / 2, MapWidth, MapHeight);
 
             int grass = 0, water = 0, mountains = 0, trees = 0, stones = 0;
             for (int x = 0; x < MapWidth; x++)

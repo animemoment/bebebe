@@ -55,6 +55,9 @@ public sealed class WorldSaveCoordinator
     /// <summary>
     /// Загрузить совместимый manifest или создать новый с указанной стартовой клеткой.
     /// Существующий повреждённый manifest не перезаписывается автоматически.
+    /// «Каждый запуск — новый мир» (seed меняется процессом): если сохранённый manifest
+    /// принадлежит другому сиду, он НЕ выбрасывает исключение, а архивируется
+    /// (world.manifest.stale-&lt;seed&gt;.bak) и создаётся новый манифест текущего запуска.
     /// </summary>
     public ResumeState OpenOrCreate(long desiredStartTileX, long desiredStartTileY)
     {
@@ -77,6 +80,33 @@ public sealed class WorldSaveCoordinator
             if (!WorldManifestStore.TryLoad(_manifestPath, out WorldManifest manifest, out string error))
                 throw new InvalidDataException(
                     $"Манифест мира существует, но повреждён или недоступен: '{_manifestPath}'. Причина: {error}");
+
+            // Новый сид запуска ⇒ старый мир (чанки/фичи другого сида) несовместим:
+            // убираем манифест с пути и создаём чистый новый мир текущего сида.
+            if (manifest.WorldSeed != _seed)
+            {
+                string stalePath = _manifestPath + $".stale-{manifest.WorldSeed:X16}.bak";
+                try
+                {
+                    File.Move(_manifestPath, stalePath, overwrite: true);
+                    Godot.GD.Print($"[World] seed changed ({manifest.WorldSeed:X16} -> {_seed:X16}); old manifest archived: {stalePath}");
+                }
+                catch (IOException ex)
+                {
+                    Godot.GD.PrintErr($"[World] failed to archive stale manifest: {ex.Message}");
+                }
+
+                var fresh = new WorldManifest(
+                    _seed,
+                    _generatorVersion,
+                    _featureSchemaVersion,
+                    0d,
+                    desiredStartTileX,
+                    desiredStartTileY);
+                WorldManifestStore.Save(_manifestPath, fresh);
+                _isOpened = true;
+                return ToResumeState(fresh, isNewWorld: true);
+            }
 
             EnsureCompatible(manifest);
             _isOpened = true;

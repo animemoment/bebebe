@@ -25,7 +25,19 @@ public enum BiomeType : byte
     Forest = 5,
 
     /// <summary>Болото / влажная зона. Тайл: col 5, row 0 (source 11).</summary>
-    Swamp = 6
+    Swamp = 6,
+
+    /// <summary>Тундра (полярная холодная зона). Рендер: степной тайл (снежных атлас-тайлов нет).</summary>
+    Tundra = 7,
+
+    /// <summary>Тайга (холодный хвойный лес). Рендер: лесной тайл.</summary>
+    Taiga = 8,
+
+    /// <summary>Саванна (жаркая сухая трава). Рендер: степной тайл.</summary>
+    Savanna = 9,
+
+    /// <summary>Луг / умеренная трава. Рендер: степной/поляной тайл.</summary>
+    Grassland = 10
 }
 
 /// <summary>Информация о выбранном тайле для клетчки.</summary>
