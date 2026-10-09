@@ -11,48 +11,48 @@ namespace Game.Simulation;
 /// </summary>
 public static class DynamicWorkBalancer
 {
-    /// <summary>Стартовый размер батча (прокси к DynamicWorkScheduler).</summary>
-    public const int InitialBatchSize = DynamicWorkScheduler.InitialBatchSize;
+	/// <summary>Стартовый размер батча (прокси к DynamicWorkScheduler).</summary>
+	public const int InitialBatchSize = DynamicWorkScheduler.InitialBatchSize;
 
-    /// <inheritdoc cref="DynamicWorkScheduler.MinBatchSize"/>
-    public const int MinBatchSize = DynamicWorkScheduler.MinBatchSize;
+	/// <inheritdoc cref="DynamicWorkScheduler.MinBatchSize"/>
+	public const int MinBatchSize = DynamicWorkScheduler.MinBatchSize;
 
-    /// <inheritdoc cref="DynamicWorkScheduler.MaxBatchSize"/>
-    public const int MaxBatchSize = DynamicWorkScheduler.MaxBatchSize;
+	/// <inheritdoc cref="DynamicWorkScheduler.MaxBatchSize"/>
+	public const int MaxBatchSize = DynamicWorkScheduler.MaxBatchSize;
 
-    /// <summary>
-    /// Выполняет body(i) для i в [0, count) с динамическим распределением.
-    /// Потокобезопасно для SoA-записей по непересекающимся индексам.
-    /// </summary>
-    public static void ForEach(int count, Action<int> body, string profilerScope = null)
-    {
-        DynamicWorkScheduler.Shared.ForEach(count, body, WorkKind.Fast, profilerScope);
-    }
+	/// <summary>
+	/// Выполняет body(i) для i в [0, count) с динамическим распределением.
+	/// Потокобезопасно для SoA-записей по непересекающимся индексам.
+	/// </summary>
+	public static void ForEach(int count, Action<int> body, string profilerScope = null)
+	{
+		DynamicWorkScheduler.Shared.ForEach(count, body, WorkKind.Fast, profilerScope);
+	}
 
-    /// <summary>
-    /// Range-вариант: body(start, endExclusive) вызывается на батч целиком.
-    /// Удобен для Dispatcher (обработка диапазона чанков одним вызовом).
-    /// </summary>
-    public static int ForEachRange(int count, Action<int, int> body, string profilerScope = null)
-    {
-        return DynamicWorkScheduler.Shared.ForEachRange(count, body, WorkKind.Fast, profilerScope);
-    }
+	/// <summary>
+	/// Range-вариант: body(start, endExclusive) вызывается на батч целиком.
+	/// Удобен для Dispatcher (обработка диапазона чанков одним вызовом).
+	/// </summary>
+	public static int ForEachRange(int count, Action<int, int> body, string profilerScope = null)
+	{
+		return DynamicWorkScheduler.Shared.ForEachRange(count, body, WorkKind.Fast, profilerScope);
+	}
 
-    /// <summary>
-    /// Сброс EMA-состояния (например, при смене скорости симуляции).
-    /// Finding 3: оставлен для явного полного сброса; смена скорости в
-    /// AgentSimulationThread идёт через ResetForSpeedChange (EMA хранится).
-    /// </summary>
-    public static void Reset()
-    {
-        DynamicWorkScheduler.Shared.Reset();
-    }
+	/// <summary>
+	/// Сброс EMA-состояния (например, при смене скорости симуляции).
+	/// Finding 3: оставлен для явного полного сброса; смена скорости в
+	/// AgentSimulationThread идёт через ResetForSpeedChange (EMA хранится).
+	/// </summary>
+	public static void Reset()
+	{
+		DynamicWorkScheduler.Shared.Reset();
+	}
 
-    /// <summary>
-    /// Мягкий сброс при смене скорости: очереди чистятся, EMA батчей хранится.
-    /// </summary>
-    public static void ResetForSpeedChange()
-    {
-        DynamicWorkScheduler.Shared.ResetForSpeedChange();
-    }
+	/// <summary>
+	/// Мягкий сброс при смене скорости: очереди чистятся, EMA батчей хранится.
+	/// </summary>
+	public static void ResetForSpeedChange()
+	{
+		DynamicWorkScheduler.Shared.ResetForSpeedChange();
+	}
 }

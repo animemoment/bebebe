@@ -24,6 +24,11 @@ public partial class WorldMapOverlay : Node2D
 	private CanvasLayer _uiLayer;
 	private Button _closeBtn;
 	private readonly HashSet<Vector2I> _visibleChunksThisFrame = new();
+	private readonly Dictionary<CanvasItem, bool> _savedCanvasItemVisibility = new();
+	private CanvasLayer _gameCanvasLayer;
+	private bool _savedCanvasLayerVisibility;
+	private bool _hasSavedCanvasLayerVisibility;
+	private bool _savedGameCameraEnabled;
 	private ulong _seed;
 	private uint _version;
 	private bool _isDragging;
@@ -40,6 +45,9 @@ public partial class WorldMapOverlay : Node2D
 	{
 		_camera = GetNode<Camera2D>("Camera2D");
 		_mapLayer = GetNode<TileMapLayer>("TileMapLayer");
+		// AgentRenderer uses ZIndex=10; make the map tile layer authoritative
+		// foreground even if a game renderer is added during map generation.
+		_mapLayer.ZIndex = 1000;
 		_uiLayer = GetNode<CanvasLayer>("UI");
 		_closeBtn = GetNode<Button>("UI/Control/BtnClose");
 
@@ -60,37 +68,36 @@ public partial class WorldMapOverlay : Node2D
 
 	public void OpenMap()
 	{
-		if (!EnsureTileSet())
+		if (Visible || !EnsureTileSet())
 			return;
 
 		HideGameLayer();
 		ClearAllCache();
+		_mapLayer.Visible = true;
 		Visible = true;
 		_uiLayer.Visible = true;
 		_camera.Enabled = true;
 		_camera.MakeCurrent();
 		ClampCamera();
-		SetGameCanvasVisible(false);
 		LoadVisibleChunks();
 	}
 
 	public void CloseMap()
 	{
+		if (!Visible && _savedCanvasItemVisibility.Count == 0 && !_hasSavedCanvasLayerVisibility)
+			return;
+
 		Visible = false;
-		_mapLayer.Visible = false;
+		_mapLayer.Visible = true;
 		_uiLayer.Visible = false;
 		_camera.Enabled = false;
 		_isDragging = false;
-		SetGameCanvasVisible(true);
 		ShowGameLayer();
 
-		Node main = GetTree().Root.GetChild(0);
-		Camera2D baseCam = main.GetNodeOrNull<Camera2D>("Camera");
-		if (baseCam != null)
-		{
-			baseCam.Enabled = true;
+		Node main = GetParent();
+		Camera2D baseCam = main?.GetNodeOrNull<Camera2D>("Camera");
+		if (baseCam != null && _savedGameCameraEnabled)
 			baseCam.MakeCurrent();
-		}
 	}
 
 	public override void _UnhandledInput(InputEvent @event)
@@ -134,6 +141,10 @@ public partial class WorldMapOverlay : Node2D
 	{
 		if (!Visible || !IsInsideTree())
 			return;
+
+		// Game renderers (especially AgentRenderer) can be created after the map
+		// was opened. Track and hide late-added siblings for the whole map session.
+		HideGameLayer();
 
 		Vector2 direction = Vector2.Zero;
 		if (Input.IsKeyPressed(Key.A)) direction.X -= 1f;
@@ -320,42 +331,77 @@ public partial class WorldMapOverlay : Node2D
 			halfHeight * 2f >= mapHeight ? mapHeight / 2f : Mathf.Clamp(_camera.Position.Y, halfHeight, mapHeight - halfHeight));
 	}
 
-	private void SetGameCanvasVisible(bool visible)
-	{
-		Node main = GetTree().Root.GetChild(0);
-		main.GetNodeOrNull<CanvasLayer>("CanvasLayer")?.Set("visible", visible);
-	}
-
 	private void HideGameLayer()
 	{
-		Node main = GetTree().Root.GetChild(0);
-		if (main == null) return;
+		// This overlay is a child of Main. Do not assume Main is Root.GetChild(0):
+		// autoloads and other root nodes can precede the active game scene.
+		Node main = GetParent();
+		if (main == null || !main.IsInsideTree())
+			return;
 
-		foreach (var child in main.GetChildren())
+		foreach (Node child in main.GetChildren())
 		{
-			if (child is TileMapLayer tml)
-				tml.Visible = false;
+			if (child == this)
+				continue;
+
+			if (child is CanvasItem canvasItem)
+			{
+				// Preserve the pre-map value only once; subsequent calls also catch
+				// unexpected visibility changes while the map remains open.
+				if (!_savedCanvasItemVisibility.ContainsKey(canvasItem))
+					_savedCanvasItemVisibility[canvasItem] = canvasItem.Visible;
+				canvasItem.Visible = false;
+			}
+
+			if (child is CanvasLayer canvasLayer)
+			{
+				if (!_hasSavedCanvasLayerVisibility || _gameCanvasLayer != canvasLayer)
+				{
+					_gameCanvasLayer = canvasLayer;
+					_savedCanvasLayerVisibility = canvasLayer.Visible;
+					_hasSavedCanvasLayerVisibility = true;
+				}
+				canvasLayer.Visible = false;
+			}
 		}
 
-		var cam = main.GetNodeOrNull<Camera2D>("Camera");
-		if (cam != null && cam.IsInsideTree())
-			cam.Visible = false;
+		// Be explicit about the dynamic renderer: it is spawned by Main after
+		// the map generator finishes and therefore may not exist on first open.
+		CanvasItem agentRenderer = main.GetNodeOrNull<CanvasItem>("AgentRenderer");
+		if (agentRenderer != null)
+		{
+			if (!_savedCanvasItemVisibility.ContainsKey(agentRenderer))
+				_savedCanvasItemVisibility[agentRenderer] = agentRenderer.Visible;
+			agentRenderer.Visible = false;
+		}
+
+		Camera2D gameCamera = main.GetNodeOrNull<Camera2D>("Camera");
+		_savedGameCameraEnabled = gameCamera != null && gameCamera.Enabled;
 	}
 
 	private void ShowGameLayer()
 	{
-		Node main = GetTree().Root.GetChild(0);
-		if (main == null) return;
-
-		foreach (var child in main.GetChildren())
+		foreach (KeyValuePair<CanvasItem, bool> entry in _savedCanvasItemVisibility)
 		{
-			if (child is TileMapLayer tml)
-				tml.Visible = true;
+			CanvasItem canvasItem = entry.Key;
+			if (GodotObject.IsInstanceValid(canvasItem) && canvasItem.IsInsideTree())
+				canvasItem.Visible = entry.Value;
 		}
+		_savedCanvasItemVisibility.Clear();
 
-		var cam = main.GetNodeOrNull<Camera2D>("Camera");
-		if (cam != null && cam.IsInsideTree())
-			cam.Visible = true;
+		if (_hasSavedCanvasLayerVisibility
+			&& GodotObject.IsInstanceValid(_gameCanvasLayer)
+			&& _gameCanvasLayer.IsInsideTree())
+		{
+			_gameCanvasLayer.Visible = _savedCanvasLayerVisibility;
+		}
+		_gameCanvasLayer = null;
+		_hasSavedCanvasLayerVisibility = false;
+
+		Node main = GetParent();
+		Camera2D gameCamera = main?.GetNodeOrNull<Camera2D>("Camera");
+		if (gameCamera != null)
+			gameCamera.Enabled = _savedGameCameraEnabled;
 	}
 
 	private static Vector2I GetAtlasCoordsRaw(int tileIndex)
