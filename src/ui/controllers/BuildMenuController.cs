@@ -35,6 +35,10 @@ public partial class BuildMenuController : Control
     private BaseButton _escButton;
     private BaseButton _checkMarkButton;
 
+    /// <summary>Кнопка-тумблер «Дверь». Управление режимом полностью на коде (_doorMode +
+    /// OnDoorPressed): встроенный toggle_mode сцены гасим в LoadScene, а pressed-состояние
+    /// синхронизируем вручную (UpdateModeButtons/ResetDoorMode) — иначе двойное управление
+    /// разъезжает визуальное «нажатие» с фактическим режимом.</summary>
     private Button _doorButton;
     private Button _wallMaterialButton;
     private Button _zoneButton;
@@ -106,6 +110,15 @@ public partial class BuildMenuController : Control
             if (_doorButton != null)
             {
                 _doorButton.MouseFilter = MouseFilterEnum.Stop;
+                // FIX (рассинхрон тумблера «Дверь»): в Build.tscn у DoorButton включён
+                // встроенный toggle_mode — Godot сам меняет ButtonState при клике, а
+                // OnDoorPressed ведёт собственный флаг _doorMode. Двойное управление:
+                // если внешние вызовы (ResetDoorMode/ApplyZoneVisibility) не синхронизированы
+                // с визуальным pressed-состоянием кнопки, следующий клик даёт ложную
+                // инверсию — режим и подсветка разъезжаются. Оставляем ЕДИНСТВЕННЫЙ источник
+                // истины — код (_doorMode), а сценический toggle гасим.
+                _doorButton.ToggleMode = false;
+                _doorButton.ButtonPressed = false;
                 _doorButton.Pressed += OnDoorPressed;
             }
             if (_wallMaterialButton != null)
@@ -279,14 +292,23 @@ public partial class BuildMenuController : Control
         if (_zoneButton != null)
             _zoneButton.Modulate = drafting ? new Color(0.6f, 1f, 0.6f, 1f) : Color.Color8(255, 255, 255, 255);
         if (_doorButton != null)
+        {
             _doorButton.Modulate = _doorMode ? new Color(1f, 0.6f, 0.6f, 1f) : Color.Color8(255, 255, 255, 255);
+            // Синхронизируем pressed-состояние с ЕДИНСТВЕННЫМ источником истины (_doorMode).
+            // ToggleMode выключен в LoadScene, поэтому ButtonPressed меняем сами: иначе
+            // визуальное «нажатие» разъезжается с фактическим режимом после внешних сбросов.
+            _doorButton.ButtonPressed = _doorMode;
+        }
     }
 
     internal void ResetDoorMode()
     {
         _doorMode = false;
         if (_doorButton != null)
+        {
             _doorButton.Modulate = Color.Color8(255, 255, 255, 255);
+            _doorButton.ButtonPressed = false;
+        }
     }
 
     /// <summary>CheckMark: коммит черновика, окно закрыть, инструмент сбросить.</summary>

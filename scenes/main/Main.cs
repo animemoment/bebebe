@@ -289,23 +289,36 @@ public partial class Main : Node2D
 		}
 	}
 
-	/// <summary>Открыть/закрыть мировую карту. Скрывает CanvasLayer игры, показывает TileMapLayer.</summary>
+	/// <summary>Открыть/закрыть мировую карту. Скрытие/показ игрового мира выполняет
+	/// WorldMapOverlay через GameLayerVisibility.SetGameVisible (симметрично open/close);
+	/// здесь — страховка в том же состоянии, идемпотентная.</summary>
 	public void ToggleWorldMap()
 	{
 		if (_mapOverlay == null) return;
 
-		if (_mapOverlay.Visible)
+		// FIX: состояние берём из ФАКТИЧЕСКОЙ видимости оверлея, а не кэша.
+		// OpenMap() может провалиться (не загрузится атлас ForWorldMap.png — EnsureTileSet
+		// вернёт false), тогда карта НЕ открылась, но страховочный вызов раньше инвертировал
+		// «ожидаемое» состояние и гасил весь игровой мир + HUD навсегда («интерфейс игры
+		// пропадал»). Теперь реальное состояние берём из Visible самого оверлея.
+		bool isOpen = _mapOverlay.Visible;
+
+		if (isOpen)
 		{
-			_mapOverlay.CloseMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = true;
+				_mapOverlay.CloseMap();
+				// Страховка: CloseMap уже зеркально показывает мир; повтор идемпотентен.
+				GameLayerVisibility.SetGameVisible(this, true);
 		}
 		else
 		{
-			_mapOverlay.OpenMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = false;
-		}
+				_mapOverlay.OpenMap();
+				// Если открытие не удалось (Visible всё ещё false) — мир НЕ трогаем:
+				// иначе карта закрыта, мир скрыт — пустой экран без HUD.
+				if (_mapOverlay.Visible)
+						GameLayerVisibility.SetGameVisible(this, false);
+				else
+						GD.PrintErr("[MAIN] World map failed to open — game layer left visible");
+			}
 	}
 
 	public override void _ExitTree()
