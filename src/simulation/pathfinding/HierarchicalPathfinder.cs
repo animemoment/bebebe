@@ -85,7 +85,9 @@ public sealed class HierarchicalPathfinder
     // _cacheLock сериализовал все 16 потоков Parallel-фаз на КАЖДОМ запросе пути:
     // один «тяжёлый» ComputeLocalSegment держал lock, остальные 15 ждали —
     // классический straggler при низкой средней загрузке CPU.
-    private readonly ConcurrentDictionary<int, int[]> _regionPathCache = new(4, 1024);
+    // FIX #4: ключ ulong ((sr << 32) | tr) — старый int-ключ sr * 4096 + tr
+    // давал коллизии при числе регионов > 4096 (чужой путь для другой пары).
+    private readonly ConcurrentDictionary<ulong, int[]> _regionPathCache = new(4, 1024);
     private readonly ConcurrentDictionary<ulong, int[]> _segmentCache = new(4, 4096);
 
     private sealed class SearchBuffers
@@ -804,10 +806,10 @@ public sealed class HierarchicalPathfinder
     // Детальный уровень: A* по клеткам локального окна
     // ------------------------------------------------------------------
 
-    private int[] GetSegmentCached(int fx, int fy, int tx, int ty)
+    private int[] GetSegmentCached(OverlaySnapshot ov, int fx, int fy, int tx, int ty)
     {
-        int packedFrom = fy * _mapWidth + fx;
-        int packedTo = ty * _mapWidth + tx;
+        int packedFrom = fy * ov.W + fx;
+        int packedTo = ty * ov.W + tx;
         ulong key = ((ulong)packedFrom << 32) | (uint)packedTo;
 
         // P0-1: без счётчиков кэша (горячий параллельный путь).
@@ -816,7 +818,7 @@ public sealed class HierarchicalPathfinder
             return cached;
         }
 
-        int[] seg = ComputeLocalSegment(fx, fy, tx, ty);
+        int[] seg = ComputeLocalSegment(ov, fx, fy, tx, ty);
         if (seg == null)
             return null;
 
@@ -913,25 +915,25 @@ public sealed class HierarchicalPathfinder
     /// окно включает оба региона, поэтому путь может свободно пересекать
     /// границу в любом легальном месте.
     /// </summary>
-    private int[] ComputeLocalSegment(int fx, int fy, int tx, int ty)
+    private int[] ComputeLocalSegment(OverlaySnapshot ov, int fx, int fy, int tx, int ty)
     {
-        if (tx < 0 || ty < 0 || tx >= _mapWidth || ty >= _mapHeight)
+        if (tx < 0 || ty < 0 || tx >= ov.W || ty >= ov.H)
             return null;
-        if (IsCellBlocked(tx, ty))
+        if (IsCellBlocked(ov, tx, ty))
             return null;
 
         int rx0 = fx >> RegionShift, ry0 = fy >> RegionShift;
         int rx1 = tx >> RegionShift, ry1 = ty >> RegionShift;
 
         int minRX = Math.Max(0, Math.Min(rx0, rx1) - 1);
-        int maxRX = Math.Min(_regionDimX - 1, Math.Max(rx0, rx1) + 1);
+        int maxRX = Math.Min(ov.DimX - 1, Math.Max(rx0, rx1) + 1);
         int minRY = Math.Max(0, Math.Min(ry0, ry1) - 1);
-        int maxRY = Math.Min(_regionDimY - 1, Math.Max(ry0, ry1) + 1);
+        int maxRY = Math.Min(ov.DimY - 1, Math.Max(ry0, ry1) + 1);
 
         int minX = minRX << RegionShift;
         int minY = minRY << RegionShift;
-        int maxX = Math.Min(((maxRX + 1) << RegionShift) - 1, _mapWidth - 1);
-        int maxY = Math.Min(((maxRY + 1) << RegionShift) - 1, _mapHeight - 1);
+        int maxX = Math.Min(((maxRX + 1) << RegionShift) - 1, ov.W - 1);
+        int maxY = Math.Min(((maxRY + 1) << RegionShift) - 1, ov.H - 1);
 
         int ww = maxX - minX + 1;
         int hh = maxY - minY + 1;
@@ -981,7 +983,7 @@ public sealed class HierarchicalPathfinder
                 int ny = uy + dy;
                 if (ny < minY || ny > maxY)
                     continue;
-                int nyw = ny * _mapWidth;
+                int nyw = ny * ov.W;
                 for (int dx = -1; dx <= 1; dx++)
                 {
                     if (dx == 0 && dy == 0)
@@ -990,11 +992,20 @@ public sealed class HierarchicalPathfinder
                     if (nx < minX || nx > maxX)
                         continue;
 
-                    int cellCost = _cost[nyw + nx];
+                    int cellCost = ov.Cost[nyw + nx];
                     if (cellCost == CostBlocked)
                         continue;
 
-                    int step = (dx != 0 && dy != 0) ? 14 : 10;
+                    bool diagonal = dx != 0 && dy != 0;
+                    // FIX #6: запрет «протискивания» по диагонали между двумя
+                    // стенами (corner cutting): оба ортогональных соседа должны
+                    // быть проходимы, иначе агент проскакивал щель насквозь.
+                    if (diagonal
+                        && (ov.Cost[uy * ov.W + nx] == CostBlocked
+                            || ov.Cost[nyw + ux] == CostBlocked))
+                        continue;
+
+                    int step = diagonal ? 14 : 10;
                     if (cellCost == CostWater)
                         step *= 3;
 
@@ -1037,7 +1048,7 @@ public sealed class HierarchicalPathfinder
             int loc = b.RevScratch[n - 1 - i];
             int lx = loc % ww + minX;
             int ly = loc / ww + minY;
-            result[i] = ly * _mapWidth + lx;
+            result[i] = ly * ov.W + lx;
         }
         return result;
     }
@@ -1051,11 +1062,11 @@ public sealed class HierarchicalPathfinder
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool IsCellBlocked(int tx, int ty)
+    private static bool IsCellBlocked(OverlaySnapshot ov, int tx, int ty)
     {
-        if ((uint)tx >= (uint)_mapWidth || (uint)ty >= (uint)_mapHeight)
+        if ((uint)tx >= (uint)ov.W || (uint)ty >= (uint)ov.H)
             return true;
-        return _cost[ty * _mapWidth + tx] == CostBlocked;
+        return ov.Cost[ty * ov.W + tx] == CostBlocked;
     }
 
     // ------------------------------------------------------------------
@@ -1066,13 +1077,11 @@ public sealed class HierarchicalPathfinder
     /// Клеточная прямая видимость по Брезенхэму: сегмент свободен, если ни
     /// одна клетка по пути не блокирована стеной (вода допустима — движение
     /// напрямую сквозь воду разрешено, лишь медленнее).
-    /// </summary>
-    /// <summary>
     /// Целочисленный Брезенхем: ~5ns на клетку вместо ~30 (float-деление +
     /// Math.Round ~15ns на шаг). SmoothPath делает LOS на каждый узел пути —
     /// при 200 узлах × 30 шагов это был главный жор сглаживания.
     /// </summary>
-    private bool HasLineOfSight(int x0, int y0, int x1, int y1)
+    private static bool HasLineOfSight(OverlaySnapshot ov, int x0, int y0, int x1, int y1)
     {
         int dx = Math.Abs(x1 - x0);
         int dy = Math.Abs(y1 - y0);
@@ -1081,37 +1090,10 @@ public sealed class HierarchicalPathfinder
         int err = dx - dy;
         while (true)
         {
-            if (IsCellBlocked(x0, y0))
+            if (IsCellBlocked(ov, x0, y0))
                 return false;
             if (x0 == x1 && y0 == y1)
                 return true;
-            int e2 = err << 1;
-            if (e2 > -dy) { err -= dy; x0 += sx; }
-            if (e2 < dx) { err += dx; y0 += sy; }
-        }
-    }
-
-    /// <summary>
-    /// Длина водного отрезка вдоль LOS (тайлы воды по Брезенхему).
-    /// Стены здесь не проверяем — их уже отсеял HasLineOfSight.
-    /// #14: оставлен для совместимости; горячий путь TryFindPath использует
-    /// LineOfSightWithWater (один проход вместо двух).
-    /// </summary>
-    private int WaterCrossingLength(int x0, int y0, int x1, int y1)
-    {
-        int dx = Math.Abs(x1 - x0);
-        int dy = Math.Abs(y1 - y0);
-        int sx = x0 < x1 ? 1 : -1;
-        int sy = y0 < y1 ? 1 : -1;
-        int err = dx - dy;
-        int water = 0;
-        while (true)
-        {
-            if ((uint)x0 < (uint)_mapWidth && (uint)y0 < (uint)_mapHeight
-                && _cost[y0 * _mapWidth + x0] == CostWater)
-                water++;
-            if (x0 == x1 && y0 == y1)
-                return water;
             int e2 = err << 1;
             if (e2 > -dy) { err -= dy; x0 += sx; }
             if (e2 < dx) { err += dx; y0 += sy; }
@@ -1124,7 +1106,7 @@ public sealed class HierarchicalPathfinder
     /// тайлов отрезка в <paramref name="waterLength"/>. Экономит ~50% работы
     /// прямого коридора против пары HasLineOfSight + WaterCrossingLength.
     /// </summary>
-    private bool LineOfSightWithWater(int x0, int y0, int x1, int y1, out int waterLength)
+    private static bool LineOfSightWithWater(OverlaySnapshot ov, int x0, int y0, int x1, int y1, out int waterLength)
     {
         waterLength = 0;
         int dx = Math.Abs(x1 - x0);
@@ -1134,10 +1116,12 @@ public sealed class HierarchicalPathfinder
         int err = dx - dy;
         while (true)
         {
-            if (IsCellBlocked(x0, y0))
+            if ((uint)x0 >= (uint)ov.W || (uint)y0 >= (uint)ov.H)
+                return false; // вышли за карту — LOS нет
+            int cell = ov.Cost[y0 * ov.W + x0];
+            if (cell == CostBlocked)
                 return false;
-            if ((uint)x0 < (uint)_mapWidth && (uint)y0 < (uint)_mapHeight
-                && _cost[y0 * _mapWidth + x0] == CostWater)
+            if (cell == CostWater)
                 waterLength++;
             if (x0 == x1 && y0 == y1)
                 return true;
@@ -1154,7 +1138,7 @@ public sealed class HierarchicalPathfinder
     /// scratch вызывателя), возвращает число точек. Семантика 1-в-1 со старым
     /// List-вариантом (включая финал и fallback на последнюю точку).
     /// </summary>
-    private int SmoothPath(int sx, int sy, int tx, int ty, Span<int> path, Span<int> destination)
+    private static int SmoothPath(OverlaySnapshot ov, int sx, int sy, int tx, int ty, Span<int> path, Span<int> destination)
     {
         int outLen = 0;
         int curX = sx;
@@ -1165,10 +1149,10 @@ public sealed class HierarchicalPathfinder
         for (int i = 0; i < path.Length; i++)
         {
             int packed = path[i];
-            int px = packed % _mapWidth;
-            int py = packed / _mapWidth;
+            int px = packed % ov.W;
+            int py = packed / ov.W;
 
-            if (HasLineOfSight(curX, curY, px, py))
+            if (HasLineOfSight(ov, curX, curY, px, py))
             {
                 lastX = px;
                 lastY = py;
@@ -1179,7 +1163,7 @@ public sealed class HierarchicalPathfinder
             {
                 if ((uint)outLen >= (uint)destination.Length)
                     return 0; // scratch переполнен — вызыватель retry'ит
-                destination[outLen++] = lastY * _mapWidth + lastX;
+                destination[outLen++] = lastY * ov.W + lastX;
                 curX = lastX;
                 curY = lastY;
             }
@@ -1191,17 +1175,17 @@ public sealed class HierarchicalPathfinder
         }
 
         // Финал: марш мимо последней опорной к цели.
-        if (HasLineOfSight(curX, curY, tx, ty))
+        if (HasLineOfSight(ov, curX, curY, tx, ty))
         {
             if ((uint)outLen >= (uint)destination.Length)
                 return 0;
-            destination[outLen++] = ty * _mapWidth + tx;
+            destination[outLen++] = ty * ov.W + tx;
         }
         else if (lastX >= 0 && !(lastX == tx && lastY == ty))
         {
             if ((uint)outLen >= (uint)destination.Length)
                 return 0;
-            destination[outLen++] = lastY * _mapWidth + lastX;
+            destination[outLen++] = lastY * ov.W + lastX;
         }
         else if (outLen == 0)
         {

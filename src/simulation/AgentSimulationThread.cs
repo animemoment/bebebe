@@ -43,12 +43,17 @@ public sealed class AgentSimulationThread : IDisposable
     private volatile bool _speedResetRequested;
     private Task _simulationTask;
     private uint _tickCounter;
-    // P1 (Phase3b): rebuild SpatialGrid не каждый суб-степ, а раз в 4 тика.
-    // При dt=0.05 агент идёт 6px/суб-степ (~1/10 тайла): сетка за 4 тика
-    // устаревает максимум на ~0.4 тайла — читатели (overcrowd 5/клетка,
-    // stand-проверка, push-away, idle-чанки) толерантны. Commit каждый тик.
-    private int _lastSpatialRebuildTick = -12;
-    private const int SpatialRebuildPeriodTicks = 12;
+    // P1 (Phase3b): rebuild SpatialGrid не каждый суб-степ, а раз в
+    // SpatialRebuildPeriodTicks тиков. При dt=0.05 агент идёт 6px/суб-степ
+    // (~1/10 тайла): сетка устаревает максимум на ~0.4 тайла — читатели
+    // (overcrowd 5/клетка, stand-проверка, push-away, idle-чанки) толерантны.
+    // Commit каждый тик.
+    // FIX (тип): uint, как _tickCounter — раньше int требовал (int)-каста и
+    // теоретически переполнялся через 2^31 тиков; беззнаковая вычитаемая
+    // разность (_tickCounter - _lastSpatialRebuildTick) корректна при wrap.
+    private const uint SpatialRebuildSentinel = uint.MaxValue - 12u; // «далёкое прошлое» с учётом wrap
+    private uint _lastSpatialRebuildTick = SpatialRebuildSentinel;
+    private const uint SpatialRebuildPeriodTicks = 12; // было рассогласование комментария («раз в 4 тика») и константы (12) — комментарий приведён в соответствие
     // FIX круг-2 №9: старые значения MinThreads для restore в Stop().
     // Без сохранения глобальный SetMinThreads тёк наружу (меняли пул навсегда).
     private int _prevMinWorkerThreads;
@@ -79,6 +84,15 @@ public sealed class AgentSimulationThread : IDisposable
 
     /// <summary>Час старта новой игры (утро, свет уже есть, жары полдня нет).</summary>
     public const float InitialStartHour = 7f;
+
+    /// <summary>
+    /// FIX (фаза сезона): эпоха отсчёта «дня года» — GameTimeSeconds на момент
+    /// Start(). День 1 новой игры = день 0 сезона независимо от стартового часа
+    /// (раньше (GameTimeSeconds/500)%360 давал на старте день 50.4 из-за сдвига
+    /// на HoursToSeconds(7)). Инициализируется значением по умолчанию для случая
+    /// чтения до Start(); перезаписывается в Start() при каждой новой игре.
+    /// </summary>
+    private float _gameTimeEpochSec = WorldTime.HoursToSeconds(InitialStartHour);
 
     public float SpeedMultiplier
     {
@@ -118,6 +132,12 @@ public sealed class AgentSimulationThread : IDisposable
             int width = ground.GetLength(0);
             int height = ground.GetLength(1);
             bool[,] solidWalls = new bool[width, height];
+
+            // FIX (фаза сезона): закрепляем эпоху отсчёта «дня года» за текущим
+            // GameTimeSeconds — день 1 новой игры = день 0 сезона. Перезапись
+            // при каждом Start() корректна и для рестарта симуляции в рантайме
+            // (GameTimeSeconds вне Start() не сбрасывается).
+            _gameTimeEpochSec = GameTimeSeconds;
 
             var walkableTiles = new List<(int X, int Y)>(agentCount);
             for (int x = 0; x < width; x++)
@@ -242,7 +262,7 @@ public sealed class AgentSimulationThread : IDisposable
                 float currentStepDt = GetSimStepDelta(_speedMultiplier);
                 float dispatchInterval = GetScaledInterval(DispatchIntervalBase, _speedMultiplier);
                 float cropGrowthInterval = GetScaledInterval(CropGrowthIntervalBase, _speedMultiplier);
-                float sweepInterval = GetScaledIntervalHi(StockpileSweepIntervalBase, _speedMultiplier);
+                float sweepInterval = GetScaledInterval(StockpileSweepIntervalBase, _speedMultiplier);
                 int maxAllowedSteps = _speedMultiplier >= 100f ? 16 : 10; // Лимит шагов за проход: 16 на 100x (пропускная способность), иначе 10; больше — дольше кадр и риск спирали смерти.
                 int steps = (int)(accumulator / currentStepDt);
 
@@ -358,9 +378,23 @@ public sealed class AgentSimulationThread : IDisposable
                                 bool[] farmMask = FarmJobManager.Instance.BuildGardenBedFlatMask(mw, mh);
                                 // Сезон от дня года (п.19.5-П5): лето −1, зима +1.
                                 // День года из мирового времени (сутки = 500 геймсек).
-                                float dayOfYear = (GameTimeSeconds / 500f) % 360f;
+                                // FIX (фаза): GameTimeSeconds стартует с HoursToSeconds(7)
+                                // (=25200), поэтому «наивный» (GameTimeSeconds/500)%360 даёт
+                                // на новой игре день 50.4 вместо 0 — сезон стартовал бы с
+                                // середины весны. Нормировка к моменту Start(): днём 0
+                                // считается первый игровой день после инициализации.
+                                float dayOfYear = ((GameTimeSeconds - _gameTimeEpochSec) / 500f) % 360f;
+                                if (dayOfYear < 0f)
+                                    dayOfYear += 360f; // защита от wrap при рестарте эпохи
                                 float season = MathF.Sin(dayOfYear / 360f * MathF.PI * 2f - MathF.PI / 2f);
-                                humidityMap.Tick(ground, highMask, forestMask, farmMask, highMask, season);
+                                // FIX #3 (copy-paste): 5-й параметр Tick — downhillMask
+                                // (анизотропия стекания влаги, п.19.5-П3), но раньше сюда
+                                // повторно передавали highMask: каждый горный тайл получал
+                                // ложную «стекание-вниз» модель (нижний сосед ×2), а реальных
+                                // низин не было вовсе (карты высот в ctx нет). Фикс: null →
+                                // изотропная диффузия, как в единственном другом вызове
+                                // HumidityMap.Tick(ground, high, forest, farm) (HumidityMap.cs:371).
+                                humidityMap.Tick(ground, highMask, forestMask, farmMask, null, season);
                                 }
                             }
 
@@ -443,17 +477,13 @@ public sealed class AgentSimulationThread : IDisposable
                                 }
                             }
 
-                            // Аудит работ по РЕАЛЬНОМУ времени: раз в 30с порциями
-                            // (только marked-клетки, не вся карта). На паузе не тикает.
-                            _jobAuditRealTimer += realDelta;
-                            if (_jobAuditRealTimer >= JobValidator.AuditIntervalRealSec)
-                            {
-                                _jobAuditRealTimer = 0f;
-                                using (GameProfiler.ScopeCustom("Simulation.JobAudit"))
-                                {
-                                    jobAuditFixedTotal += JobValidator.Instance.Tick(_pool, _ctx);
-                                }
-                            }
+                            // FIX #1 (аудит): накопление realDelta ВЫНЕСЕНО из цикла
+                            // суб-степов (см. ниже после for). realDelta — время ВСЕГО
+                            // прохода петли; прибавлять его на каждый суб-степ означало
+                            // ×steps ускорение таймера: на 100x (16 суб-степов) аудит
+                            // срабатывал каждые ~1.9с вместо обещанных 30с — лишний CPU
+                            // (JobValidator.Tick сканирует marked-клетки) и рассинхрон
+                            // с заявленным поведением.
 
                             bool isLastSubStep = (step == steps - 1);
                             // Rebuild — раз в SpatialRebuildPeriodTicks тиков (не каждый
@@ -463,13 +493,29 @@ public sealed class AgentSimulationThread : IDisposable
                             bool rebuildSpatial = isLastSubStep &&
                                 (_tickCounter - _lastSpatialRebuildTick >= SpatialRebuildPeriodTicks);
                             if (rebuildSpatial)
-                                _lastSpatialRebuildTick = (int)_tickCounter;
+                                _lastSpatialRebuildTick = _tickCounter; // FIX: uint → uint, без (int)-каста
                             // P0-1: суб-степ — ноль замеров. Stopwatch + PushScope (ToArray+
                             // string.Join в CurrentPath) + Series(lock) + CheckRegression
                             // (Clone+Sort 60 float) на КАЖДЫЙ суб-степ = ×2000/с.
                             Phase2_ParallelUpdate(currentStepDt);
                             Phase3a_ParallelBookkeeping(currentStepDt, isLastSubStep, updateNeedsEnvThisStep);
                             Phase3b_SequentialCommit(currentStepDt, rebuildSpatial);
+                        }
+
+                        // FIX #1 (аудит): один раз на ПРОХОД петли, а не на суб-степ.
+                        // realDelta измеряет wall-clock всего прохода — прибавка
+                        // внутри for давала ×steps ускорение таймера. Аудит работ по
+                        // РЕАЛЬНОМУ времени: раз в 30с порциями (только marked-клетки,
+                        // не вся карта). На паузе (steps==0) realDelta≈dt цикла мал и
+                        // таймер почти стоит — поведение «на паузе не тикает» сохранено.
+                        _jobAuditRealTimer += realDelta;
+                        if (_jobAuditRealTimer >= JobValidator.AuditIntervalRealSec)
+                        {
+                            _jobAuditRealTimer = 0f;
+                            using (GameProfiler.ScopeCustom("Simulation.JobAudit"))
+                            {
+                                jobAuditFixedTotal += JobValidator.Instance.Tick(_pool, _ctx);
+                            }
                         }
 
                         if (renderTimer.Elapsed.TotalSeconds >= MinSnapInterval)
@@ -534,22 +580,13 @@ public sealed class AgentSimulationThread : IDisposable
     /// на 100x диспетчер вызывается ~1 раз за тик (16 суб-степов), а не каждые
     /// 2–3 суб-степа. Поведение не меняется: claim-проходы покрывают чанки
     /// round-robin'ом, опоздание назначения на тик безвредно.
+    /// FIX #2: раньше существовал побайтово идентичный дубликат GetScaledIntervalHi
+    /// («усиленное квадратичное» для sweep'а, как обещал комментарий) — удалён;
+    /// оба места (dispatch и sweep) используют этот метод. Если усиленный вариант
+    /// когда-либо будет нужен — реализовать отличием константы порога/показателя,
+    /// а не копипастой тела.
     /// </summary>
     private static float GetScaledInterval(float baseInterval, float speed)
-    {
-        float s = Math.Max(1f, speed / IntervalScaleSpeed);
-        if (speed > IntervalScaleSpeedHi)
-            s *= speed / IntervalScaleSpeedHi;
-        return baseInterval * s;
-    }
-
-    /// <summary>
-    /// Усиленное масштабирование для дешёвых фоновых проходов (sweep склада):
-    /// выше 64x интервал растёт квадратично, чтобы проход случался не чаще
-    /// ~1 раза за тик (16 суб-степов). Поведение не меняется — sweep лишь
-    /// гарантирует наличие haul-работ, опоздание на тик безвредно.
-    /// </summary>
-    private static float GetScaledIntervalHi(float baseInterval, float speed)
     {
         float s = Math.Max(1f, speed / IntervalScaleSpeed);
         if (speed > IntervalScaleSpeedHi)

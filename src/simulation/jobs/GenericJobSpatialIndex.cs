@@ -595,6 +595,26 @@ public sealed class GenericJobSpatialIndex
         AgentDataPool pool, int agentIndex,
         SimulationContext ctx,
         out JobData claimedJob)
+        => TryClaimForWorkerInChunk(chunkIndex, workerTileX, workerTileY, workerTools,
+            pool, agentIndex, ctx, out claimedJob, filter: null);
+
+    /// <summary>
+    /// То же, что базовый overload, но с дополнительным предикатом <paramref name="filter"/>:
+    /// кандидат отсеивается ДО CAS-захвата (в read-only проходе поиска лучшего job).
+    /// Нужно бригадир-диспатчу зон: чанк 16×16 шире диска зоны — без фильтра клеймился
+    /// ЛЮБОЙ лучший job чанка, а работы вне зоны/маски отменялись после OnStart
+    /// (лишние claim/release циклы по чужим локам на каждый промах).
+    /// Фильтр вызывается только для активных кандидатов; должен быть потокобезопасен
+    /// (обычно читает неизменяемый снапшот формы зоны).
+    /// </summary>
+    public bool TryClaimForWorkerInChunk(
+        int chunkIndex,
+        int workerTileX, int workerTileY,
+        ToolRequirement workerTools,
+        AgentDataPool pool, int agentIndex,
+        SimulationContext ctx,
+        out JobData claimedJob,
+        Func<JobData, bool>? filter)
     {
         claimedJob = default;
 
@@ -690,6 +710,11 @@ public sealed class GenericJobSpatialIndex
             float dx = _standX[jobId] - workerTileX;
             float dy = _standY[jobId] - workerTileY;
             float distSq = dx * dx + dy * dy + GetAffinityPenalty(pool, agentIndex, _typeId[jobId]);
+
+            // FIX #3 (бригадир-диспатч): предикат принадлежности зоне — отсеваем
+            // кандидатов ДО CAS-захвата, снимая claim→cancel-чернилку на границах чанков.
+            if (filter != null && !filter(GetJobData(jobId)))
+                continue;
 
             if (priority > bestPriority || (priority == bestPriority && distSq < bestDistSq))
             {
