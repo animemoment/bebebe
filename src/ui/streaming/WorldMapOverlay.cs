@@ -5,7 +5,7 @@ using Game.Core.WorldStreaming;
 
 namespace Game.UI.Streaming;
 
-/// <summary>Мировая карта: чанки TileMapLayer с dirty-state кэшем.</summary>
+/// <summary>Мировая карта: чанки TileMapLayer с кэшем загруженных чанков (генерация одноразовая).</summary>
 public partial class WorldMapOverlay : Node2D
 {
 	private const int TileSizePx = 16;
@@ -17,21 +17,24 @@ public partial class WorldMapOverlay : Node2D
 	private const float ZoomFactor = 1.2f;
 	private const float PanSpeed = 900f;
 
-	// --- Dirty-state cache: на каждый загруженный чанк храним cached tile index ---
-	private readonly Dictionary<Vector2I, short[]> _chunkTileCache = new();
+	// Кэш загруженных чанков: seed/version меняются только через Initialize→ClearAllCache,
+	// поэтому готовый чанк достаточно сгенерировать один раз — пересчёт клеток не нужен.
+	private readonly HashSet<Vector2I> _loadedChunks = new();
+	private readonly List<Vector2I> _toUnload = new();
 	private Camera2D _camera;
 	private TileMapLayer _mapLayer;
 	private CanvasLayer _uiLayer;
-	private Button _closeBtn;
 	private readonly HashSet<Vector2I> _visibleChunksThisFrame = new();
 	private readonly Dictionary<CanvasItem, bool> _savedCanvasItemVisibility = new();
-	private CanvasLayer _gameCanvasLayer;
-	private bool _savedCanvasLayerVisibility;
-	private bool _hasSavedCanvasLayerVisibility;
+	private readonly Dictionary<CanvasLayer, bool> _savedCanvasLayerVisibility = new();
 	private bool _savedGameCameraEnabled;
+	private bool _gameCameraSaved;
 	private ulong _seed;
 	private uint _version;
 	private bool _isDragging;
+	private Vector2 _lastCameraPosition = Vector2.Zero;
+	private Vector2 _lastZoom = Vector2.Zero;
+	private Vector2 _lastViewportSize = Vector2.Zero;
 
 	// Пресчитанный atlas-coord lookup (16 элементов)
 	private static readonly Vector2I[] AtlasCoordsCached = new Vector2I[16];
@@ -49,14 +52,12 @@ public partial class WorldMapOverlay : Node2D
 		// foreground even if a game renderer is added during map generation.
 		_mapLayer.ZIndex = 1000;
 		_uiLayer = GetNode<CanvasLayer>("UI");
-		_closeBtn = GetNode<Button>("UI/Control/BtnClose");
 
 		_camera.Position = new Vector2(GridWidth * TileSizePx / 2f, GridHeight * TileSizePx / 2f);
 		_camera.Zoom = new Vector2(0.4f, 0.4f);
 		_camera.Enabled = false;
 		Visible = false;
 		_uiLayer.Visible = false;
-		_closeBtn.Pressed += CloseMap;
 	}
 
 	public void Initialize(ulong seed, uint version)
@@ -68,36 +69,47 @@ public partial class WorldMapOverlay : Node2D
 
 	public void OpenMap()
 	{
-		if (Visible || !EnsureTileSet())
+		if (Visible)
 			return;
 
+		if (!EnsureTileSet())
+		{
+			// Не скрываем игровые слои, если карта не готова — иначе интерфейс «пропадёт» навсегда.
+			GD.PrintErr("[WORLD MAP] OpenMap отменён: TileSet не готов");
+			return;
+		}
+
 		HideGameLayer();
-		ClearAllCache();
+
+		// Игровая камера отключена на всё время карты (в т.ч. пока overlay ещё не показан),
+		// чтобы MakeCurrent() ниже гарантированно стал победителем спора камер.
+		Camera2D gameCamera = GetParent()?.GetNodeOrNull<Camera2D>("Camera");
+		if (gameCamera != null)
+			gameCamera.Enabled = false;
+
 		_mapLayer.Visible = true;
 		Visible = true;
 		_uiLayer.Visible = true;
 		_camera.Enabled = true;
 		_camera.MakeCurrent();
 		ClampCamera();
+		// Принудительно пересчитываем видимую область (позиция/зум могли не измениться).
+		_lastCameraPosition = Vector2.Zero;
+		_lastZoom = Vector2.Zero;
+		_lastViewportSize = Vector2.Zero;
 		LoadVisibleChunks();
 	}
 
 	public void CloseMap()
 	{
-		if (!Visible && _savedCanvasItemVisibility.Count == 0 && !_hasSavedCanvasLayerVisibility)
+		if (!Visible && _savedCanvasItemVisibility.Count == 0 && _savedCanvasLayerVisibility.Count == 0)
 			return;
 
 		Visible = false;
-		_mapLayer.Visible = true;
 		_uiLayer.Visible = false;
 		_camera.Enabled = false;
 		_isDragging = false;
 		ShowGameLayer();
-
-		Node main = GetParent();
-		Camera2D baseCam = main?.GetNodeOrNull<Camera2D>("Camera");
-		if (baseCam != null && _savedGameCameraEnabled)
-			baseCam.MakeCurrent();
 	}
 
 	public override void _UnhandledInput(InputEvent @event)
@@ -109,6 +121,8 @@ public partial class WorldMapOverlay : Node2D
 		{
 			if (mouse.ButtonIndex is MouseButton.Middle or MouseButton.Right)
 			{
+				// Держим флаг в актуальном состоянии: если событие отпускания
+				// перехвачено UI, _Process проверит фактическое нажатие и сбросит залипание.
 				_isDragging = mouse.Pressed;
 				GetViewport().SetInputAsHandled();
 				return;
@@ -135,8 +149,6 @@ public partial class WorldMapOverlay : Node2D
 		}
 	}
 
-	private Vector2 _lastCameraPosition = Vector2.Zero;
-
 	public override void _Process(double delta)
 	{
 		if (!Visible || !IsInsideTree())
@@ -145,6 +157,11 @@ public partial class WorldMapOverlay : Node2D
 		// Game renderers (especially AgentRenderer) can be created after the map
 		// was opened. Track and hide late-added siblings for the whole map session.
 		HideGameLayer();
+
+		// Защита от «залипания» drag: если событие отпускания перехвачено UI-контролом,
+		// _UnhandledInput его не увидит — сверяемся с фактическим состоянием мыши.
+		if (_isDragging && !Input.IsMouseButtonPressed(MouseButton.Middle) && !Input.IsMouseButtonPressed(MouseButton.Right))
+			_isDragging = false;
 
 		Vector2 direction = Vector2.Zero;
 		if (Input.IsKeyPressed(Key.A)) direction.X -= 1f;
@@ -157,9 +174,13 @@ public partial class WorldMapOverlay : Node2D
 			ClampCamera();
 		}
 
-		if (!_lastCameraPosition.Equals(_camera.Position))
+		// Реагируем на смену позиции, зума и размера вьюпорта.
+		Vector2 viewportSize = GetViewport().GetVisibleRect().Size;
+		if (!_lastCameraPosition.Equals(_camera.Position) || !_lastZoom.Equals(_camera.Zoom) || !_lastViewportSize.Equals(viewportSize))
 		{
 			_lastCameraPosition = _camera.Position;
+			_lastZoom = _camera.Zoom;
+			_lastViewportSize = viewportSize;
 			LoadVisibleChunks();
 		}
 	}
@@ -195,8 +216,9 @@ public partial class WorldMapOverlay : Node2D
 		float zoomX = _camera.Zoom.X;
 		float zoomY = _camera.Zoom.Y;
 
-		float halfWidthCells = viewportSize.X / (zoomX * TileSizePx) + 1;
-		float halfHeightCells = viewportSize.Y / (zoomY * TileSizePx) + 1;
+		// viewport/zoom — это полная ширина экрана в клетках, нужна половина.
+		float halfWidthCells = viewportSize.X / (2f * zoomX * TileSizePx) + 1;
+		float halfHeightCells = viewportSize.Y / (2f * zoomY * TileSizePx) + 1;
 
 		int minCellX = Mathf.FloorToInt(_camera.Position.X / TileSizePx - halfWidthCells);
 		int maxCellX = Mathf.CeilToInt(_camera.Position.X / TileSizePx + halfWidthCells);
@@ -222,64 +244,60 @@ public partial class WorldMapOverlay : Node2D
 			}
 		}
 
-		// Удаление невидимых чанков
-		foreach (var chk in _chunkTileCache.Keys)
+		// Выгрузка невидимых чанков: сначала собираем список, потом удаляем
+		// (изменение коллекции во время foreach по Keys бросает InvalidOperationException).
+		_toUnload.Clear();
+		foreach (var chk in _loadedChunks)
 		{
 			if (!_visibleChunksThisFrame.Contains(chk))
-			{
-				UnloadChunk(chk);
-			}
+				_toUnload.Add(chk);
 		}
+		foreach (var chk in _toUnload)
+			UnloadChunk(chk);
 
-		// Загрузка/обновление видимых чанков
+		// Загрузка новых видимых чанков (уже загруженные пропускаем — генерация одноразовая).
 		foreach (var chk in _visibleChunksThisFrame)
-			PullChunk(chk);
+		{
+			if (!_loadedChunks.Contains(chk))
+				PullChunk(chk);
+		}
 	}
 
-	/// <summary>Загружает или обновляет один чанк. Если чанк ранее был выгружен — все клетки «чистые» (need redraw).</summary>
+	/// <summary>Генерирует чанк один раз. Повторный вызов для того же чанка не происходит:
+	/// готовые чанки помечены в _loadedChunks и пропускаются в LoadVisibleChunks.</summary>
 	private void PullChunk(Vector2I chunk)
 	{
-		bool isNew = !_chunkTileCache.TryGetValue(chunk, out var tiles);
-
-		if (isNew)
-		{
-			tiles = new short[ChunkSize * ChunkSize]; // -1 = пусто/needs draw
-			for (int i = 0; i < tiles.Length; i++) tiles[i] = -1;
-			_chunkTileCache[chunk] = tiles;
-		}
-
 		int startX = chunk.X * ChunkSize;
-		int endX = Math.Min(startX + ChunkSize, GridWidth);
 		int startY = chunk.Y * ChunkSize;
+		int endX = Math.Min(startX + ChunkSize, GridWidth);
 		int endY = Math.Min(startY + ChunkSize, GridHeight);
 
-		int size = ChunkSize * ChunkSize;
-		for (int idx = 0; idx < size; idx++)
+		for (int wy = startY; wy < endY; wy++)
 		{
-			int lx = idx % ChunkSize;
-			int ly = idx / ChunkSize;
-			int wx = startX + lx;
-			int wy = startY + ly;
-
-			if (wx >= endX || wy >= endY) continue; // outside this chunk's valid bounds
-
-			short cachedTile = tiles[idx];
-
-			TilePick pick = BiomeMapper.Pick(_seed, _version, wx, wy, RegionTraitProvider.SampleBlended(_seed, _version, wx, wy));
-			short tileIdx = (short)WorldMapTileMapper.GetTileId(pick.Biome, pick.Variant);
-
-			if (cachedTile != tileIdx)
+			for (int wx = startX; wx < endX; wx++)
 			{
+				TilePick pick = BiomeMapper.Pick(_seed, _version, wx, wy, RegionTraitProvider.SampleBlended(_seed, _version, wx, wy));
+				int tileIdx = WorldMapTileMapper.GetTileId(pick.Biome, pick.Variant);
+				if (tileIdx < 0 || tileIdx >= AtlasCoordsCached.Length)
+				{
+					GD.PrintErr($"[WORLD MAP] tileId {tileIdx} вне диапазона атласа (0..{AtlasCoordsCached.Length - 1})");
+					continue;
+				}
 				_mapLayer.SetCell(new Vector2I(wx, wy), 0, AtlasCoordsCached[tileIdx]);
-				tiles[idx] = tileIdx;
 			}
 		}
+
+		_loadedChunks.Add(chunk);
 	}
 
 	private void UnloadChunk(Vector2I chunk)
 	{
-		_chunkTileCache.Remove(chunk);
+		_loadedChunks.Remove(chunk);
+		EraseChunkCells(chunk);
+	}
 
+	private void EraseChunkCells(Vector2I chunk)
+	{
 		int startX = chunk.X * ChunkSize;
 		int endX = Math.Min(startX + ChunkSize, GridWidth);
 		int startY = chunk.Y * ChunkSize;
@@ -293,21 +311,9 @@ public partial class WorldMapOverlay : Node2D
 
 	private void ClearAllCache()
 	{
-		// Очищаем TileMapLayer для всех ранее загруженных чанков
-		foreach (var kvp in _chunkTileCache)
-		{
-			Vector2I chunk = kvp.Key;
-			int startX = chunk.X * ChunkSize;
-			int endX = Math.Min(startX + ChunkSize, GridWidth);
-			int startY = chunk.Y * ChunkSize;
-			int endY = Math.Min(startY + ChunkSize, GridHeight);
-			for (int y = startY; y < endY; y++)
-			{
-				for (int x = startX; x < endX; x++)
-					_mapLayer.SetCell(new Vector2I(x, y), -1, new Vector2I(-1, -1));
-			}
-		}
-		_chunkTileCache.Clear();
+		// Полная очистка слоя дешевле перебора клеток каждого чанка.
+		_mapLayer.Clear();
+		_loadedChunks.Clear();
 	}
 
 	private void ZoomAtMouse(float factor)
@@ -331,6 +337,11 @@ public partial class WorldMapOverlay : Node2D
 			halfHeight * 2f >= mapHeight ? mapHeight / 2f : Mathf.Clamp(_camera.Position.Y, halfHeight, mapHeight - halfHeight));
 	}
 
+	/// <summary>
+	/// Скрыть всё, кроме мировой карты. Узлы скрываются ТОЛЬКО если они были видны до открытия
+	/// карты (записаны в _saved*Visibility): заранее скрытые узлы не трогаем — иначе их
+	/// случайная повторная показь/скрытие ломает интерфейс после закрытия карты.
+	/// </summary>
 	private void HideGameLayer()
 	{
 		// This overlay is a child of Main. Do not assume Main is Root.GetChild(0):
@@ -346,41 +357,73 @@ public partial class WorldMapOverlay : Node2D
 
 			if (child is CanvasItem canvasItem)
 			{
-				// Preserve the pre-map value only once; subsequent calls also catch
-				// unexpected visibility changes while the map remains open.
+				// Сохраняем исходное значение один раз за сессию карты и скрываем только видимое.
 				if (!_savedCanvasItemVisibility.ContainsKey(canvasItem))
-					_savedCanvasItemVisibility[canvasItem] = canvasItem.Visible;
-				canvasItem.Visible = false;
+				{
+					if (!canvasItem.Visible)
+						continue; // был скрыт намеренно — не трогаем совсем
+					_savedCanvasItemVisibility[canvasItem] = true;
+					canvasItem.Visible = false;
+				}
+				else if (canvasItem.Visible)
+				{
+					// Вдруг стал виден во время карты (поздний рендерер) — скрываем снова.
+					canvasItem.Visible = false;
+				}
 			}
 
 			if (child is CanvasLayer canvasLayer)
 			{
-				if (!_hasSavedCanvasLayerVisibility || _gameCanvasLayer != canvasLayer)
+				if (!_savedCanvasLayerVisibility.ContainsKey(canvasLayer))
 				{
-					_gameCanvasLayer = canvasLayer;
-					_savedCanvasLayerVisibility = canvasLayer.Visible;
-					_hasSavedCanvasLayerVisibility = true;
+					if (!canvasLayer.Visible)
+						continue;
+					_savedCanvasLayerVisibility[canvasLayer] = true;
+					canvasLayer.Visible = false;
 				}
-				canvasLayer.Visible = false;
+				else if (canvasLayer.Visible)
+				{
+					canvasLayer.Visible = false;
+				}
 			}
 		}
 
 		// Be explicit about the dynamic renderer: it is spawned by Main after
 		// the map generator finishes and therefore may not exist on first open.
 		CanvasItem agentRenderer = main.GetNodeOrNull<CanvasItem>("AgentRenderer");
-		if (agentRenderer != null)
+		if (agentRenderer != null && !_savedCanvasItemVisibility.ContainsKey(agentRenderer))
 		{
-			if (!_savedCanvasItemVisibility.ContainsKey(agentRenderer))
-				_savedCanvasItemVisibility[agentRenderer] = agentRenderer.Visible;
-			agentRenderer.Visible = false;
+			if (agentRenderer.Visible)
+			{
+				_savedCanvasItemVisibility[agentRenderer] = true;
+				agentRenderer.Visible = false;
+			}
 		}
 
-		Camera2D gameCamera = main.GetNodeOrNull<Camera2D>("Camera");
-		_savedGameCameraEnabled = gameCamera != null && gameCamera.Enabled;
+		// Состояние игровой камеры сохраняем один раз за сессию карты.
+		if (!_gameCameraSaved)
+		{
+			Camera2D gameCamera = main.GetNodeOrNull<Camera2D>("Camera");
+			_savedGameCameraEnabled = gameCamera != null && gameCamera.Enabled;
+			_gameCameraSaved = true;
+		}
 	}
 
 	private void ShowGameLayer()
 	{
+		Node main = GetParent();
+
+		// Сначала возвращаем игровой камере управление и включаем её (если она была включена),
+		// ДО показа тайловых слоёв — иначе камера может остаться неактуальной из-за спора камер.
+		Camera2D gameCamera = main?.GetNodeOrNull<Camera2D>("Camera");
+		if (gameCamera != null)
+		{
+			gameCamera.Enabled = _savedGameCameraEnabled;
+			if (_savedGameCameraEnabled)
+				gameCamera.MakeCurrent();
+		}
+		_gameCameraSaved = false;
+
 		foreach (KeyValuePair<CanvasItem, bool> entry in _savedCanvasItemVisibility)
 		{
 			CanvasItem canvasItem = entry.Key;
@@ -389,19 +432,13 @@ public partial class WorldMapOverlay : Node2D
 		}
 		_savedCanvasItemVisibility.Clear();
 
-		if (_hasSavedCanvasLayerVisibility
-			&& GodotObject.IsInstanceValid(_gameCanvasLayer)
-			&& _gameCanvasLayer.IsInsideTree())
+		foreach (KeyValuePair<CanvasLayer, bool> entry in _savedCanvasLayerVisibility)
 		{
-			_gameCanvasLayer.Visible = _savedCanvasLayerVisibility;
+			CanvasLayer canvasLayer = entry.Key;
+			if (GodotObject.IsInstanceValid(canvasLayer) && canvasLayer.IsInsideTree())
+				canvasLayer.Visible = entry.Value;
 		}
-		_gameCanvasLayer = null;
-		_hasSavedCanvasLayerVisibility = false;
-
-		Node main = GetParent();
-		Camera2D gameCamera = main?.GetNodeOrNull<Camera2D>("Camera");
-		if (gameCamera != null)
-			gameCamera.Enabled = _savedGameCameraEnabled;
+		_savedCanvasLayerVisibility.Clear();
 	}
 
 	private static Vector2I GetAtlasCoordsRaw(int tileIndex)
