@@ -294,18 +294,12 @@ public partial class Main : Node2D
 	{
 		if (_mapOverlay == null) return;
 
+		// Скрытие/восстановление игрового UI (включая CanvasLayer с HUD) делает сам оверлей,
+		// чтобы все пути закрытия (кнопка, «Закрыть карту», выход) работали одинаково.
 		if (_mapOverlay.Visible)
-		{
 			_mapOverlay.CloseMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = true;
-		}
 		else
-		{
 			_mapOverlay.OpenMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = false;
-		}
 	}
 
 	public override void _ExitTree()

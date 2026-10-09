@@ -1,18 +1,22 @@
 [gd_scene format=3 uid="uid://dj8qypoirmgv"]
 
 [ext_resource type="Script" uid="uid://bj1yprv5nudk" path="res://src/ui/streaming/WorldMapOverlay.cs" id="1_script"]
+[ext_resource type="Texture2D" uid="uid://c0hnqkwjeowlk" path="res://ui/assets/textures/icons/MapIcon.png" id="2_bs3n3"]
 
-[node name="WorldMap" type="Node2D"]
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_jbcnj"]
+bg_color = Color(0, 0, 0, 1)
+
+[node name="WorldMap" type="Node2D" unique_id=2120347395]
 script = ExtResource("1_script")
 
-[node name="Camera2D" type="Camera2D" parent="."]
+[node name="Camera2D" type="Camera2D" parent="." unique_id=382374038]
 
-[node name="TileMapLayer" type="TileMapLayer" parent="."]
+[node name="TileMapLayer" type="TileMapLayer" parent="." unique_id=50073604]
 
-[node name="UI" type="CanvasLayer" parent="."]
+[node name="UI" type="CanvasLayer" parent="." unique_id=1309023598]
 layer = 10
 
-[node name="Control" type="Control" parent="UI"]
+[node name="Control" type="Control" parent="UI" unique_id=1768751576]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -21,16 +25,11 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 
-[node name="BtnClose" type="Button" parent="UI/Control"]
+[node name="BtnOpenWorldMap" type="Button" parent="UI/Control" unique_id=1375498257]
 layout_mode = 0
-anchors_preset = 1
-anchor_left = 1.0
-anchor_top = 0.0
-anchor_right = 1.0
-anchor_bottom = 0.0
-offset_left = -156.0
-offset_top = 16.0
-offset_right = -16.0
-offset_bottom = 56.0
-grow_horizontal = 0
-text = "Закрыть карту"
+offset_left = 1844.0
+offset_right = 1919.0
+offset_bottom = 75.0
+theme_override_styles/normal = SubResource("StyleBoxFlat_jbcnj")
+icon = ExtResource("2_bs3n3")
+expand_icon = true
