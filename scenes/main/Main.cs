@@ -11,7 +11,10 @@ namespace Game.Main;
 
 public partial class Main : Node2D
 {
-	private const ulong WorldMapSeed = 0x0123456789ABCDEFUL;
+	// Единый сид текущего запуска: КАЖДЫЙ старт процесса — новый случайный сид
+	// (WorldSeedProvider), один источник истины для мировой карты, стримера чанков
+	// и локальной карты («окна» в мир). Порядок «сверху вниз»: сначала мир, потом всё остальное.
+	private static ulong WorldMapSeed => Game.Core.WorldStreaming.Layers.WorldSeedProvider.Current;
 	private const uint WorldGeneratorVersion = Game.Core.WorldStreaming.Layers.WorldLayerStack.GeneratorVersion; // v4: единый конвейер слоёв (старые сохранения несовместимы)
 	private const long WorldRegionsX = 2048; // регионов по X (мировая карта §23)
 	private const long WorldRegionsY = 1024; // регионов по Y

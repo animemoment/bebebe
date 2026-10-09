@@ -37,7 +37,7 @@ public static class WorldLayerStack
         var elevFn = ElevationFn(seed, ver);
 
         ushort elev = ReliefLayer.SampleElevation(seed, ver, x, y);
-        bool isOcean = ReliefLayer.IsOcean(elev);
+        bool isOcean = ReliefLayer.IsOceanAt(seed, ver, x, y, elev);
 
         ushort temp = ClimateLayer.SampleTemperature(seed, ver, x, y, elev);
         ushort precip = ClimateLayer.SamplePrecipitation(seed, ver, x, y, elevFn);

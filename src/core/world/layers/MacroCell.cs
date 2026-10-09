@@ -26,5 +26,5 @@ public readonly record struct MacroCell(
 public readonly record struct LocalCellSample(
     MacroCell Macro,
     bool IsWater,     // вода тайла = ocean || river || lake
-    bool IsTreeRoll,  // бросок деревьев (сравнение hash < forest·k_biome)
-    bool IsStoneRoll);// бросок камней из L4
+    bool IsTree,      // бросок деревьев (сравнение hash < forest·k_biome)
+    bool IsStone);    // бросок камней из L4

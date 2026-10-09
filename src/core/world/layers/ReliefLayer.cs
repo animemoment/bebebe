@@ -27,12 +27,34 @@ public static class ReliefLayer
             x, y, WorldLayerParams.RidgeScale, 4);
 
         // Хребты поднимаем только там, где база уже суша/предгорья — иначе горы «в океане».
-        float landGate = Math.Clamp((baseFbm - 0.35f) / 0.35f, 0f, 1f);
+        float landGate = Math.Clamp((baseFbm - 0.52f) / 0.30f, 0f, 1f);
         float h = baseFbm * (1f - WorldLayerParams.RidgeWeight)
                 + ridge * WorldLayerParams.RidgeWeight * landGate;
 
         return AbsNoise.ToQ16(h);
     }
+
+    /// <summary>
+    /// Архипелажная маска: низкочастотный шум → в «разреженных» зонах локальный уровень
+    /// моря поднимается (берега размываются в цепи островов). Чистая функция координат.
+    /// </summary>
+    public static ushort LocalSeaLevel(ulong seed, uint ver, long x, long y)
+    {
+        float mask = AbsNoise.Fbm(seed, ver, GenerationDomain.ElevationMedium,
+            x, y, WorldLayerParams.ArchipelagoMaskScale, 2);
+        int maskQ16 = AbsNoise.ToQ16(mask);
+        if (maskQ16 <= WorldLayerParams.ArchipelagoMaskLoQ16)
+            return WorldLayerParams.SeaLevelQ16;
+        int t = (int)((long)(Math.Min(maskQ16, WorldLayerParams.ArchipelagoMaskHiQ16)
+            - WorldLayerParams.ArchipelagoMaskLoQ16) * WorldLayerParams.Q16One
+            / (WorldLayerParams.ArchipelagoMaskHiQ16 - WorldLayerParams.ArchipelagoMaskLoQ16));
+        return WorldLayerParams.ClampQ16(WorldLayerParams.SeaLevelQ16
+            + (long)WorldLayerParams.ArchipelagoSeaBoostQ16 * t / WorldLayerParams.Q16One);
+    }
+
+    /// <summary>Океан ли клетка — с учётом локального (архипелажного) уровня моря.</summary>
+    public static bool IsOceanAt(ulong seed, uint ver, long x, long y, ushort elevationQ16)
+        => elevationQ16 < LocalSeaLevel(seed, ver, x, y);
 
     public static bool IsOcean(ushort elevationQ16)
         => elevationQ16 < WorldLayerParams.SeaLevelQ16;

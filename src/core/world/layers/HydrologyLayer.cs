@@ -21,17 +21,19 @@ public sealed class RegionHydrology
     public readonly long OriginX;
     public readonly long OriginY;
 
+    private readonly ushort[] _rawElev;     // Q16 исходные высоты L0 (для проверки моря)
     private readonly ushort[] _filledElev; // Q16 заполненные высоты (priority-flood выход)
     private readonly int[] _downstream;    // индекс ячейки стока или -1 (океан/край)
     private readonly ushort[] _flowQ16;    // нормированный log2 accumulation
     private readonly bool[] _isLake;       // озёрные ячейки (заполненные впадины суши)
 
     private RegionHydrology(int side, long originX, long originY,
-        ushort[] filled, int[] downstream, ushort[] flow, bool[] lake)
+        ushort[] raw, ushort[] filled, int[] downstream, ushort[] flow, bool[] lake)
     {
         GridSide = side;
         OriginX = originX;
         OriginY = originY;
+        _rawElev = raw;
         _filledElev = filled;
         _downstream = downstream;
         _flowQ16 = flow;
@@ -40,6 +42,8 @@ public sealed class RegionHydrology
 
     public ushort FlowAt(int i) => _flowQ16[i];
     public bool IsLakeAt(int i) => _isLake[i];
+    /// <summary>Исходная (до priority-flood) высота ячейки — для проверки «море».</summary>
+    public ushort RawElevAt(int i) => _rawElev[i];
 
     public int IndexOf(long worldX, long worldY)
     {
@@ -315,7 +319,7 @@ public sealed class RegionHydrology
             }
         }
 
-        return new RegionHydrology(side, originX, originY, filled, downstream, flowQ16, isLake);
+        return new RegionHydrology(side, originX, originY, elev, filled, downstream, flowQ16, isLake);
     }
 
     private static void EnqueueBoundary(MinHeap heap, bool[] visited, ushort[] elev, int idx)
@@ -323,69 +327,6 @@ public sealed class RegionHydrology
         if (visited[idx]) return;
         visited[idx] = true;
         heap.PushBoundary(idx, elev[idx]);
-    }
-
-    /// <summary>Мин-куча (key=Q16 высота, value=индекс) — без внешних зависимостей.</summary>
-    private sealed class MinHeap
-    {
-        private readonly int[] _idx;
-        private readonly ushort[] _key;
-        private readonly List<(int, ushort)> _seeds = new();
-        private int _count;
-
-        public int Count => _count;
-        public IReadOnlyList<(int Idx, ushort Key)> BoundarySeeds => _seeds;
-
-        public MinHeap(int capacity)
-        {
-            _idx = new int[capacity];
-            _key = new ushort[capacity];
-        }
-
-        public void Push(int idx, ushort key)
-        {
-            int i = _count++;
-            _idx[i] = idx;
-            _key[i] = key;
-            while (i > 0)
-            {
-                int parent = (i - 1) >> 1;
-                if (_key[parent] <= _key[i]) break;
-                Swap(parent, i);
-                i = parent;
-            }
-        }
-
-        public void PushBoundary(int idx, ushort key)
-        {
-            _seeds.Add((idx, key));
-            Push(idx, key);
-        }
-
-        public (int Idx, ushort Key) Pop()
-        {
-            var top = (_idx[0], _key[0]);
-            _count--;
-            _idx[0] = _idx[_count];
-            _key[0] = _key[_count];
-            int i = 0;
-            while (true)
-            {
-                int l = 2 * i + 1, r = 2 * i + 2, smallest = i;
-                if (l < _count && _key[l] < _key[smallest]) smallest = l;
-                if (r < _count && _key[r] < _key[smallest]) smallest = r;
-                if (smallest == i) break;
-                Swap(i, smallest);
-                i = smallest;
-            }
-            return top;
-        }
-
-        private void Swap(int a, int b)
-        {
-            (_idx[a], _idx[b]) = (_idx[b], _idx[a]);
-            (_key[a], _key[b]) = (_key[b], _key[a]);
-        }
     }
 }
 
@@ -427,4 +368,13 @@ public static class HydrologyLayer
         bool isRiver = !isLake && flow > WorldLayerParams.RiverThresholdQ16;
         return (flow, isRiver, isLake);
     }
+
+    /// <summary>
+    /// Быстрая проверка «море ли клетка» по уже готовой сетке гидрологии
+    /// (elev[i] &lt; локальный уровень моря с архипелажной маской). Используется
+    /// фасадом стека для согласованности океан/река/озеро на границах.
+    /// </summary>
+    public static bool IsOceanCell(ulong seed, uint ver, RegionHydrology hydro, int i)
+        => hydro.RawElevAt(i) < ReliefLayer.LocalSeaLevel(seed, ver,
+            hydro.OriginX + i % hydro.GridSide, hydro.OriginY + i / hydro.GridSide);
 }

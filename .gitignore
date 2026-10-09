@@ -1,20 +1,6 @@
-# Godot/Mono Build Artifacts
-.godot/mono/temp/
+# Compiled/Binary files
 *.dll
 *.pdb
-*.deps.json
-*.runtimeconfig.json
-*.cache
-*.AssemblyInfo.cs
-*.AssemblyAttributes.cs
-*.GeneratedMSBuildEditorConfig.editorconfig
-*.FileListAbsolute.txt
-*.Up2Date
-*.genruntimeconfig.cache
-project.assets.json
-project.nuget.cache
-Game.csproj.nuget.*
 
-# Backup Files
-*.bak
-*.bak_*
+# Dependency directories / Build artifacts
+.godot/mono/temp/

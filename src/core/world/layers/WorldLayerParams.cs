@@ -16,9 +16,20 @@ public static class WorldLayerParams
 
     // ===== Группа 2: рельеф (L0) =====
     /// <summary>Масштаб крупных форм (континенты), клеток на ячейку решётки шума.</summary>
-    public const float ReliefScale = 384f;
+    public const float ReliefScale = 768f;
     /// <summary>Детализация fBm рельефа (октавы).</summary>
     public const int ReliefOctaves = 5;
+    /// <summary>
+    /// Масштаб маски архипелагов (низкочастотный шум): области с малым значением —
+    /// «разреженные острова» (вода выше обычного порога берегов). 0 — выключено.
+    /// </summary>
+    public const float ArchipelagoMaskScale = 192f;
+    /// <summary>Сила поднятия локального уровня моря в архипелажных зонах (Q16).</summary>
+    public const ushort ArchipelagoSeaBoostQ16 = 9000;
+    /// <summary>Нижняя граница маски архипелага (Q16-порог noise→boost линейный).</summary>
+    public const ushort ArchipelagoMaskLoQ16 = 20000;
+    /// <summary>Верхняя граница маски (выше — полный boost).</summary>
+    public const ushort ArchipelagoMaskHiQ16 = 40000;
     /// <summary>Доля ridged-хребтов в рельефе (0..1).</summary>
     public const float RidgeWeight = 0.30f;
     /// <summary>Масштаб ridged-хребтов.</summary>
@@ -27,8 +38,8 @@ public static class WorldLayerParams
     public const float WarpStrength = 72f;
     /// <summary>Масштаб warp-шума.</summary>
     public const float WarpScale = 256f;
-    /// <summary>Порог воды по высоте (Q16): ниже — Water/Ocean.</summary>
-    public const ushort SeaLevelQ16 = 26000;
+    /// <summary>Порог воды по высоте (Q16): ниже — Water/Ocean. ~55% мира — океаны/моря.</summary>
+    public const ushort SeaLevelQ16 = 30000;
     /// <summary>Верхний порог «предгорий».</summary>
     public const ushort HighlandQ16 = 42000;
     /// <summary>Порог гор по высоте (Q16), L7 переопределение Mountain.</summary>
