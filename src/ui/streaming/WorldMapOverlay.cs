@@ -24,7 +24,6 @@ public partial class WorldMapOverlay : Node2D
 	private Camera2D _camera;
 	private TileMapLayer _mapLayer;
 	private CanvasLayer _uiLayer;
-	private Button _closeBtn;
 	private readonly HashSet<Vector2I> _visibleChunksThisFrame = new();
 	private readonly Dictionary<CanvasItem, bool> _savedCanvasItemVisibility = new();
 	private readonly Dictionary<CanvasLayer, bool> _savedCanvasLayerVisibility = new();
@@ -53,14 +52,12 @@ public partial class WorldMapOverlay : Node2D
 		// foreground even if a game renderer is added during map generation.
 		_mapLayer.ZIndex = 1000;
 		_uiLayer = GetNode<CanvasLayer>("UI");
-		_closeBtn = GetNode<Button>("UI/Control/BtnClose");
 
 		_camera.Position = new Vector2(GridWidth * TileSizePx / 2f, GridHeight * TileSizePx / 2f);
 		_camera.Zoom = new Vector2(0.4f, 0.4f);
 		_camera.Enabled = false;
 		Visible = false;
 		_uiLayer.Visible = false;
-		_closeBtn.Pressed += CloseMap;
 	}
 
 	public void Initialize(ulong seed, uint version)
@@ -72,10 +69,24 @@ public partial class WorldMapOverlay : Node2D
 
 	public void OpenMap()
 	{
-		if (Visible || !EnsureTileSet())
+		if (Visible)
 			return;
 
+		if (!EnsureTileSet())
+		{
+			// Не скрываем игровые слои, если карта не готова — иначе интерфейс «пропадёт» навсегда.
+			GD.PrintErr("[WORLD MAP] OpenMap отменён: TileSet не готов");
+			return;
+		}
+
 		HideGameLayer();
+
+		// Игровая камера отключена на всё время карты (в т.ч. пока overlay ещё не показан),
+		// чтобы MakeCurrent() ниже гарантированно стал победителем спора камер.
+		Camera2D gameCamera = GetParent()?.GetNodeOrNull<Camera2D>("Camera");
+		if (gameCamera != null)
+			gameCamera.Enabled = false;
+
 		_mapLayer.Visible = true;
 		Visible = true;
 		_uiLayer.Visible = true;
@@ -99,17 +110,6 @@ public partial class WorldMapOverlay : Node2D
 		_camera.Enabled = false;
 		_isDragging = false;
 		ShowGameLayer();
-
-		Node main = GetParent();
-		Camera2D baseCam = main?.GetNodeOrNull<Camera2D>("Camera");
-		if (baseCam != null && _savedGameCameraEnabled)
-			baseCam.MakeCurrent();
-	}
-
-	public override void _ExitTree()
-	{
-		if (_closeBtn != null)
-			_closeBtn.Pressed -= CloseMap;
 	}
 
 	public override void _UnhandledInput(InputEvent @event)
@@ -337,6 +337,11 @@ public partial class WorldMapOverlay : Node2D
 			halfHeight * 2f >= mapHeight ? mapHeight / 2f : Mathf.Clamp(_camera.Position.Y, halfHeight, mapHeight - halfHeight));
 	}
 
+	/// <summary>
+	/// Скрыть всё, кроме мировой карты. Узлы скрываются ТОЛЬКО если они были видны до открытия
+	/// карты (записаны в _saved*Visibility): заранее скрытые узлы не трогаем — иначе их
+	/// случайная повторная показь/скрытие ломает интерфейс после закрытия карты.
+	/// </summary>
 	private void HideGameLayer()
 	{
 		// This overlay is a child of Main. Do not assume Main is Root.GetChild(0):
@@ -352,31 +357,47 @@ public partial class WorldMapOverlay : Node2D
 
 			if (child is CanvasItem canvasItem)
 			{
-				// Preserve the pre-map value only once; subsequent calls also catch
-				// unexpected visibility changes while the map remains open.
+				// Сохраняем исходное значение один раз за сессию карты и скрываем только видимое.
 				if (!_savedCanvasItemVisibility.ContainsKey(canvasItem))
-					_savedCanvasItemVisibility[canvasItem] = canvasItem.Visible;
-				canvasItem.Visible = false;
+				{
+					if (!canvasItem.Visible)
+						continue; // был скрыт намеренно — не трогаем совсем
+					_savedCanvasItemVisibility[canvasItem] = true;
+					canvasItem.Visible = false;
+				}
+				else if (canvasItem.Visible)
+				{
+					// Вдруг стал виден во время карты (поздний рендерер) — скрываем снова.
+					canvasItem.Visible = false;
+				}
 			}
 
 			if (child is CanvasLayer canvasLayer)
 			{
-				// Каждое CanvasLayer сохраняем отдельно: при нескольких слоях
-				// одна переменная перезаписывалась уже скрытым слоем (false).
 				if (!_savedCanvasLayerVisibility.ContainsKey(canvasLayer))
-					_savedCanvasLayerVisibility[canvasLayer] = canvasLayer.Visible;
-				canvasLayer.Visible = false;
+				{
+					if (!canvasLayer.Visible)
+						continue;
+					_savedCanvasLayerVisibility[canvasLayer] = true;
+					canvasLayer.Visible = false;
+				}
+				else if (canvasLayer.Visible)
+				{
+					canvasLayer.Visible = false;
+				}
 			}
 		}
 
 		// Be explicit about the dynamic renderer: it is spawned by Main after
 		// the map generator finishes and therefore may not exist on first open.
 		CanvasItem agentRenderer = main.GetNodeOrNull<CanvasItem>("AgentRenderer");
-		if (agentRenderer != null)
+		if (agentRenderer != null && !_savedCanvasItemVisibility.ContainsKey(agentRenderer))
 		{
-			if (!_savedCanvasItemVisibility.ContainsKey(agentRenderer))
-				_savedCanvasItemVisibility[agentRenderer] = agentRenderer.Visible;
-			agentRenderer.Visible = false;
+			if (agentRenderer.Visible)
+			{
+				_savedCanvasItemVisibility[agentRenderer] = true;
+				agentRenderer.Visible = false;
+			}
 		}
 
 		// Состояние игровой камеры сохраняем один раз за сессию карты.
@@ -390,6 +411,19 @@ public partial class WorldMapOverlay : Node2D
 
 	private void ShowGameLayer()
 	{
+		Node main = GetParent();
+
+		// Сначала возвращаем игровой камере управление и включаем её (если она была включена),
+		// ДО показа тайловых слоёв — иначе камера может остаться неактуальной из-за спора камер.
+		Camera2D gameCamera = main?.GetNodeOrNull<Camera2D>("Camera");
+		if (gameCamera != null)
+		{
+			gameCamera.Enabled = _savedGameCameraEnabled;
+			if (_savedGameCameraEnabled)
+				gameCamera.MakeCurrent();
+		}
+		_gameCameraSaved = false;
+
 		foreach (KeyValuePair<CanvasItem, bool> entry in _savedCanvasItemVisibility)
 		{
 			CanvasItem canvasItem = entry.Key;
@@ -405,12 +439,6 @@ public partial class WorldMapOverlay : Node2D
 				canvasLayer.Visible = entry.Value;
 		}
 		_savedCanvasLayerVisibility.Clear();
-
-		Node main = GetParent();
-		Camera2D gameCamera = main?.GetNodeOrNull<Camera2D>("Camera");
-		if (gameCamera != null)
-			gameCamera.Enabled = _savedGameCameraEnabled;
-		_gameCameraSaved = false;
 	}
 
 	private static Vector2I GetAtlasCoordsRaw(int tileIndex)

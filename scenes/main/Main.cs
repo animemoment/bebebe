@@ -297,14 +297,10 @@ public partial class Main : Node2D
 		if (_mapOverlay.Visible)
 		{
 			_mapOverlay.CloseMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = true;
 		}
 		else
 		{
 			_mapOverlay.OpenMap();
-			CanvasLayer canvas = GetNodeOrNull<CanvasLayer>("CanvasLayer");
-			if (canvas != null) canvas.Visible = false;
 		}
 	}
 
