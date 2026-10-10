@@ -1,6 +1,3 @@
-# Compiled/Binary files
+.godot/mono/temp/
 *.dll
 *.pdb
-
-# Dependency directories / Build artifacts
-.godot/mono/temp/

@@ -1,0 +1,14 @@
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/WorldGenCheck.GeneratedMSBuildEditorConfig.editorconfig
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/WorldGenCheck.AssemblyInfoInputs.cache
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/WorldGenCheck.AssemblyInfo.cs
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/WorldGenCheck.csproj.CoreCompileInputs.cache
+/workspace/tools/WorldGenCheck/bin/Release/net8.0/WorldGenCheck
+/workspace/tools/WorldGenCheck/bin/Release/net8.0/WorldGenCheck.deps.json
+/workspace/tools/WorldGenCheck/bin/Release/net8.0/WorldGenCheck.runtimeconfig.json
+/workspace/tools/WorldGenCheck/bin/Release/net8.0/WorldGenCheck.dll
+/workspace/tools/WorldGenCheck/bin/Release/net8.0/WorldGenCheck.pdb
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/WorldGenCheck.dll
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/refint/WorldGenCheck.dll
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/WorldGenCheck.pdb
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/WorldGenCheck.genruntimeconfig.cache
+/workspace/tools/WorldGenCheck/obj/Release/net8.0/ref/WorldGenCheck.dll

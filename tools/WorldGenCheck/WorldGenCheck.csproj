@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>WorldGenCheck</AssemblyName>
+    <!-- Консольная приёмка генерации: компилируем ТОЛЬКО чистые слои мира (без Godot). -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/core/world/BiomeType.cs" />
+    <Compile Include="../../src/core/world/MapData.cs" />
+    <Compile Include="../../src/core/world/TileType.cs" />
+    <Compile Include="../../src/core/world/HumidityMap.cs" />
+    <Compile Include="../../src/core/world/FertilityMap.cs" />
+    <Compile Include="../../src/core/world/streaming/generation/WorldCoordinates.cs" />
+    <Compile Include="../../src/core/world/streaming/generation/WorldRegions.cs" />
+    <Compile Include="../../src/core/world/streaming/generation/RegionKey.cs" />
+    <Compile Include="../../src/core/world/streaming/generation/GeneratedCell.cs" />
+    <Compile Include="../../src/core/world/layers/AbsNoise.cs" />
+    <Compile Include="../../src/core/world/layers/BiomeClassifier.cs" />
+    <Compile Include="../../src/core/world/layers/ClimateLayer.cs" />
+    <Compile Include="../../src/core/world/layers/HydrologyLayer.cs" />
+    <Compile Include="../../src/core/world/layers/MacroCell.cs" />
+    <Compile Include="../../src/core/world/layers/ReliefLayer.cs" />
+    <Compile Include="../../src/core/world/layers/SurfaceLayers.cs" />
+    <Compile Include="../../src/core/world/layers/WorldLayerParams.cs" />
+    <Compile Include="../../src/core/world/layers/WorldLayerStack.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+</Project>
