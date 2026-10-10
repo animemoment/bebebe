@@ -16,18 +16,18 @@ namespace Game.Core.WorldStreaming;
 /// </summary>
 public static class WorldMapTileMapper
 {
-    public static int GetTileId(BiomeType biome, int variant)
-    {
-        return biome switch
-        {
-            BiomeType.Desert    => Math.Clamp(variant, 0, 2),
-            BiomeType.Steppe    => 3 + Math.Clamp(variant, 0, 2),
-            BiomeType.DeepWater => 6 + Math.Clamp(variant, 0, 2),
-            BiomeType.Mountain  => 9,
-            BiomeType.Plains    => 10,
-            BiomeType.Forest    => 12 + Math.Clamp(variant, 0, 3),
-            BiomeType.Swamp     => 11,
-            _                   => 10
-        };
-    }
+	public static int GetTileId(BiomeType biome, int variant)
+	{
+		return biome switch
+		{
+			BiomeType.Desert    => Math.Clamp(variant, 0, 2),
+			BiomeType.Steppe    => 3 + Math.Clamp(variant, 0, 2),
+			BiomeType.DeepWater => 6 + Math.Clamp(variant, 0, 2),
+			BiomeType.Mountain  => 9,
+			BiomeType.Plains    => 10,
+			BiomeType.Forest    => 12 + Math.Clamp(variant, 0, 3),
+			BiomeType.Swamp     => 11,
+			_                   => 10
+		};
+	}
 }
