@@ -73,6 +73,12 @@ public interface IDynamicWorkScheduler
     int ForEachRange(int count, Action<int, int> body, WorkKind kind = WorkKind.Fast, string profilerScope = null);
 
     /// <summary>
+    /// Диапазонный проход со слотом воркера: body(workerSlot, start, endExclusive).
+    /// Позволяет воркерам индексировать lock-free структуры по workerSlot [0, dop) без False Sharing.
+    /// </summary>
+    int ForEachRange(int count, Action<int, int, int> body, WorkKind kind = WorkKind.Fast, string profilerScope = null);
+
+    /// <summary>
     /// Прерываемая версия (Шаг 4): body обрабатывает диапазон [start,end) и возвращает
     /// число реально обработанных элементов. Внутри body каждые <c>YieldEveryN=8</c>
     /// элементов проверяет <c>quantum.ShouldYield</c>; при истечении возвращает

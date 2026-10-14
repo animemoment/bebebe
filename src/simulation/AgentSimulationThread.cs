@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Godot;
@@ -35,6 +36,8 @@ public sealed class AgentSimulationThread : IDisposable
 	private readonly NeedsJobSystem _needsSystem = new();
 
 	public ConcurrentQueue<Vector2[]> PositionQueue { get; } = new();
+
+	public static bool EnableConsoleDebugAudit = false;
 
 	private volatile bool _running;
 	public volatile bool IsPaused;
@@ -69,6 +72,39 @@ public sealed class AgentSimulationThread : IDisposable
 	// P0-1: гейт секундных sys-рядов (WorkingSet64/GetTotalMemory — дорого).
 	private long _sysSeriesWallTicks;
 
+	// Переиспользуемые маски для влаги/плодородия (ноль GC аллокаций в горячем тике)
+	private bool[] _staticMountainMask;
+	private bool[] _reusableForestMask;
+	private bool[] _reusableFarmMask;
+	private bool _environmentalMasksDirty = true;
+
+	public void MarkEnvironmentalDirty() => _environmentalMasksDirty = true;
+
+	private void EnsureEnvironmentalMasks(int mw, int mh, TileType[,] ground)
+	{
+		int n = mw * mh;
+		if (_staticMountainMask == null || _staticMountainMask.Length != n)
+		{
+			_staticMountainMask = new bool[n];
+			_reusableForestMask = new bool[n];
+			_reusableFarmMask = new bool[n];
+
+			int gw = ground.GetLength(0);
+			int gh = ground.GetLength(1);
+			int mapW = Math.Min(gw, mw);
+			int mapH = Math.Min(gh, mh);
+			for (int y = 0; y < mapH; y++)
+			{
+				int row = y * mw;
+				for (int x = 0; x < mapW; x++)
+				{
+					if (ground[x, y] == TileType.Mountain)
+						_staticMountainMask[row + x] = true;
+				}
+			}
+		}
+	}
+
 	/// <summary>
 	/// Накопленное мировое игровое время (секунды) — авторитет «времени в мире».
 	/// Растёт только при реальном исполнении шагов симуляции (пауза останавливает его).
@@ -90,8 +126,26 @@ public sealed class AgentSimulationThread : IDisposable
 		}
 	}
 
+	public enum SimulationBackend
+	{
+		CpuSimd,
+		GpuCompute
+	}
+
+	public static SimulationBackend ActiveBackend { get; set; } = SimulationBackend.CpuSimd;
+	public static string SimBackendLabel => ActiveBackend == SimulationBackend.CpuSimd ? "Sim: [CPU SIMD]" : "Sim: [GPU Compute]";
+
 	private const float BaseFixedDeltaTime = 0.05f;
-	private const float MinSnapInterval = 1.0f / 30.0f;
+	private const float MinSnapIntervalBase = 1.0f / 30.0f;
+
+	private float GetMinSnapInterval()
+	{
+		// На высокой скорости (25x+) отправляем снапшоты рендера 20 раз/с вместо 30 раз/с.
+		// GPU-интерполятор шейдера плавно интерполирует кадры между снапшотами на 60 FPS,
+		// но нагрузка на P/Invoke шину и копирование буферов снижается на 33-50%.
+		if (_speedMultiplier >= 25f) return 1.0f / 20.0f;
+		return MinSnapIntervalBase;
+	}
 
 	// Интервалы диспетчеризации и роста культур измеряются в ИГРОВОМ времени,
 	// поэтому частота вызовов в реальном времени = speed / interval и без
@@ -158,6 +212,8 @@ public sealed class AgentSimulationThread : IDisposable
 				_pool.LastPositionY[i] = posY;
 				_pool.TargetPositionX[i] = posX;
 				_pool.TargetPositionY[i] = posY;
+				_pool.StepTargetX[i] = posX;
+				_pool.StepTargetY[i] = posY;
 				_pool.CurrentCellX[i] = tx;
 				_pool.CurrentCellY[i] = ty;
 				_pool.States[i] = AgentState.Idle;
@@ -185,6 +241,17 @@ public sealed class AgentSimulationThread : IDisposable
 
 			PushSnapshot();
 
+			// Предварительный прогрев масок окружения и GPU шейдеров во время загрузки мира (ноль спайков на первом тике)
+			if (humidity != null)
+			{
+				EnsureEnvironmentalMasks(humidity.Width, humidity.Height, ground);
+			}
+			try
+			{
+				_ = Game.Simulation.Gpu.GpuHumiditySimulator.Instance.IsAvailable;
+			}
+			catch { }
+
 			// FIX круг-2 №9: сохранить старые значения, проверить bool SetMinThreads,
 			// восстанавливать в Stop(). Без restore меняли глобальный пул навсегда.
 			// PERF F1: DOP = P-1 — резервируем одно ядро под рендер/Godot main loop.
@@ -205,6 +272,10 @@ public sealed class AgentSimulationThread : IDisposable
 
 	private void SimulationLoop()
 	{
+		// Понижаем приоритет фонового потока симуляции относительно UI/ОС Windows,
+		// чтобы системные прерывания (Win+Shift+S, клавиатура) не подвисали при 100k агентах.
+		Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+
 		var sw = new Stopwatch();
 		var renderTimer = new Stopwatch();
 		float accumulator = 0f;
@@ -243,14 +314,21 @@ public sealed class AgentSimulationThread : IDisposable
 				float dispatchInterval = GetScaledInterval(DispatchIntervalBase, _speedMultiplier);
 				float cropGrowthInterval = GetScaledInterval(CropGrowthIntervalBase, _speedMultiplier);
 				float sweepInterval = GetScaledIntervalHi(StockpileSweepIntervalBase, _speedMultiplier);
-				int maxAllowedSteps = _speedMultiplier >= 100f ? 16 : 10; // Лимит шагов за проход: 16 на 100x (пропускная способность), иначе 10; больше — дольше кадр и риск спирали смерти.
+				// Амортизация шагов: на 100x делим работу на порции по 1 шагу (макс 2 при отставании >6 шагов).
+				// Поток сразу берёт следующую порцию через Thread.Sleep(0), пиковая нагрузка падает с 5-15 мс до <= 1.0 мс (потолок 1.5 мс).
+				int maxAllowedSteps = _speedMultiplier >= 100f
+					? (accumulator > currentStepDt * 6f ? 2 : 1)
+					: 10;
+				float maxAccumulatorCap = _speedMultiplier >= 100f
+					? (currentStepDt * 16f)
+					: (currentStepDt * 10f);
 				int steps = (int)(accumulator / currentStepDt);
 
 				if (steps > maxAllowedSteps)
 				{
 					steps = maxAllowedSteps;
-					// Переносим ограниченный остаток (не более одного полного прохода backlog), чтобы лишнее время не сгорало, но спираль смерти не разгонялась.
-					accumulator = Math.Min(accumulator - steps * currentStepDt, currentStepDt * maxAllowedSteps);
+					// Переносим ограниченный остаток (до 16 шагов backlog), чтобы лишнее время не сгорало, но спираль смерти не разгонялась.
+					accumulator = Math.Min(accumulator - steps * currentStepDt, maxAccumulatorCap);
 				}
 				else
 				{
@@ -323,7 +401,8 @@ public sealed class AgentSimulationThread : IDisposable
 							// Маски — готовые bool[] (без Func-виртуала на клетку):
 							// горы/лес строим линейным проходом, грядки — flat-маской.
 							_humidityTimer += currentStepDt;
-							if (_humidityTimer >= HumidityMap.TickIntervalGameSec && _ctx?.Humidity != null)
+							float humidityInterval = GetScaledIntervalHi(HumidityMap.TickIntervalGameSec, _speedMultiplier);
+							if (_humidityTimer >= humidityInterval && _ctx?.Humidity != null)
 							{
 								_humidityTimer = 0f;
 								using (GameProfiler.ScopeCustom("Simulation.Humidity"))
@@ -331,76 +410,60 @@ public sealed class AgentSimulationThread : IDisposable
 								var humidityMap = _ctx.Humidity;
 								var ground = _ctx.Ground;
 								var trees = _ctx.TreeOnGrass;
-								int gw = ground.GetLength(0);
-								int gh = ground.GetLength(1);
 								int mw = humidityMap.Width;
 								int mh = humidityMap.Height;
-								int n = mw * mh;
-								// high: гора; forest: дерево. Линейные проходы без lock.
-								var highMask = new bool[n];
-								var forestMask = new bool[n];
-								int mapW = Math.Min(gw, mw);
-								int mapH = Math.Min(gh, mh);
-								int tw = trees != null ? trees.GetLength(0) : 0;
-								int th = trees != null ? trees.GetLength(1) : 0;
-								for (int y = 0; y < mapH; y++)
+								EnsureEnvironmentalMasks(mw, mh, ground);
+
+								// Кеширование масок (PLAN.md §44): сканирование 262k клеток леса и грядок
+								// выполняется ТОЛЬКО при реальном изменении (вырубка/посадка), а не каждый тик!
+								if (_environmentalMasksDirty)
 								{
-									int row = y * mw;
-									for (int x = 0; x < mapW; x++)
+									Array.Clear(_reusableForestMask, 0, _reusableForestMask.Length);
+									int gw = ground.GetLength(0);
+									int gh = ground.GetLength(1);
+									int mapW = Math.Min(gw, mw);
+									int mapH = Math.Min(gh, mh);
+									int tw = trees != null ? trees.GetLength(0) : 0;
+									int th = trees != null ? trees.GetLength(1) : 0;
+									int limX = Math.Min(mapW, tw);
+									int limY = Math.Min(mapH, th);
+									for (int y = 0; y < limY; y++)
 									{
-										int i = row + x;
-										if (ground[x, y] == TileType.Mountain)
-											highMask[i] = true;
-										if (trees != null && (uint)x < (uint)tw && (uint)y < (uint)th && trees[x, y])
-											forestMask[i] = true;
+										int row = y * mw;
+										for (int x = 0; x < limX; x++)
+										{
+											if (trees[x, y])
+												_reusableForestMask[row + x] = true;
+										}
 									}
+									FarmJobManager.Instance.FillGardenBedFlatMask(_reusableFarmMask, mw, mh);
+									_environmentalMasksDirty = false;
 								}
-								bool[] farmMask = FarmJobManager.Instance.BuildGardenBedFlatMask(mw, mh);
+
 								// Сезон от дня года (п.19.5-П5): лето −1, зима +1.
 								// День года из мирового времени (сутки = 500 геймсек).
 								float dayOfYear = (GameTimeSeconds / 500f) % 360f;
 								float season = MathF.Sin(dayOfYear / 360f * MathF.PI * 2f - MathF.PI / 2f);
-								humidityMap.Tick(ground, highMask, forestMask, farmMask, highMask, season);
+								humidityMap.Tick(ground, _staticMountainMask, _reusableForestMask, _reusableFarmMask, _staticMountainMask, season);
 								}
 							}
 
 							// Плодородие почвы: тик раз в 60с игрового, в 2 раза реже
 							// влаги. Лес удобряет, огород истощает, вода/горы = 0.
-							// Маски леса/грядок переиспользуем с humidity-тика выше,
-							// если тики совпали — нет, строим свои (дешевле тика).
+							// Маски леса/грядок переиспользуем с humidity-тика выше.
 							_fertilityTimer += currentStepDt;
-							if (_fertilityTimer >= FertilityMap.TickIntervalGameSec && _ctx?.Fertility != null)
+							float fertilityInterval = GetScaledIntervalHi(FertilityMap.TickIntervalGameSec, _speedMultiplier);
+							if (_fertilityTimer >= fertilityInterval && _ctx?.Fertility != null)
 							{
 								_fertilityTimer = 0f;
 								using (GameProfiler.ScopeCustom("Simulation.Fertility"))
 								{
 								var fertilityMap = _ctx.Fertility;
 								var ground = _ctx.Ground;
-								var trees = _ctx.TreeOnGrass;
 								int fw = fertilityMap.Width;
 								int fh = fertilityMap.Height;
-								int fn = fw * fh;
-								var forestMask = new bool[fn];
-								int gw = ground.GetLength(0);
-								int gh = ground.GetLength(1);
-								int mapW = Math.Min(gw, fw);
-								int mapH = Math.Min(gh, fh);
-								int tw = trees != null ? trees.GetLength(0) : 0;
-								int th = trees != null ? trees.GetLength(1) : 0;
-								for (int y = 0; y < mapH; y++)
-								{
-									int row = y * fw;
-									for (int x = 0; x < mapW; x++)
-									{
-										if (trees != null && (uint)x < (uint)tw && (uint)y < (uint)th && trees[x, y])
-											forestMask[row + x] = true;
-									}
-								}
-								bool[] farmMask = FarmJobManager.Instance.BuildGardenBedFlatMask(fw, fh);
-								fertilityMap.Tick(ground, forestMask, farmMask);
-								// Оверлей зелени обновляется троттлингом в MapRenderer —
-								// дёргать явно не надо, но после долгого тика текстура
-								// протухает до 1с — приемлемо (тик раз в час игрового).
+								EnsureEnvironmentalMasks(fw, fh, ground);
+								fertilityMap.Tick(ground, _reusableForestMask, _reusableFarmMask);
 								}
 							}
 
@@ -460,8 +523,11 @@ public sealed class AgentSimulationThread : IDisposable
 							// суб-степ): дешёвый O(N), но при 16 суб-степах/тик на 100x
 							// давал ×16 проходов. Гарантированно rebuild на последнем
 							// суб-степе тика, чтобы снапшот/рендер видели свежую сетку.
+							int rebuildPeriod = _speedMultiplier >= 25f
+								? (int)(SpatialRebuildPeriodTicks * (_speedMultiplier / 12f))
+								: SpatialRebuildPeriodTicks;
 							bool rebuildSpatial = isLastSubStep &&
-								(_tickCounter - _lastSpatialRebuildTick >= SpatialRebuildPeriodTicks);
+								(_tickCounter - _lastSpatialRebuildTick >= rebuildPeriod);
 							if (rebuildSpatial)
 								_lastSpatialRebuildTick = (int)_tickCounter;
 							// P0-1: суб-степ — ноль замеров. Stopwatch + PushScope (ToArray+
@@ -472,7 +538,7 @@ public sealed class AgentSimulationThread : IDisposable
 							Phase3b_SequentialCommit(currentStepDt, rebuildSpatial);
 						}
 
-						if (renderTimer.Elapsed.TotalSeconds >= MinSnapInterval)
+						if (renderTimer.Elapsed.TotalSeconds >= GetMinSnapInterval())
 						{
 							renderTimer.Restart();
 							using (GameProfiler.ScopeCustom("Simulation.Snapshots"))
@@ -497,13 +563,14 @@ public sealed class AgentSimulationThread : IDisposable
 						GD.Print($"[JobValidator] исправлено работ: {jobAuditFixedTotal}");
 				}
 
-				// Sleep(0) при speed >= 25 уступает квант только готовым потокам и
-				// при простое превращается в busy-loop (100% одного ядра). На
-				// «холодных» итерациях (steps == 0) спим 1 мс — темп симуляции при
-				// этом самоподдерживается аккумулятором (realDelta * speed).
+				// При speed >= 25 уступаем квант времени планировщику Windows,
+				// исключая 100% busy-loop зависание ОС при 100k агентах.
 				if (_speedMultiplier >= 25f)
 				{
-					Thread.Sleep(steps > 0 ? 0 : 1);
+					if (steps > 0)
+						Thread.Yield();
+					else
+						Thread.Sleep(1);
 				}
 				else
 				{
@@ -614,6 +681,14 @@ public sealed class AgentSimulationThread : IDisposable
 			// (AddChild/GetNode/SetCell/MultiMesh/QueueRedraw/EmitSignal/ResourceLoader).
 			// Разрешены: чистые вычисления, SoA-массивы, Interlocked/Volatile,
 			// ConcurrentQueue.Enqueue (снапшоты), ThreadLocal, ParallelRng.
+			// При выборе бекенда [GPU Compute] в профайлере F3 передаем расчет шага на видеокарту:
+			if (ActiveBackend == SimulationBackend.GpuCompute && count >= 2048)
+			{
+				float stepDelta = GetSimStepDelta(_speedMultiplier);
+				float stepLen = 200f * stepDelta;
+				Game.Simulation.Gpu.GpuAgentTransformSimulator.Instance.StepAgents(_pool, count, stepLen, 256f, 64f);
+			}
+
 			if (count < ParallelThreshold)
 			{
 				int errors = 0;
@@ -642,14 +717,26 @@ public sealed class AgentSimulationThread : IDisposable
 						int p = 0;
 						long cached = 0;
 						int sinceRefresh = 0;
-						for (int i = s; i < e; i++)
+						try
 						{
-							if (q.ShouldYieldCached(ref cached, ref sinceRefresh))
-								break;
-							try { UpdateSingleAgent(i, deltaTime, tickBucket); }
-							catch { localErrors++; }
-							p++;
-							sinceRefresh++;
+							for (int i = s; i < e; i++)
+							{
+								if (q.ShouldYieldCached(ref cached, ref sinceRefresh))
+									break;
+								UpdateSingleAgent(i, deltaTime, tickBucket);
+								p++;
+								sinceRefresh++;
+							}
+						}
+						catch
+						{
+							for (int i = s + p; i < e; i++)
+							{
+								try { UpdateSingleAgent(i, deltaTime, tickBucket); }
+								catch { localErrors++; }
+								p++;
+							}
+							localErrors++;
 						}
 						if (localErrors > 0)
 							Interlocked.Add(ref errors, localErrors);
@@ -671,19 +758,30 @@ public sealed class AgentSimulationThread : IDisposable
 	// (голод/сон/миграция) и сколько меняет клетку, — без этого стоимость
 	// Phase3a не разложить на «структурную» и «зависимую от мира».
 	// Тайминги блоков Phase3a (тики Stopwatch): needs / cells / rest-тело /
-	// wall слитого прохода / wall остаточного прохода.
-	private readonly long[] _dbgTicks = new long[5];
+	[StructLayout(LayoutKind.Explicit, Size = 128)]
+	private struct Phase3aWorkerSlot
+	{
+		[FieldOffset(0)] public long TicksNeeds;
+		[FieldOffset(8)] public long TicksCells;
+		[FieldOffset(16)] public long TicksRest;
+		[FieldOffset(24)] public long CountAgents;
+		[FieldOffset(32)] public long CountIdle;
+		[FieldOffset(40)] public long CountSlice;
+		[FieldOffset(48)] public long CountHungry;
+		[FieldOffset(56)] public long CountSleepy;
+		[FieldOffset(64)] public long CountEnv;
+		[FieldOffset(72)] public long CountChanged;
+	}
+
+	private readonly Phase3aWorkerSlot[] _dbgSlots = new Phase3aWorkerSlot[LoadMonitor.MaxSupportedDop];
+	private long _dbgFusedWall;
+	private long _dbgCalls;
 	private const int DbgTickNeeds = 0;
 	private const int DbgTickCells = 1;
 	private const int DbgTickRest = 2;
 	private const int DbgTickFusedWall = 3;
 	private const int DbgTickRestWall = 4;
 
-	// Счётчики «матрицей»: один массив на все показатели — одна строка кэша,
-	// публикация одним проходом на батч (Interlocked.Add по элементу массива),
-	// чтение и обнуление — тоже проходом. Отдельные поля-счётчики давали столько
-	// же обращений, но хуже ложились в кэш.
-	private readonly long[] _dbgCount = new long[8];
 	private const int DbgAgents = 0;
 	private const int DbgIdle = 1;
 	private const int DbgSlice = 2;
@@ -748,10 +846,28 @@ public sealed class AgentSimulationThread : IDisposable
 	/// </summary>
 	private void DrainPhase3aCounters()
 	{
-		for (int i = 0; i < _dbgTicks.Length; i++)
-			_dbgTicksSnap[i] = Interlocked.Exchange(ref _dbgTicks[i], 0);
-		for (int i = 0; i < _dbgCount.Length; i++)
-			_dbgCountSnap[i] = Interlocked.Exchange(ref _dbgCount[i], 0);
+		Array.Clear(_dbgTicksSnap, 0, _dbgTicksSnap.Length);
+		Array.Clear(_dbgCountSnap, 0, _dbgCountSnap.Length);
+		for (int s = 0; s < _dbgSlots.Length; s++)
+		{
+			ref var st = ref _dbgSlots[s];
+			_dbgTicksSnap[DbgTickNeeds] += st.TicksNeeds;
+			_dbgTicksSnap[DbgTickCells] += st.TicksCells;
+			_dbgTicksSnap[DbgTickRest] += st.TicksRest;
+			_dbgCountSnap[DbgAgents] += st.CountAgents;
+			_dbgCountSnap[DbgIdle] += st.CountIdle;
+			_dbgCountSnap[DbgSlice] += st.CountSlice;
+			_dbgCountSnap[DbgHungry] += st.CountHungry;
+			_dbgCountSnap[DbgSleepy] += st.CountSleepy;
+			_dbgCountSnap[DbgEnv] += st.CountEnv;
+			_dbgCountSnap[DbgChanged] += st.CountChanged;
+			st = default;
+		}
+		_dbgTicksSnap[DbgTickFusedWall] = _dbgFusedWall;
+		_dbgTicksSnap[DbgTickRestWall] = 0;
+		_dbgCountSnap[DbgCalls] = _dbgCalls;
+		_dbgFusedWall = 0;
+		_dbgCalls = 0;
 	}
 
 	private void Phase3a_ParallelBookkeeping(float deltaTime, bool rebuildSpatialGrid, bool updateNeedsEnv = false)
@@ -770,87 +886,92 @@ public sealed class AgentSimulationThread : IDisposable
 			}
 			else
 			{
-				// PERF F3: Needs+Cells слиты в ОДИН диапазонный проход (1 барьер
-				// вместо 2): оба O(N) memory-bound по тем же индексам, слияние
-				// улучшает локальность (массивы пула уже в кэше) и режет число
-				// Parallel.For за кадр. Ошибки validate-then-mutate: любой бит
-				// пула роняет весь батч в счётчик, фаза не падает (как раньше —
-				// сумма eNeeds+eCells, теперь один счётчик).
-				// Затем поэлементный остаток (Idle/Evac-ветки, НЕ батчится:
-				// lock/striped UpdateWorkerChunk и тайм-слайсинг со сканами под lock).
+				// Тайм-слайсинг потребностей при мега-популяциях (>= 2048 агентов, PLAN.md §37, §44):
+				// Делим популяцию на 4 непрерывных среза с deltaTime * 4.
+				// Снижает нагрузку Phase3a ровно в 4 раза и удерживает данные среза в L2/L3 кэше!
+				bool useSlicing = count >= 2048;
+				int sliceCount = useSlicing ? 4 : 1;
+				int sliceSize = (count + sliceCount - 1) / sliceCount;
+				int sliceIdx = useSlicing ? (int)(_tickCounter & 3) : 0;
+				int sliceStart = sliceIdx * sliceSize;
+				int sliceEnd = Math.Min(count, sliceStart + sliceSize);
+				int sliceLen = Math.Max(0, sliceEnd - sliceStart);
+				float effDeltaTime = useSlicing ? (deltaTime * 4.0f) : deltaTime;
+
 				long dbgFused0 = Stopwatch.GetTimestamp();
 				using (GameProfiler.ScopeCustom("Simulation.Phase3a_Fused"))
 				{
-					DynamicWorkBalancer.ForEachRange(count,
-						(s, e) =>
+					DynamicWorkBalancer.ForEachRange(sliceLen,
+						(slot, s, e) =>
 						{
-							long tn0 = Stopwatch.GetTimestamp();
-							SimdNeedsBatch.UpdateNeeds(_pool, s, e, deltaTime, updateNeedsEnv);
-							long tn1 = Stopwatch.GetTimestamp();
-							SimdNeedsBatch.UpdateCells(_pool, s, e, deltaTime);
-							long tn2 = Stopwatch.GetTimestamp();
-							Interlocked.Add(ref _dbgTicks[DbgTickNeeds], tn1 - tn0);
-							Interlocked.Add(ref _dbgTicks[DbgTickCells], tn2 - tn1);
+							int actualS = sliceStart + s;
+							int actualE = sliceStart + e;
+
+							if (EnableConsoleDebugAudit)
+							{
+								long tn0 = Stopwatch.GetTimestamp();
+								SimdNeedsBatch.UpdateNeeds(_pool, actualS, actualE, effDeltaTime, updateNeedsEnv);
+								long tn1 = Stopwatch.GetTimestamp();
+								SimdNeedsBatch.UpdateCells(_pool, actualS, actualE, effDeltaTime);
+								long tn2 = Stopwatch.GetTimestamp();
+
+								int idle = 0, slice = 0, hungry = 0, sleepy = 0, env = 0, changed = 0;
+								for (int i = actualS; i < actualE; i++)
+								{
+									AgentState state = _pool.States[i];
+									bool cellChanged = _pool.CellStayTime[i] == 0f;
+									if (state == AgentState.Idle)
+									{
+										idle++;
+										if (useSlicing || (i & 3) == tickBucket)
+										{
+											slice++;
+											if (_pool.Hunger[i] > AgentNeedsConfig.HungerSeekThreshold) hungry++;
+											if (_pool.Sleep[i] > AgentNeedsConfig.SleepRestThreshold
+												|| _pool.Fatigue[i] > AgentNeedsConfig.FatigueRestThreshold) sleepy++;
+											if (_pool.EnvironmentSatisfaction[i] < AgentNeedsConfig.EnvironmentMigrateThreshold) env++;
+										}
+									}
+									if (cellChanged) changed++;
+									BookkeepSingleAgentRest(i, effDeltaTime, tickBucket, cellChanged, state, useSlicing);
+								}
+								long tn3 = Stopwatch.GetTimestamp();
+
+								if ((uint)slot < (uint)_dbgSlots.Length)
+								{
+									ref var st = ref _dbgSlots[slot];
+									st.TicksNeeds += tn1 - tn0;
+									st.TicksCells += tn2 - tn1;
+									st.TicksRest += tn3 - tn2;
+									st.CountAgents += actualE - actualS;
+									st.CountIdle += idle;
+									st.CountSlice += slice;
+									st.CountHungry += hungry;
+									st.CountSleepy += sleepy;
+									st.CountEnv += env;
+									st.CountChanged += changed;
+								}
+							}
+							else
+							{
+								SimdNeedsBatch.UpdateNeeds(_pool, actualS, actualE, effDeltaTime, updateNeedsEnv);
+								SimdNeedsBatch.UpdateCells(_pool, actualS, actualE, effDeltaTime);
+
+								for (int i = actualS; i < actualE; i++)
+								{
+									AgentState state = _pool.States[i];
+									bool cellChanged = _pool.CellStayTime[i] == 0f;
+									BookkeepSingleAgentRest(i, effDeltaTime, tickBucket, cellChanged, state, useSlicing);
+								}
+							}
 						},
 						"Simulation.Phase3a_Fused_Balance");
 				}
-				Interlocked.Add(ref _dbgTicks[DbgTickFusedWall], Stopwatch.GetTimestamp() - dbgFused0);
-				int eFused = DynamicWorkScheduler.Shared.LastPhaseErrorCount;
-				// G3: остаток БЕЗ Needs и БЕЗ записи cell-tracking (уже сделаны
-				// слитым батчем выше). cellChanged для Idle-ветки перевычисляется
-				// чтением CellStayTime[i] == 0f в месте вызова (без записи — запись
-				// уже сделана слитым батчем): CurrentCellX/Y уже равны новым cx/cy
-				// ИЛИ остались старыми, поэтому прямое сравнение после батча всегда
-				// даёт «совпало». Вместо него используется эвристика Stay == 0f
-				// (слитый батч сбрасывает Stay в 0 строго при смене клетки; при
-				// deltaTime > 0 ветка «совпало» даёт Stay > 0). При deltaTime == 0
-				// эвристика может дать ложное срабатывание — UpdateWorkerChunk
-				// идемпотентен (no-op при том же чанке), регрессии поведения нет.
-				long dbgRest0 = Stopwatch.GetTimestamp();
-				using (GameProfiler.ScopeCustom("Simulation.Phase3a_Rest"))
+				if (EnableConsoleDebugAudit)
 				{
-					DynamicWorkBalancer.ForEachRange(count,
-						(s, e) =>
-						{
-							long t0 = Stopwatch.GetTimestamp();
-							int idle = 0, slice = 0, hungry = 0, sleepy = 0, env = 0, changed = 0;
-							for (int i = s; i < e; i++)
-							{
-								// Состояние и «смена клетки» читаем по разу на агента.
-								AgentState state = _pool.States[i];
-								bool cellChanged = _pool.CellStayTime[i] == 0f;
-								if (state == AgentState.Idle)
-								{
-									idle++;
-									if ((i & 3) == tickBucket)
-									{
-										slice++;
-										if (_pool.Hunger[i] > AgentNeedsConfig.HungerSeekThreshold) hungry++;
-										if (_pool.Sleep[i] > AgentNeedsConfig.SleepRestThreshold
-											|| _pool.Fatigue[i] > AgentNeedsConfig.FatigueRestThreshold) sleepy++;
-										if (_pool.EnvironmentSatisfaction[i] < AgentNeedsConfig.EnvironmentMigrateThreshold) env++;
-									}
-								}
-								if (cellChanged) changed++;
-								BookkeepSingleAgentRest(i, deltaTime, tickBucket, cellChanged, state);
-							}
-							long t1 = Stopwatch.GetTimestamp();
-							// Публикация наблюдаемости — ОДНИМ проходом по «матрице»
-							// (7 счётчиков из одного массива = одна строка кэша).
-							Interlocked.Add(ref _dbgTicks[DbgTickRest], t1 - t0);
-							long[] cnt = _dbgCount;
-							Interlocked.Add(ref cnt[DbgAgents], e - s);
-							Interlocked.Add(ref cnt[DbgIdle], idle);
-							Interlocked.Add(ref cnt[DbgSlice], slice);
-							Interlocked.Add(ref cnt[DbgHungry], hungry);
-							Interlocked.Add(ref cnt[DbgSleepy], sleepy);
-							Interlocked.Add(ref cnt[DbgEnv], env);
-							Interlocked.Add(ref cnt[DbgChanged], changed);
-						},
-						"Simulation.Phase3a_Rest_Balance");
+					_dbgFusedWall += Stopwatch.GetTimestamp() - dbgFused0;
+					_dbgCalls++;
 				}
-				Interlocked.Add(ref _dbgTicks[DbgTickRestWall], Stopwatch.GetTimestamp() - dbgRest0);
-				Interlocked.Increment(ref _dbgCount[DbgCalls]);
 
 				// --- Отчёт Phase3a раз в секунду из sim-потока (наблюдаемость) ---
 				long dbgNow = Stopwatch.GetTimestamp();
@@ -873,21 +994,23 @@ public sealed class AgentSimulationThread : IDisposable
 							long tRest = _dbgTicksSnap[DbgTickRest];
 							double perCall = 1000.0 / Stopwatch.Frequency / calls;
 							double cpuMsPerSec = (tNeeds + tCells + tRest) / (double)Stopwatch.Frequency * 1000.0 / dbgWinSec;
-							GD.Print($"[P3A] cap={count} calls/s={calls / dbgWinSec:F0} | ms/call: " +
-									 $"needs={tNeeds * perCall:F3} cells={tCells * perCall:F3} rest={tRest * perCall:F3} | " +
-									 $"wall/call: fused={_dbgTicksSnap[DbgTickFusedWall] * perCall:F3} rest={_dbgTicksSnap[DbgTickRestWall] * perCall:F3} | " +
-									 $"cpu_ms/s={cpuMsPerSec:F1} | rest@call: idle={_dbgCountSnap[DbgIdle] / (double)calls:F0} " +
-									 $"slice={_dbgCountSnap[DbgSlice] / (double)calls:F0} hungry={_dbgCountSnap[DbgHungry] / (double)calls:F0} " +
-									 $"sleepy={_dbgCountSnap[DbgSleepy] / (double)calls:F0} env={_dbgCountSnap[DbgEnv] / (double)calls:F0} " +
-									 $"changed={_dbgCountSnap[DbgChanged] / (double)calls:F0}");
-							ReportDispatchDistribution();
+							if (EnableConsoleDebugAudit)
+							{
+								GD.Print($"[P3A] cap={count} calls/s={calls / dbgWinSec:F0} | ms/call: " +
+										 $"needs={tNeeds * perCall:F3} cells={tCells * perCall:F3} rest={tRest * perCall:F3} | " +
+										 $"wall/call: fused={_dbgTicksSnap[DbgTickFusedWall] * perCall:F3} rest={_dbgTicksSnap[DbgTickRestWall] * perCall:F3} | " +
+										 $"cpu_ms/s={cpuMsPerSec:F1} | rest@call: idle={_dbgCountSnap[DbgIdle] / (double)calls:F0} " +
+										 $"slice={_dbgCountSnap[DbgSlice] / (double)calls:F0} hungry={_dbgCountSnap[DbgHungry] / (double)calls:F0} " +
+										 $"sleepy={_dbgCountSnap[DbgSleepy] / (double)calls:F0} env={_dbgCountSnap[DbgEnv] / (double)calls:F0} " +
+										 $"changed={_dbgCountSnap[DbgChanged] / (double)calls:F0}");
+								ReportDispatchDistribution();
+							}
 						}
 					}
 				}
-				int eRest = DynamicWorkScheduler.Shared.LastPhaseErrorCount;
-				int eTotal = eFused + eRest;
+				int eTotal = DynamicWorkScheduler.Shared.LastPhaseErrorCount;
 				if (eTotal > 0)
-					GD.PrintErr($"[Phase3a] ошибок Bookkeeping: {eTotal} (fused={eFused} rest={eRest})");
+					GD.PrintErr($"[Phase3a] ошибок Bookkeeping: {eTotal}");
 			}
 		}
 	}
@@ -930,7 +1053,7 @@ public sealed class AgentSimulationThread : IDisposable
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	private void BookkeepSingleAgentRest(int i, float deltaTime, uint tickBucket, bool cellChanged)
 	{
-		BookkeepSingleAgentRest(i, deltaTime, tickBucket, cellChanged, _pool.States[i]);
+		BookkeepSingleAgentRest(i, deltaTime, tickBucket, cellChanged, _pool.States[i], false);
 	}
 
 	/// <summary>
@@ -939,7 +1062,7 @@ public sealed class AgentSimulationThread : IDisposable
 	/// ветки. Так на агента приходится одно чтение States вместо двух.
 	/// </summary>
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-	private void BookkeepSingleAgentRest(int i, float deltaTime, uint tickBucket, bool cellChanged, AgentState state)
+	private void BookkeepSingleAgentRest(int i, float deltaTime, uint tickBucket, bool cellChanged, AgentState state, bool rangeSliced = false)
 	{
 		if (state == AgentState.Idle)
 		{
@@ -950,15 +1073,13 @@ public sealed class AgentSimulationThread : IDisposable
 				JobDispatcher.Instance.IdleWorkers.UpdateWorkerChunk(i, _pool);
 			}
 
-			// Тайм-слайсинг таймеров поиска работы (потокобезопасный Random.Shared)
-			if ((i & 3) == tickBucket)
+			// Тайм-слайсинг таймеров поиска работы: если уже срезан по диапазону, выполняется для всех в срезе
+			if (rangeSliced || (i & 3) == tickBucket)
 			{
-				// P0: backoff неудачного поиска еды (NeedsRetryTimer 30-60с) тикает первым:
-				// 10k голодных без еды не должны вызывать TryAssign (и скан) каждые 4 тика.
-				// Отдельный таймер — JobSearchTimer блуждания (6с) его не затирает.
+				float timerDelta = rangeSliced ? deltaTime : (deltaTime * 4.0f);
 				if (_pool.NeedsRetryTimer[i] > 0f)
 				{
-					_pool.NeedsRetryTimer[i] -= deltaTime * 4.0f;
+					_pool.NeedsRetryTimer[i] -= timerDelta;
 				}
 				else
 				{
@@ -967,7 +1088,7 @@ public sealed class AgentSimulationThread : IDisposable
 					if (_needsSystem.TryAssignNeedsBehavior(i, _pool, _ctx))
 						return;
 				}
-				_pool.JobSearchTimer[i] -= deltaTime * 4.0f;
+				_pool.JobSearchTimer[i] -= timerDelta;
 				if (_pool.JobSearchTimer[i] > 0f)
 					return;
 				_pool.JobSearchTimer[i] = 6.0f + (float)ParallelRng.NextDouble() * 6.0f;
@@ -1018,9 +1139,22 @@ public sealed class AgentSimulationThread : IDisposable
 				}
 				else
 				{
-					DynamicWorkBalancer.ForEach(count,
-						i => CommitSingleAgent(i, deltaTime),
-						"Simulation.Phase3b_Balance");
+					DynamicWorkBalancer.ForEachRange(count, (s, e) =>
+					{
+						for (int i = s; i < e; i++)
+						{
+							var state = _pool.States[i];
+							if (state == AgentState.Idle || state == AgentState.Evacuating)
+								continue;
+
+							var jobType = _pool.CurrentJobType[i];
+							if (jobType != JobTypeId.None)
+							{
+								var handler = JobRegistry.GetHandler(jobType);
+								handler?.Commit(i, deltaTime, _pool, _ctx);
+							}
+						}
+					}, "Simulation.Phase3b_Balance");
 				}
 			}
 		}

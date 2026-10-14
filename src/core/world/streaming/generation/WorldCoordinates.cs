@@ -36,6 +36,7 @@ public static class WorldCoordinates
     /// <summary>
     /// Деление с округлением к минус бесконечности. Размер делителя обязан быть положительным.
     /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static long FloorDiv(long value, int divisor)
     {
         if (divisor <= 0)
@@ -47,6 +48,7 @@ public static class WorldCoordinates
     }
 
     /// <summary>Остаток в диапазоне [0, divisor); размер делителя обязан быть положительным.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static int FloorMod(long value, int divisor)
     {
         if (divisor <= 0)
@@ -96,7 +98,36 @@ public enum GenerationDomain : ulong
     LakePresence = 0xD1310BA698DFB5ACul,
     LakeGeometry = 0x2FFD72DBD01ADFB7ul,
     FeatureId = 0xB8E1AFED6A267E96ul,
-    Temperature = 0xF1A2B3C4D5E6F708ul
+    Temperature = 0xF1A2B3C4D5E6F708ul,
+
+    // --- Мировая карта (climate, см. src/core/world/climate/) ---
+    // ЗАРЕЗЕРВИРОВАНО: значения не менять — от них зависит форма континентов.
+    /// <summary>20 климатических параметров мира из сида (лейны 0..19).</summary>
+    ClimateParams = 0x5A17C0DE12345678ul,
+    /// <summary>Domain-warp континентов (бухты/полуострова).</summary>
+    ContinentWarp = 0x9B1DE4F70A2C6835ul,
+    /// <summary>Базовый fBm континентальной высоты.</summary>
+    ContinentBase = 0x27FA5C31E8D09426ul,
+    /// <summary>Тектонические плиты (Voronoi-сиды).</summary>
+    ContinentPlate = 0xC41B7E90A3F5826Dul,
+    /// <summary>Островные дуги/архипелаги на границах плит.</summary>
+    ContinentArc = 0x6D2987B1F0E43A5Cul,
+    /// <summary>Мелкая детализация рельефа суши.</summary>
+    ContinentDetail = 0xE3F1508C7B92DA64ul,
+    /// <summary>Океанские течения (тепло/холод у берега).</summary>
+    OceanCurrent = 0x1A8C4E6215FDB907ul,
+    /// <summary>Климатический шум (влажность/осадки).</summary>
+    ClimateNoise = 0xF07B3C9E5421AD86ul,
+
+    // --- Прибрежная геоморфология (бухты, заливы, мысы, гавани) ---
+    /// <summary>Крупномасштабный domain-warp береговой линии (заливы, полуострова).</summary>
+    CoastWarpMacro = 0x8C3B1E45920D47A1ul,
+    /// <summary>Среднемасштабный domain-warp береговой линии (бухты, гавани, мысы).</summary>
+    CoastWarpMeso = 0x51E2B7A9340C68DFul,
+    /// <summary>Мелкомасштабный domain-warp береговой линии (линия прибоя, пляжи).</summary>
+    CoastWarpMicro = 0x2A90F84CEB13D576ul,
+    /// <summary>Особенности берега: мысы (Ridged) и защищенные бухты (Voronoi/Basin).</summary>
+    CoastFeature = 0xDF815C730A249BE8ul
 }
 
 /// <summary>Стабильные целочисленные хеши/шум для world-coordinate генерации.</summary>
@@ -111,6 +142,7 @@ public static class CoordinateHash
     /// Детерминированный domain-separated hash. Signed координаты смешиваются как их
     /// двухкомплементарное представление; все операции намеренно выполняются unchecked.
     /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static ulong Hash(ulong worldSeed, uint generatorVersion, GenerationDomain domain,
         long worldX, long worldY, ulong lane = 0)
     {
@@ -126,14 +158,40 @@ public static class CoordinateHash
     }
 
     /// <summary>Верхние 16 бит hash — стабильная величина Q0.16 в диапазоне 0..65535.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static ushort SampleQ16(ulong worldSeed, uint generatorVersion, GenerationDomain domain,
         long worldX, long worldY, ulong lane = 0)
         => (ushort)(Hash(worldSeed, generatorVersion, domain, worldX, worldY, lane) >> 48);
+
+    /// <summary>Предвычисленный префикс хеша для домена (устраняет 8 Mix операций на каждый семпл шума).</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static ulong GetDomainPrefix(ulong worldSeed, uint generatorVersion, GenerationDomain domain)
+    {
+        unchecked
+        {
+            ulong h = Mix(worldSeed ^ GoldenRatio);
+            h = Mix(h ^ ((ulong)generatorVersion * GoldenRatio));
+            return Mix(h ^ (ulong)domain);
+        }
+    }
+
+    /// <summary>Быстрый семпл Q16 с предвычисленным доменным префиксом для lane 0.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static ushort SampleQ16WithPrefix(ulong domainPrefix, long worldX, long worldY)
+    {
+        unchecked
+        {
+            ulong h = Mix(domainPrefix ^ (ulong)worldX);
+            h = Mix(h ^ RotateLeft((ulong)worldY, 29));
+            return (ushort)(Mix(h) >> 48);
+        }
+    }
 
     /// <summary>
     /// Координатно-глобальный сглаженный value-noise Q0.16. Размер ячейки решётки
     /// должен быть положительным; lattice values адресуются хешем, без массива и RNG-порядка.
     /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static ushort ValueNoiseQ16(ulong worldSeed, uint generatorVersion, GenerationDomain domain,
         long worldX, long worldY, int latticeScale)
     {
@@ -147,17 +205,18 @@ public static class CoordinateHash
         uint sx = SmoothStepQ16(tx);
         uint sy = SmoothStepQ16(ty);
 
-        uint v00 = SampleQ16(worldSeed, generatorVersion, domain, latticeX, latticeY);
-        uint v10 = SampleQ16(worldSeed, generatorVersion, domain, checked(latticeX + 1), latticeY);
-        uint v01 = SampleQ16(worldSeed, generatorVersion, domain, latticeX, checked(latticeY + 1));
-        uint v11 = SampleQ16(worldSeed, generatorVersion, domain,
-            checked(latticeX + 1), checked(latticeY + 1));
+        ulong prefix = GetDomainPrefix(worldSeed, generatorVersion, domain);
+        uint v00 = SampleQ16WithPrefix(prefix, latticeX, latticeY);
+        uint v10 = SampleQ16WithPrefix(prefix, latticeX + 1, latticeY);
+        uint v01 = SampleQ16WithPrefix(prefix, latticeX, latticeY + 1);
+        uint v11 = SampleQ16WithPrefix(prefix, latticeX + 1, latticeY + 1);
 
         uint top = LerpQ16(v00, v10, sx);
         uint bottom = LerpQ16(v01, v11, sx);
         return (ushort)LerpQ16(top, bottom, sy);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static ulong Mix(ulong value)
     {
         unchecked
@@ -171,9 +230,11 @@ public static class CoordinateHash
         }
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static ulong RotateLeft(ulong value, int count)
         => (value << count) | (value >> (64 - count));
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static uint SmoothStepQ16(uint value)
     {
         ulong t = value;
@@ -182,6 +243,7 @@ public static class CoordinateHash
         return (uint)Math.Min(Q16One, shaped / Q16One);
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static uint LerpQ16(uint a, uint b, uint t)
     {
         long delta = (long)b - a;

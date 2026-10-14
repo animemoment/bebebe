@@ -28,7 +28,7 @@ public partial class ShadowCasterRenderer : Node2D
 
     private MultiMeshInstance2D _instance;
     private MultiMesh _multiMesh;
-    private float[] _buffer;
+    private readonly float[] _buffer = new float[MaxCasters * 8];
     private readonly List<Vector2> _anchors = new(4096);
     private readonly HashSet<(int X, int Y)> _cells = new(4096);
 
@@ -36,18 +36,9 @@ public partial class ShadowCasterRenderer : Node2D
     private bool _hasState;
     private bool _hasSun;
 
-    // Frustum culling как у Syx (RenderData.onScreenTiles): тянем из холодного
-    // _anchors только то, что в кадре камеры + запас на длину тени.
-    // Камера и запас обновляются в Tick из вьюпорта (O(1), только главный поток).
-    private Vector2 _viewCenter;
-    private Vector2 _viewHalf;
-    private bool _hasView;
-    private Vector2 _lastPushCenter = new(float.NaN, float.NaN);
-
     public override void _Ready()
     {
         ZIndex = 4;
-        _buffer = new float[MaxCasters * 8];
 
         // Квад единичный: реальный размер задаёт матрица инстанса (R*S от якоря).
         var quad = new QuadMesh { Size = new Vector2(1f, 1f) };
@@ -130,36 +121,55 @@ public partial class ShadowCasterRenderer : Node2D
     private float _bufferTimer;
     private const float BufferDebounceSec = 0.15f;
 
+    public const float StaticShadowZoomCutoff = 0.25f;
+
+    // Дебаунс заливки геометрии солнца: 2 МБ буфер обновляется максимум ~12 раз/с,
+    // а альфа обновляется каждый кадр через быстрый Modulate без перезаливки геометрии.
+    private float _sunGeoTimer;
+    private const float SunGeoDebounceSec = 0.08f;
+
     public void Tick(DayNightCycle.SunState sun, float realDeltaSec = 0.016f)
     {
-        bool show = sun.Alpha > 0.004f && sun.LengthPx >= 0.5f && _anchors.Count > 0;
+        var cam = GetViewport()?.GetCamera2D();
+        float zoom = cam?.Zoom.X ?? 1f;
+        bool zoomAllowed = zoom >= StaticShadowZoomCutoff;
+
+        bool show = zoomAllowed && sun.Alpha > 0.004f && sun.LengthPx >= 0.5f && _anchors.Count > 0;
         _hasSun = show;
-        // Кадр камеры: O(1) на тик. Нет камеры (headless-юнит) — рисуем всех, как раньше.
-        UpdateView(sun);
         Visible = show;
         if (_instance != null)
+        {
             _instance.Visible = show;
+            if (!show && _multiMesh != null)
+                _multiMesh.VisibleInstanceCount = 0;
+        }
         if (!show)
             return;
-        bool sunChanged = !_hasState
-            || Math.Abs(_current.LengthPx - sun.LengthPx) >= 0.5f
-            || Math.Abs(_current.Alpha - sun.Alpha) >= 0.004f
-            || (_current.Dir - sun.Dir).LengthSquared() >= 0.0004f;
-        // Камера уехала дальше запаса — пересобрать видимый набор, даже если солнце то же.
-        bool viewMoved = _hasView
-            && (Math.Abs(_viewCenter.X - _lastPushCenter.X) > _viewHalf.X
-                || Math.Abs(_viewCenter.Y - _lastPushCenter.Y) > _viewHalf.Y);
-        if (sunChanged || viewMoved)
+
+        // Плавная смена атмосферного цвета и альфы через свойство Modulate (ноль нагрузки на GPU шину)
+        if (_instance != null)
+        {
+            Color c = sun.ShadowColor;
+            _instance.Modulate = new Color(c.R, c.G, c.B, sun.Alpha * StaticAlphaScale);
+        }
+
+        // Геометрическое изменение длины и направления солнца с защитой от спайков
+        _sunGeoTimer += realDeltaSec;
+        bool sunGeoChanged = !_hasState
+            || Math.Abs(_current.LengthPx - sun.LengthPx) >= 1.5f
+            || (_current.Dir - sun.Dir).LengthSquared() >= 0.002f;
+
+        if (sunGeoChanged && (!_hasState || _sunGeoTimer >= SunGeoDebounceSec))
         {
             _current = sun;
             _hasState = true;
-            if (_instance != null)
-                _instance.Modulate = new Color(0f, 0f, 0f, sun.Alpha * StaticAlphaScale);
+            _sunGeoTimer = 0f;
             PushBuffer();
             _bufferDirty = false;
             _bufferTimer = 0f;
             return;
         }
+
         // Солнце стабильно — сливаем накопленные Add/Remove дебаунсом 150мс.
         if (_bufferDirty)
         {
@@ -187,38 +197,6 @@ public partial class ShadowCasterRenderer : Node2D
         return new Vector2(tx * tile + tile * 0.5f, ty * tile + tile);
     }
 
-    private void UpdateView(DayNightCycle.SunState sun)
-    {
-        var cam = GetViewport()?.GetCamera2D();
-        if (cam == null)
-        {
-            _hasView = false;
-            return;
-        }
-        Vector2 vp = GetViewportRect().Size;
-        Vector2 zoom = cam.Zoom;
-        if (zoom.X <= 0f || zoom.Y <= 0f)
-        {
-            _hasView = false;
-            return;
-        }
-        // Запас = пол-экрана + макс. длина тени (28px), чтобы тень не обрезалась у края.
-        _viewCenter = cam.GetScreenCenterPosition();
-        _viewHalf = new Vector2(
-            vp.X / zoom.X * 0.5f + DayNightCycle.MaxShadowLengthPx,
-            vp.Y / zoom.Y * 0.5f + DayNightCycle.MaxShadowLengthPx);
-        _hasView = true;
-    }
-
-    private bool InView(Vector2 anchor)
-    {
-        if (!_hasView)
-            return true;
-        float dx = Math.Abs(anchor.X - _viewCenter.X);
-        float dy = Math.Abs(anchor.Y - _viewCenter.Y);
-        return dx <= _viewHalf.X && dy <= _viewHalf.Y;
-    }
-
     private bool AddCell(int tx, int ty, float tile)
     {
         if (!_cells.Add((tx, ty)))
@@ -229,6 +207,8 @@ public partial class ShadowCasterRenderer : Node2D
 
     private void PushBuffer()
     {
+        if (_multiMesh == null)
+            return;
         Vector2 dir = _hasState ? _current.Dir : Vector2.Zero;
         float rawLen = _hasState ? _current.LengthPx : 0f;
         // Порядок Buffer для Transform2D: x.x, x.y, pad, origin.x, y.x, y.y, pad, origin.y.
@@ -239,16 +219,11 @@ public partial class ShadowCasterRenderer : Node2D
         float hx = dir.X * len * 0.5f, hy = dir.Y * len * 0.5f;
         float px = -dir.Y, py = dir.X;
         float qx = px * wdt * 0.5f, qy = py * wdt * 0.5f;
-        // Пишем только видимые + cap. Счётчик отдельно: пропуски кадра не ломают stride-8.
-        int count = 0;
         int limit = Math.Min(_anchors.Count, MaxCasters);
-        _lastPushCenter = _viewCenter;
-        for (int i = 0; i < limit && count < MaxCasters; i++)
+        for (int i = 0; i < limit; i++)
         {
             Vector2 anchor = _anchors[i];
-            if (!InView(anchor))
-                continue;
-            int idx = count * 8;
+            int idx = i * 8;
             _buffer[idx + 0] = hx * 2f;
             _buffer[idx + 1] = hy * 2f;
             _buffer[idx + 2] = 0f;
@@ -257,20 +232,20 @@ public partial class ShadowCasterRenderer : Node2D
             _buffer[idx + 5] = qy * 2f;
             _buffer[idx + 6] = 0f;
             _buffer[idx + 7] = anchor.Y + hy;
-            count++;
         }
-        _multiMesh.VisibleInstanceCount = count;
-        if (count > 0)
+        _multiMesh.VisibleInstanceCount = limit;
+        if (limit > 0)
             _multiMesh.Buffer = _buffer;
-        bool show = _hasSun && count > 0;
+        bool show = _hasSun && limit > 0;
         Visible = show;
         if (_instance != null)
             _instance.Visible = show;
     }
 
     /// <summary>
-    /// Клин тени 32x64: v=0 (низ текстуры = основание у ствола) плотно и узко,
-    /// к v=1 (конец тени) широко и прозрачно. U сужается к концу.
+    /// Силуэтная текстура тени дерева 32x64: основание у ствола (низ, v < 0.22) узкое,
+    /// затем раскрывается выраженная округлая крона дерева (v 0.22..0.95)
+    /// с мягким спаданием альфы (penumbra) по краям.
     /// </summary>
     private static ImageTexture CreateWedgeTexture()
     {
@@ -280,14 +255,31 @@ public partial class ShadowCasterRenderer : Node2D
         {
             // v: 0 у основания (низ текстуры, y=max) -> 1 на конце (верх, y=0).
             float v = 1f - (y + 0.5f) / WedgeTexH;
-            float halfW = 0.12f + v * 0.38f;
-            float a = (1f - v) * (1f - v);
+            
+            // Силуэт дерева: ствол у основания, переходящий в круглую крону
+            float halfW;
+            if (v < 0.22f)
+            {
+                // Ствол у основания
+                halfW = 0.08f + v * 0.15f;
+            }
+            else
+            {
+                // Крона: эллиптическая выпуклость кроны дерева
+                float crownT = (v - 0.22f) / (1f - 0.22f); // 0..1
+                float crownCurve = Mathf.Sin(crownT * Mathf.Pi);
+                halfW = 0.12f + crownCurve * 0.36f;
+            }
+
+            // Альфа плавно спадает к макушке кроны
+            float a = Mathf.Clamp(1f - v * 0.70f, 0.25f, 1f);
+
             for (int x = 0; x < WedgeTexW; x++)
             {
                 float u = Math.Abs((x + 0.5f) / WedgeTexW - 0.5f) * 2f;
                 if (u > halfW * 2f)
                     continue;
-                float edge = 1f - Mathf.Clamp((u - halfW) / halfW, 0f, 1f);
+                float edge = 1f - Mathf.Clamp((u - halfW) / (halfW * 0.5f + 0.01f), 0f, 1f);
                 img.SetPixel(x, y, new Color(1f, 1f, 1f, a * edge));
             }
         }

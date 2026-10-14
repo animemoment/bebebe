@@ -20,7 +20,16 @@ public sealed class WorkStealingQueue<T> where T : struct
     // Без ключевого слова volatile (нужен ref для Interlocked) —
     // доступ только через Volatile.Read/Write + Interlocked.
     private int _top;
+
+    // Паддинг 64 байта для разделения строк кэша CPU:
+    // полностью исключает False Sharing (Cache Ping-Pong) между ворами (пишущими в _top через CAS)
+    // и владельцем очереди (пишущим в _bottom LIFO).
+#pragma warning disable CS0169
+    private long _pad0, _pad1, _pad2, _pad3, _pad4, _pad5, _pad6;
+
     private int _bottom;
+    private long _padB0, _padB1, _padB2, _padB3, _padB4, _padB5, _padB6;
+#pragma warning restore CS0169
 
     /// <summary>
     /// Создаёт deque ёмкостью <paramref name="capacity"/> (округляется вверх до степени двойки).

@@ -32,6 +32,7 @@ public class GroundItemManager
 
     private readonly int[] _totalAvailableByType = new int[MaxItemTypes];
     public bool HasAvailableLogs => Volatile.Read(ref _totalAvailableByType[(int)ItemId.Log]) > 0;
+    public int TotalGroundPilesCount { get { lock (_lock) return _groundItems.Count; } }
     public bool HasAvailableItemsOfType(ItemId id)
     {
         int idx = (int)id;
@@ -263,10 +264,21 @@ public class GroundItemManager
         {
             StockpileManager.Instance.WithdrawItems(x, y, toTake);
         }
-        // Тоталы _totalAvailableByType НЕ трогаем: они уже уменьшены в момент
-        // резерва (TryReserve*), а Take лишь списывает физический стак.
-        // Декремент здесь дал бы двойное списание (как в TakeItems).
         return (item, toTake);
+    }
+
+    /// <summary>Очистить все предметы на земле при смене региона / перезапуске карты.</summary>
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            _groundItems.Clear();
+            for (int cy = 0; cy < ChunkDim; cy++)
+                for (int cx = 0; cx < ChunkDim; cx++)
+                    _itemChunks[cx, cy]?.Clear();
+            Array.Clear(_totalAvailableByType, 0, _totalAvailableByType.Length);
+            _isDirty = true;
+        }
     }
 
     /// <summary>

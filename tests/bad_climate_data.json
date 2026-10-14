@@ -1,0 +1,157 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Adversarial test cases by @destroyer for WorldClimateGenerator, BiomeMapper, and MapGenerator",
+  "test_cases": [
+    {
+      "id": "extreme_poles",
+      "description": "Extreme polar latitude (lat = 1.0, temperature = 0, glaciation = 65535)",
+      "climate": {
+        "ElevationQ16": 32768,
+        "ContinentalnessQ16": 40000,
+        "LatitudeQ16": 65535,
+        "TemperatureQ16": 0,
+        "MoistureQ16": 10000,
+        "PrecipitationQ16": 5000,
+        "DrainageQ16": 32768,
+        "WindHeadingQ16": 16384,
+        "RainShadowQ16": 0,
+        "TectonicPressureQ16": 10000,
+        "OceanInfluenceQ16": 20000,
+        "VegetationDensityQ16": 0,
+        "SoilFertilityQ16": 1000,
+        "RockExposureQ16": 25000,
+        "GlaciationQ16": 65535,
+        "AridityQ16": 5000,
+        "ArchipelagoTendencyQ16": 0,
+        "RiverDensityQ16": 2000
+      },
+      "expected_biome": "Glacier"
+    },
+    {
+      "id": "hyper_arid_desert",
+      "description": "Extreme equator desert (lat = 0, aridity = 65535, moisture = 0, temp = 65535)",
+      "climate": {
+        "ElevationQ16": 28000,
+        "ContinentalnessQ16": 60000,
+        "LatitudeQ16": 0,
+        "TemperatureQ16": 65535,
+        "MoistureQ16": 0,
+        "PrecipitationQ16": 0,
+        "DrainageQ16": 50000,
+        "WindHeadingQ16": 49152,
+        "RainShadowQ16": 45000,
+        "TectonicPressureQ16": 8000,
+        "OceanInfluenceQ16": 5000,
+        "VegetationDensityQ16": 0,
+        "SoilFertilityQ16": 2000,
+        "RockExposureQ16": 40000,
+        "GlaciationQ16": 0,
+        "AridityQ16": 65535,
+        "ArchipelagoTendencyQ16": 0,
+        "RiverDensityQ16": 0
+      },
+      "expected_biome": "Desert"
+    },
+    {
+      "id": "oceanic_archipelago",
+      "description": "High archipelago tendency, low continentalness (islands and shallow seas)",
+      "climate": {
+        "ElevationQ16": 21000,
+        "ContinentalnessQ16": 5000,
+        "LatitudeQ16": 20000,
+        "TemperatureQ16": 45000,
+        "MoistureQ16": 55000,
+        "PrecipitationQ16": 50000,
+        "DrainageQ16": 30000,
+        "WindHeadingQ16": 49152,
+        "RainShadowQ16": 0,
+        "TectonicPressureQ16": 35000,
+        "OceanInfluenceQ16": 60000,
+        "VegetationDensityQ16": 45000,
+        "SoilFertilityQ16": 40000,
+        "RockExposureQ16": 20000,
+        "GlaciationQ16": 0,
+        "AridityQ16": 5000,
+        "ArchipelagoTendencyQ16": 65535,
+        "RiverDensityQ16": 30000
+      },
+      "expected_biome": "DeepWater_or_Plains"
+    },
+    {
+      "id": "dense_rainforest",
+      "description": "Equatorial jungle with high vegetation density and high precipitation",
+      "climate": {
+        "ElevationQ16": 25000,
+        "ContinentalnessQ16": 30000,
+        "LatitudeQ16": 4000,
+        "TemperatureQ16": 55000,
+        "MoistureQ16": 60000,
+        "PrecipitationQ16": 62000,
+        "DrainageQ16": 22000,
+        "WindHeadingQ16": 49152,
+        "RainShadowQ16": 0,
+        "TectonicPressureQ16": 12000,
+        "OceanInfluenceQ16": 40000,
+        "VegetationDensityQ16": 65535,
+        "SoilFertilityQ16": 58000,
+        "RockExposureQ16": 10000,
+        "GlaciationQ16": 0,
+        "AridityQ16": 0,
+        "ArchipelagoTendencyQ16": 10000,
+        "RiverDensityQ16": 55000
+      },
+      "expected_biome": "Forest"
+    },
+    {
+      "id": "boundary_coordinates",
+      "description": "Coordinate extremes for world sampling (wx = -1000000, wy = -1000000, wx = 1000000, wy = 1000000)",
+      "coordinates": [
+        { "wx": -1000000, "wy": -1000000 },
+        { "wx": 1000000, "wy": 1000000 },
+        { "wx": 0, "wy": 0 },
+        { "wx": -2147483648, "wy": 2147483647 }
+      ]
+    },
+    {
+      "id": "seed_extremes_and_archetypes",
+      "description": "Adversarial seed tests for world archetype generation and extreme bit patterns",
+      "seeds": [
+        { "seed": "0", "description": "Zero seed test" },
+        { "seed": "18446744073709551615", "description": "Max ulong seed test" },
+        { "seed": "12297829382473034410", "description": "Alternating 0xAAAAAAAAAAAAAAAA bit pattern" },
+        { "seed": "6148914691236517205", "description": "Alternating 0x5555555555555555 bit pattern" }
+      ],
+      "archetypes": [
+        "Continents",
+        "Pangaea",
+        "Archipelago",
+        "InlandSeas"
+      ]
+    },
+    {
+      "id": "continental_interior_local_spawn",
+      "description": "Ensures that spawning deep inland on a continent does not throw playability errors when island falloff is bypassed",
+      "climate": {
+        "ElevationQ16": 34000,
+        "ContinentalnessQ16": 55000,
+        "LatitudeQ16": 32768,
+        "TemperatureQ16": 36000,
+        "MoistureQ16": 35000,
+        "PrecipitationQ16": 32000,
+        "DrainageQ16": 32000,
+        "WindHeadingQ16": 16384,
+        "RainShadowQ16": 0,
+        "TectonicPressureQ16": 8000,
+        "OceanInfluenceQ16": 10000,
+        "VegetationDensityQ16": 38000,
+        "SoilFertilityQ16": 42000,
+        "RockExposureQ16": 8000,
+        "GlaciationQ16": 0,
+        "AridityQ16": 12000,
+        "ArchipelagoTendencyQ16": 0,
+        "RiverDensityQ16": 28000
+      },
+      "expected_local_map_property": "continuous_land_borders_valid_playability"
+    }
+  ]
+}

@@ -57,12 +57,11 @@ public sealed class AgentSpatialGrid
     }
 
     /// <summary>
-    /// P3: параллельный rebuild. Разбиваем агентов по полосам (stripeCount полос),
-    /// каждая полоса пишет ТОЛЬКО в свои ячейки (cellIndex % stripeCount == stripe) —
-    /// гонок нет: два агента в одну ячейку всегда в одной полосе и идут
-    /// последовательно внутри неё. Локальный список активных ячеек на полосу,
-    /// затем слияние в общий _activeCells (Clear идёт только по нему).
-    /// Out-of-bounds агенты получают Next=-1 (как в Insert).
+    /// P3: истинно параллельный lock-free rebuild через Treiber stack (PLAN.md §36).
+    /// Агенты делятся на непрерывные диапазоны [start, end) по воркерам.
+    /// Вставка в ячейку выполняется через атомарный Interlocked.Exchange:
+    /// гонки исключены, ячейка регистрируется в _activeCells ровно один раз (когда oldHead == -1).
+    /// Ноль полосовых промахов (в отличие от старого cellIndex % stripes), 100% многопоточность.
     /// </summary>
     public void RebuildParallel(int agentCount, int[] cellX, int[] cellY, int[] nextInCell, int stripeCount = 0)
     {
@@ -72,12 +71,12 @@ public sealed class AgentSpatialGrid
         if (agentCount <= 0)
             return;
 
-        int stripes = stripeCount <= 0
+        int dop = stripeCount <= 0
             ? Math.Max(1, Math.Min(Environment.ProcessorCount, 8))
             : Math.Max(1, stripeCount);
 
         // Маленький пул — последовательный путь дешевле, чем веер потоков.
-        if (agentCount < 4096 || stripes < 2)
+        if (agentCount < 2048 || dop < 2)
         {
             for (int i = 0; i < agentCount; i++)
             {
@@ -96,30 +95,16 @@ public sealed class AgentSpatialGrid
             return;
         }
 
-        // Локальные счётчики активных ячеек на полосу (пишутся только своим потоком).
-        int[] stripeActiveCounts = new int[stripes];
-        // Первый проход: считаем, сколько ячеек достанется каждой полосе, чтобы
-        // выделить точные буферы без перераспределения (O(N) дешёвый скан int).
-        int[] stripeCellHint = new int[stripes];
-        for (int i = 0; i < agentCount; i++)
-        {
-            int cx = cellX[i], cy = cellY[i];
-            if ((uint)cx >= (uint)_width || (uint)cy >= (uint)_height)
-                continue;
-            stripeCellHint[(cy * _width + cx) % stripes]++;
-        }
+        int chunkSize = (agentCount + dop - 1) / dop;
 
-        int[][] stripeActive = new int[stripes][];
-        for (int s = 0; s < stripes; s++)
-            stripeActive[s] = new int[Math.Max(1, stripeCellHint[s])];
-
-        System.Threading.Tasks.Parallel.For(0, stripes,
-            new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = stripes },
-            s =>
+        System.Threading.Tasks.Parallel.For(0, dop,
+            new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = dop },
+            threadIndex =>
             {
-                int[] localActive = stripeActive[s];
-                int localCount = 0;
-                for (int i = s; i < agentCount; i += stripes)
+                int start = threadIndex * chunkSize;
+                int end = Math.Min(agentCount, start + chunkSize);
+
+                for (int i = start; i < end; i++)
                 {
                     int cx = cellX[i], cy = cellY[i];
                     if ((uint)cx >= (uint)_width || (uint)cy >= (uint)_height)
@@ -128,48 +113,21 @@ public sealed class AgentSpatialGrid
                         continue;
                     }
                     int cellIndex = cy * _width + cx;
-                    // В эту ячейку пишут только агенты этой полосы, НО разные
-                    // полосы делят _cellHeads: ячейка j принадлежит ровно одной
-                    // полосе (j % stripes == s), чужие ячейки не трогаем.
-                    if (cellIndex % stripes != s)
+
+                    // Lock-free Treiber stack: атомарно заменяем голову ячейки на i
+                    // и связываем i со старой головой.
+                    int oldHead = System.Threading.Interlocked.Exchange(ref _cellHeads[cellIndex], i);
+                    nextInCell[i] = oldHead;
+
+                    // Если старая голова была -1, эта ячейка впервые стала активной в текущем кадре.
+                    // Ровно один поток получит oldHead == -1 для каждой активной ячейки.
+                    if (oldHead == -1)
                     {
-                        // Агент не в своей полосе по ячейке — откладываем:
-                        // его обработает своя полоса во втором проходе.
-                        // Помечаем временным значением, не -1 (чтобы отличить).
-                        nextInCell[i] = int.MinValue;
-                        continue;
+                        int activeIdx = System.Threading.Interlocked.Increment(ref _activeCellCount) - 1;
+                        _activeCells[activeIdx] = cellIndex;
                     }
-                    if (_cellHeads[cellIndex] == -1)
-                        localActive[localCount++] = cellIndex;
-                    nextInCell[i] = _cellHeads[cellIndex];
-                    _cellHeads[cellIndex] = i;
                 }
-                stripeActiveCounts[s] = localCount;
             });
-
-        // Второй проход: агенты, чья ячейка в другой полосе (stride по агентам
-        // не совпал с полосой ячейки). Их мало, идём последовательно.
-        for (int i = 0; i < agentCount; i++)
-        {
-            if (nextInCell[i] != int.MinValue)
-                continue;
-            int cx = cellX[i], cy = cellY[i];
-            int cellIndex = cy * _width + cx; // bounds уже проверены в 1-м проходе
-            int s = cellIndex % stripes;
-            if (_cellHeads[cellIndex] == -1)
-                stripeActive[s][stripeActiveCounts[s]++] = cellIndex;
-            nextInCell[i] = _cellHeads[cellIndex];
-            _cellHeads[cellIndex] = i;
-        }
-
-        // Слияние локальных списков активных ячеек в общий.
-        for (int s = 0; s < stripes; s++)
-        {
-            int[] localActive = stripeActive[s];
-            int localCount = stripeActiveCounts[s];
-            for (int k = 0; k < localCount; k++)
-                _activeCells[_activeCellCount++] = localActive[k];
-        }
     }
 
     public int GetFirstAgent(int cellX, int cellY)

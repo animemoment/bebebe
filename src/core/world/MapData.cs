@@ -1,3 +1,5 @@
+using Game.Core.WorldStreaming;
+
 namespace Game.Core;
 
 /// <summary>
@@ -7,7 +9,7 @@ namespace Game.Core;
 /// TreeVariant — вариант спрайта дерева 0..3 (tree/tree_1/tree_2/tree_3).
 /// StoneOnGrass — каменная россыпь на клетке (только если Ground == Grass,
 /// дерева там нет). Вариант 0..3 считается хешем от координат+сида
-/// (MapGenerator.StoneVariantFor) — не храним, детерминирован.
+/// (UnifiedWorldGenerator.StoneVariantFor) — не храним, детерминирован.
 /// Seed — сид, которым карта была сгенерирована (для воспроизводимости/дебага).
 /// </summary>
 public sealed class MapData
@@ -20,6 +22,24 @@ public sealed class MapData
     public HumidityMap Humidity { get; }
     /// <summary>Плодородие почвы 0..200. СВОЙ слой шума (сид +4242), живёт тиками.</summary>
     public FertilityMap Fertility { get; }
+    /// <summary>
+    /// Визуальный биом клетки (<see cref="WorldStreaming.BiomeType"/>), выведенный из
+    /// климата мировой карты. ГЕЙМПЛЕЙ определяется только <see cref="Ground"/>
+    /// (проходимость/вода/горы) — Biome влияет ИСКЛЮЧИТЕЛЬНО на выбор текстуры,
+    /// поэтому симуляция, pathfinder и бесшовная логика его не читают.
+    /// </summary>
+    public byte[,] Biome { get; }
+
+    /// <summary>
+    /// Вариант текстуры внутри биома. Выбирается детерминированно-случайно
+    /// (хеш координат+сида), используются ВСЕ варианты
+    /// (см. <c>GroundTileAtlas.VariantsPerType</c>).
+    /// </summary>
+    public byte[,] Variant { get; }
+
+    /// <summary>Климат региона, в котором сгенерирована карта (диагностика/HUD/тесты).</summary>
+    public WorldClimateParams Climate { get; set; } = WorldClimateParams.DefaultTemperate;
+
     public uint Seed { get; set; }
     public int LakeCount { get; set; }
     public int[] LakeSizes { get; set; } = System.Array.Empty<int>();
@@ -37,8 +57,26 @@ public sealed class MapData
         TreeOnGrass = new bool[width, height];
         TreeVariant = new byte[width, height];
         StoneOnGrass = new bool[width, height];
+        Biome = new byte[width, height];
+        Variant = new byte[width, height];
         Humidity = new HumidityMap(width, height);
         Fertility = new FertilityMap(width, height);
+    }
+
+    /// <summary>Визуальный биом клетки. Bounds-safe (вне карты — Plains).</summary>
+    public WorldStreaming.BiomeType GetBiome(int x, int y)
+    {
+        if ((uint)x >= (uint)Width || (uint)y >= (uint)Height)
+            return WorldStreaming.BiomeType.Plains;
+        return (WorldStreaming.BiomeType)Biome[x, y];
+    }
+
+    /// <summary>Вариант текстуры клетки. Bounds-safe (вне карты — 0).</summary>
+    public int GetGroundVariant(int x, int y)
+    {
+        if ((uint)x >= (uint)Width || (uint)y >= (uint)Height)
+            return 0;
+        return Variant[x, y];
     }
 
     /// <summary>

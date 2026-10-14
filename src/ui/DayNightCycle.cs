@@ -133,15 +133,40 @@ public partial class DayNightCycle : Node
             ? Mathf.Sin(dayT / noonT * Mathf.Pi * 0.5f)
             : Mathf.Sin(Mathf.Pi * 0.5f + (dayT - noonT) / (1f - noonT) * Mathf.Pi * 0.5f);
 
-        // Тень идёт слева направо вслед за солнцем: утром -X, вечером +X, в полдень 0.
+        // Тень идёт слева направо вслед за солнцем: утром -X, вечером +X, в полдень контактное пятно.
         float azim = dayT * 2f - 1f;
-        float len = MaxShadowLengthPx * (1f - elev);
+        // Длина тени: в полдень не исчезает в ноль (чтобы колонисты не парили), а оставляет контактную тень 6px.
+        float len = Mathf.Max(6.0f, MaxShadowLengthPx * (1f - elev));
         float alpha = ShadowAlphaMax * Mathf.Clamp(elev * 3f, 0f, 1f) * Mathf.Clamp((1f - elev) * 4f + 0.25f, 0f, 1f);
-        if (len < 0.5f)
-            return new SunState(Vector2.Zero, 0f, ShadowWidthScale, 0f);
+        if (elev >= 0.5f)
+            alpha = Mathf.Max(0.22f, alpha);
         float inv = 1f / Mathf.Sqrt(azim * azim + 0.1225f);
         var dir = new Vector2(azim * inv, 0.35f * inv);
-        return new SunState(dir, len, ShadowWidthScale, alpha);
+        Color shadowColor = SampleShadowColor(timeOfDaySeconds, alpha);
+        return new SunState(dir, len, ShadowWidthScale, alpha, shadowColor);
+    }
+
+    /// <summary>
+    /// Атмосферный цвет тени: не глухой черный, а подсвеченный рассеянным куполом неба
+    /// (холодный сине-серый днем, глубокий фиолетово-синий на рассвете/закате).
+    /// </summary>
+    public static Color SampleShadowColor(float timeOfDaySeconds, float alpha)
+    {
+        float h = timeOfDaySeconds / WorldTime.SecondsPerHour;
+        Color skyTint;
+        if (h < NightEndHour || h >= NightStartHour)
+            skyTint = new Color(0.06f, 0.08f, 0.16f); // лунная ночь
+        else if (h < DawnHour)
+            skyTint = new Color(0.12f, 0.08f, 0.24f); // предрассветный индиго
+        else if (h < DayStartHour)
+            skyTint = new Color(0.09f, 0.10f, 0.22f); // утреннее небо
+        else if (h < DayEndHour)
+            skyTint = new Color(0.07f, 0.11f, 0.22f); // дневной небесный свет
+        else if (h < DuskHour)
+            skyTint = new Color(0.12f, 0.08f, 0.22f); // закатный фиолетовый
+        else
+            skyTint = new Color(0.08f, 0.07f, 0.18f); // сумерки
+        return new Color(skyTint.R, skyTint.G, skyTint.B, alpha);
     }
 
     /// <summary>Совместимость: offset+alpha для старого кода (близнецы). Новые рендеры используют <see cref="SunState"/>.</summary>
@@ -151,20 +176,27 @@ public partial class DayNightCycle : Node
         return (s.Dir * s.LengthPx, s.Alpha);
     }
 
-    /// <summary>Состояние солнца за тик: направление + длина + ширина тени и альфа.</summary>
+    /// <summary>Состояние солнца за тик: направление + длина + ширина тени, альфа и атмосферный цвет.</summary>
     public readonly struct SunState
     {
         public readonly Vector2 Dir;
         public readonly float LengthPx;
         public readonly float WidthScale;
         public readonly float Alpha;
+        public readonly Color ShadowColor;
 
         public SunState(Vector2 dir, float lengthPx, float widthScale, float alpha)
+            : this(dir, lengthPx, widthScale, alpha, new Color(0.07f, 0.11f, 0.22f, alpha))
+        {
+        }
+
+        public SunState(Vector2 dir, float lengthPx, float widthScale, float alpha, Color shadowColor)
         {
             Dir = dir;
             LengthPx = lengthPx;
             WidthScale = widthScale;
             Alpha = alpha;
+            ShadowColor = shadowColor;
         }
     }
 }

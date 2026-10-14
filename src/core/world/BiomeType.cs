@@ -21,11 +21,14 @@ public enum BiomeType : byte
     /// <summary>Поля / равнина (средняя влажность). Тайл: col 4, row 0 (source 10).</summary>
     Plains = 4,
 
-    /// <summary>Лес (широкий диапазон). Тайлы: col 6-9, row 0 (source 12..15).</summary>
+    /// <summary>Лес (широкий диапазон). Тайлы: col 6-9, row 0..2 (source 12..23).</summary>
     Forest = 5,
 
-    /// <summary>Болото / влажная зона. Тайл: col 5, row 0 (source 11).</summary>
-    Swamp = 6
+    /// <summary>Болото / влажная зона. Тайл: col 5, rows 0..2 (source 11, 24..25).</summary>
+    Swamp = 6,
+
+    /// <summary>Ледник / тундра / вечная мерзлота. Тайл: col 0, row 3 (source 26..30).</summary>
+    Glacier = 7
 }
 
 /// <summary>Информация о выбранном тайле для клетчки.</summary>

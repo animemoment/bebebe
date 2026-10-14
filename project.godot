@@ -11,9 +11,9 @@ config_version=5
 [application]
 
 config/name="Game"
-run/main_scene="res://scenes/main/Main.tscn"
+run/main_scene="res://scenes/ui/menu.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
-run/max_fps=60
+run/max_fps=1000
 
 [autoload]
 
@@ -25,7 +25,8 @@ McpInteractionServer="*res://autoload/mcp_interaction_server.gd"
 window/size/viewport_width=1920
 window/size/viewport_height=1080
 window/stretch/mode="canvas_items"
-window/stretch/aspect="expand"
+window/stretch/aspect="keep_width"
+window/vsync/vsync_mode=0
 
 [dotnet]
 

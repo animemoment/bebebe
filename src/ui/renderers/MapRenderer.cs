@@ -1,5 +1,6 @@
 using Godot;
 using Game.Core;
+using Game.Core.WorldStreaming;
 using Game.Simulation;
 using System;
 using System.Collections.Concurrent;
@@ -45,6 +46,9 @@ public partial class MapRenderer : Node2D
 	public const int SourceBed        = 14;
 	public const int SourceBench      = 15;
 	public const int SourceNightstand = 16;
+	public const int SourceSand       = 17;
+	// Композитный объединенный атлас декораций (деревья + камни) для батчинга в 1 DrawCall
+	public const int SourceObjectComposite = 20;
 	// Ghost-призрак: TileSet _ghostLayer — ДУБЛЬ сценового wall-набора с
 	// добавленными одиночными Source (трава/грядка/мебель). Id взяты с запасом
 	// от сценовых (там максимум ~16), чтобы не пересекаться с terrain-источниками.
@@ -62,6 +66,9 @@ public partial class MapRenderer : Node2D
 	/// Задаётся в инспекторе Godot у MapRenderer.
 	/// </summary>
 	[Export] public int SeedOverride = 0;
+
+	/// <summary>Отложить автоматическую генерацию карты (например, в режиме выбора спавна из меню).</summary>
+	[Export] public bool DeferAutoGeneration { get; set; } = false;
 
 	public static uint CurrentMapSeed { get; private set; }
 
@@ -100,12 +107,19 @@ public partial class MapRenderer : Node2D
 	private const string TextureBed = "uid://0uf8ok6dxhyi";
 	private const string TextureBench = "uid://bi667xckuklur";
 	private const string TextureNightstand = "uid://ir5jk74j01fg";
+	private const string TextureSand = "uid://cmxrvsia7sdqi";
 
 	private const int WallAtlasColumns = 7;
 	private const int WallAtlasRows = 7;
 	private const int WallAtlasTilePx = 64;
 
 	private static readonly Vector2I AtlasOrigin = Vector2I.Zero;
+
+	private const string TerrainBlendShaderPath = "res://src/shaders/terrain_blend.gdshader";
+	private ShaderMaterial _terrainMaterial;
+	private ImageTexture _terrainTypeTexture;
+	private ColorRect _groundSurface;
+	private float _waterAccumulatedTime;
 
 	private TileMapLayer _groundLayer;
 	private TileMapLayer _mountainLayer;
@@ -204,23 +218,45 @@ public partial class MapRenderer : Node2D
 	{
 		Instance = this;
 
-		var bg = new ColorRect
+		_groundSurface = new ColorRect
 		{
-			Name = "Background",
+			Name = "GroundSurface",
 			Color = new Color(0f, 0f, 0f),
 			Size = new Vector2(MapWidth * TileSizePx, MapHeight * TileSizePx),
 			Position = Vector2.Zero,
 			MouseFilter = Control.MouseFilterEnum.Ignore
 		};
-		AddChild(bg);
+		AddChild(_groundSurface);
 
-		_groundLayer = new TileMapLayer { Name = "GroundLayer" };
+		_groundLayer = new TileMapLayer { Name = "GroundLayer", RenderingQuadrantSize = 64 };
+		Shader terrainShader = null;
+		try
+		{
+			terrainShader = GD.Load<Shader>(TerrainBlendShaderPath);
+		}
+		catch (Exception)
+		{
+			// Fallback на стандартный рендер плиток без шейдера
+		}
+		if (terrainShader != null)
+		{
+			_terrainMaterial = new ShaderMaterial { Shader = terrainShader };
+			var grassTex = LoadTexture(TextureGrass, "grass");
+			var sandTex = LoadTexture(TextureSand, "sand");
+			var waterTex = LoadTexture(TextureWater, "water");
+			if (grassTex != null) _terrainMaterial.SetShaderParameter("tex_grass", grassTex);
+			if (sandTex != null) _terrainMaterial.SetShaderParameter("tex_sand", sandTex);
+			if (waterTex != null) _terrainMaterial.SetShaderParameter("tex_water", waterTex);
+			_terrainMaterial.SetShaderParameter("map_size", new Vector2(MapWidth, MapHeight));
+			_groundSurface.Material = _terrainMaterial;
+			_groundLayer.Visible = false;
+		}
 		AddChild(_groundLayer);
 
-		_mountainLayer = new TileMapLayer { Name = "MountainLayer" };
+		_mountainLayer = new TileMapLayer { Name = "MountainLayer", RenderingQuadrantSize = 64 };
 		AddChild(_mountainLayer);
 
-		_farmLayer = new TileMapLayer { Name = "FarmLayer" };
+		_farmLayer = new TileMapLayer { Name = "FarmLayer", RenderingQuadrantSize = 64 };
 		AddChild(_farmLayer);
 
 		// Оверлей влажности: один TextureRect 512×512 поверх земли,
@@ -238,20 +274,22 @@ public partial class MapRenderer : Node2D
 		_stockpileLayer = new TileMapLayer
 		{
 			Name = "StockpileLayer",
-			Modulate = new Color(0.65f, 0.15f, 0.9f, 0.45f)
+			Modulate = new Color(0.65f, 0.15f, 0.9f, 0.45f),
+			RenderingQuadrantSize = 64
 		};
 		AddChild(_stockpileLayer);
 
-		_objectLayer = new TileMapLayer { Name = "ObjectLayer" };
+		_objectLayer = new TileMapLayer { Name = "ObjectLayer", RenderingQuadrantSize = 64 };
 		AddChild(_objectLayer);
 
-		_buildingLayer = new TileMapLayer { Name = "BuildingLayer" };
+		_buildingLayer = new TileMapLayer { Name = "BuildingLayer", RenderingQuadrantSize = 64 };
 		AddChild(_buildingLayer);
 
 		_blueprintLayer = new TileMapLayer
 		{
 			Name = "BlueprintLayer",
-			Modulate = new Color(1f, 1f, 1f, 0.5f)
+			Modulate = new Color(1f, 1f, 1f, 0.5f),
+			RenderingQuadrantSize = 64
 		};
 		AddChild(_blueprintLayer);
 
@@ -261,17 +299,19 @@ public partial class MapRenderer : Node2D
 		_wallBlueprintLayer = new TileMapLayer
 		{
 			Name = "WallBlueprintLayer",
-			Modulate = new Color(1f, 1f, 1f, 0.5f)
+			Modulate = new Color(1f, 1f, 1f, 0.5f),
+			RenderingQuadrantSize = 64
 		};
 		AddChild(_wallBlueprintLayer);
 
-		_wallLayer = new TileMapLayer { Name = "WoodWallLayer" };
+		_wallLayer = new TileMapLayer { Name = "WoodWallLayer", RenderingQuadrantSize = 64 };
 		AddChild(_wallLayer);
 
 		_ghostLayer = new TileMapLayer
 		{
 			Name = "WallGhostLayer",
-			Modulate = new Color(1f, 1f, 1f, 0.4f)
+			Modulate = new Color(1f, 1f, 1f, 0.4f),
+			RenderingQuadrantSize = 64
 		};
 		AddChild(_ghostLayer);
 
@@ -283,7 +323,8 @@ public partial class MapRenderer : Node2D
 		_workProgressLayer = new TileMapLayer
 		{
 			Name = "WorkProgressLayer",
-			Modulate = new Color(1f, 1f, 1f, 0.85f)
+			Modulate = new Color(1f, 1f, 1f, 0.85f),
+			RenderingQuadrantSize = 64
 		};
 		AddChild(_workProgressLayer);
 
@@ -351,8 +392,8 @@ public partial class MapRenderer : Node2D
 		FarmJobManager.Instance.OnPlotsBatchUnmarked += _onPlotsBatchUnmarked;
 		FarmJobManager.Instance.OnPlotCompleted += _onPlotCompleted;
 
-		// Если карта уже подана извне — применяем её и пропускаем автогенерацию
-		if (_pendingMapData != null || _hasExternalMap) return;
+		// Если карта уже подана извне или отложена автогенерация — пропускаем
+		if (_pendingMapData != null || _hasExternalMap || DeferAutoGeneration) return;
 
 		Task.Run(() =>
 		{
@@ -361,8 +402,8 @@ public partial class MapRenderer : Node2D
 				: unchecked((uint)Random.Shared.Next(int.MinValue, int.MaxValue));
 			CurrentMapSeed = seed;
 
-			// GPU-трек удалён: генерация карты — чистый CPU (NoiseGenerator fBm).
-			_pendingMapData = MapGenerator.Generate(MapWidth, MapHeight, seed);
+			// Единая генерация через UnifiedWorldGenerator
+			_pendingMapData = UnifiedWorldGenerator.GenerateColonyWindow(seed, UnifiedWorldGenerator.DefaultGeneratorVersion, 0, 0, MapWidth, MapHeight);
 
 			int grass = 0, water = 0, mountains = 0, trees = 0, stones = 0;
 			for (int x = 0; x < MapWidth; x++)
@@ -424,8 +465,32 @@ public partial class MapRenderer : Node2D
 		// только WoodWall-чертежи (мебель в этот слой не попадает).
 		_builtWalls?.Flush(c => _wallBuildManager != null && _wallBuildManager.IsWallAt(c.X, c.Y));
 		_wallBlueprints?.Flush(c => BlueprintManager.Instance.IsWallBlueprintAt(c.X, c.Y));
-		_mountains?.Flush(c => _pendingMapData != null && (uint)c.X < (uint)_pendingMapData.Width && (uint)c.Y < (uint)_pendingMapData.Height && _pendingMapData.Ground[c.X, c.Y] == TileType.Mountain);
+		// Macro-LOD: при сильном отдалении (Zoom < 0.22x) скрываем микро-слои,
+		// которые неразличимы глазом, но создают десятки тысяч CanvasItems.
+		var cam = GetViewport()?.GetCamera2D();
+		float zoom = cam?.Zoom.X ?? 1f;
+		if (_workProgressLayer != null)
+		{
+			bool showProgress = zoom >= 0.22f;
+			if (_workProgressLayer.Visible != showProgress)
+				_workProgressLayer.Visible = showProgress;
+		}
+		if (_ghostLayer != null)
+		{
+			bool showGhost = zoom >= 0.20f;
+			if (_ghostLayer.Visible != showGhost)
+				_ghostLayer.Visible = showGhost;
+		}
+
 		FlushWorkProgress(delta);
+
+		if (_terrainMaterial != null)
+		{
+			float speed = TimeManager.Instance != null ? TimeManager.Instance.SpeedMultiplier : 1f;
+			float rate = speed <= 0f ? 0f : Mathf.Pow(speed, 0.45f);
+			_waterAccumulatedTime += (float)delta * rate;
+			_terrainMaterial.SetShaderParameter("water_time", _waterAccumulatedTime);
+		}
 	}
 
 	/// <summary>
@@ -438,6 +503,16 @@ public partial class MapRenderer : Node2D
 		if (_workProgressLayer?.TileSet == null)
 			return;
 		WorkProgressTracker.Instance.DrainDirty(_progressDrain, 256);
+		if (!_workProgressLayer.Visible)
+		{
+			// При отдалении камеры (LOD) слой скрыт — стираем только завершённые, не рисуем новые
+			foreach (var (x, y, stage) in _progressDrain)
+			{
+				if (stage < 0)
+					_workProgressLayer.EraseCell(new Vector2I(x, y));
+			}
+			return;
+		}
 		foreach (var (x, y, stage) in _progressDrain)
 		{
 			var pos = new Vector2I(x, y);
@@ -521,6 +596,21 @@ public partial class MapRenderer : Node2D
 			_fertilityOverlay.Refresh(Fertility);
 	}
 
+	public void ClearAllLayers()
+	{
+		_groundLayer?.Clear();
+		_objectLayer?.Clear();
+		_mountainLayer?.Clear();
+		_wallLayer?.Clear();
+		_buildingLayer?.Clear();
+		_farmLayer?.Clear();
+		_stockpileLayer?.Clear();
+		_blueprintLayer?.Clear();
+		_wallBlueprintLayer?.Clear();
+		_ghostLayer?.Clear();
+		_workProgressLayer?.Clear();
+	}
+
 	private void ApplyMap()
 	{
 		try
@@ -528,9 +618,46 @@ public partial class MapRenderer : Node2D
 			MapData mapData = _pendingMapData;
 			if (mapData == null) return;
 
+			ClearAllLayers();
+
 			TileSet groundTileSet = CreateGroundTileSet();
 			_groundLayer.TileSet = groundTileSet;
 			_stockpileLayer.TileSet = groundTileSet;
+
+			if (_terrainMaterial != null)
+			{
+				var grassTex = LoadTexture(TextureGrass, "grass");
+				var sandTex = LoadTexture(TextureSand, "sand");
+				var waterTex = LoadTexture(TextureWater, "water");
+				if (grassTex != null) _terrainMaterial.SetShaderParameter("tex_grass", grassTex);
+				if (sandTex != null) _terrainMaterial.SetShaderParameter("tex_sand", sandTex);
+				if (waterTex != null) _terrainMaterial.SetShaderParameter("tex_water", waterTex);
+
+				byte[] mapBytes = new byte[MapWidth * MapHeight];
+				for (int y = 0; y < MapHeight; y++)
+				{
+					for (int x = 0; x < MapWidth; x++)
+					{
+						byte type;
+						if (mapData.Ground[x, y] == TileType.Water)
+							type = 2; // Water
+						else if (mapData.GetBiome(x, y) == BiomeType.Desert)
+							type = 1; // Sand
+						else
+							type = 0; // Grass
+						mapBytes[y * MapWidth + x] = type;
+					}
+				}
+				var img = Image.CreateFromData(MapWidth, MapHeight, false, Image.Format.R8, mapBytes);
+				_terrainTypeTexture = ImageTexture.CreateFromImage(img);
+				_terrainMaterial.SetShaderParameter("terrain_map", _terrainTypeTexture);
+				if (_groundSurface != null)
+				{
+					_groundSurface.Material = _terrainMaterial;
+					_groundSurface.Visible = true;
+				}
+				_groundLayer.Visible = false;
+			}
 
 			TileSet objectTileSet = CreateObjectTileSet();
 			_objectLayer.TileSet = objectTileSet;
@@ -545,40 +672,66 @@ public partial class MapRenderer : Node2D
 			_mountainLayer.TileSet = mountainTerrainTileSet;
 			_mountains = new TerrainTileLayer(_mountainLayer, MountainTerrainSetId, MountainTerrainId);
 
-			var mountainCells = new List<Vector2I>();
+			Vector2I[] grassVariants = GetAtlasTileCoords(groundTileSet, SourceGrass);
+			Vector2I[] waterVariants = GetAtlasTileCoords(groundTileSet, SourceWater);
+			Vector2I[] sandVariants = GetAtlasTileCoords(groundTileSet, SourceSand);
+			bool hasSand = groundTileSet.HasSource(SourceSand);
+
 			for (int x = 0; x < MapWidth; x++)
 			{
 				for (int y = 0; y < MapHeight; y++)
 				{
 					var pos = new Vector2I(x, y);
+					int variant = mapData.GetGroundVariant(x, y);
+
 					if (mapData.Ground[x, y] == TileType.Mountain)
 					{
-						_groundLayer.SetCell(pos, SourceGrass, AtlasOrigin);
-						mountainCells.Add(pos);
+						Vector2I coords = grassVariants[variant % grassVariants.Length];
+						_groundLayer.SetCell(pos, SourceGrass, coords);
+						Vector2I mountainAtlas = MountainTileHelper.GetTile(x, y, mapData.Ground);
+						_mountainLayer.SetCell(pos, SourceMountain, mountainAtlas);
+						_objectLayer.EraseCell(pos);
 					}
 					else if (mapData.Ground[x, y] == TileType.Grass)
 					{
-						_groundLayer.SetCell(pos, SourceGrass, AtlasOrigin);
+						var biome = mapData.GetBiome(x, y);
+						int sourceId;
+						Vector2I coords;
+						if (biome == BiomeType.Desert && hasSand)
+						{
+							sourceId = SourceSand;
+							coords = sandVariants[variant % sandVariants.Length];
+						}
+						else
+						{
+							sourceId = SourceGrass;
+							coords = grassVariants[variant % grassVariants.Length];
+						}
+						_groundLayer.SetCell(pos, sourceId, coords);
+
 						if (mapData.TreeOnGrass[x, y])
 						{
-							int sourceId = GetTreeSourceId(mapData.GetTreeVariant(x, y));
-							_objectLayer.SetCell(pos, sourceId, AtlasOrigin);
+							int treeVariant = mapData.GetTreeVariant(x, y) & 3;
+							_objectLayer.SetCell(pos, SourceObjectComposite, new Vector2I(treeVariant, 0));
 						}
 						else if (mapData.StoneOnGrass[x, y])
 						{
-							// Россыпь камня: вариант 0..3 из stone.png 128x128,
-							// детерминирован сидом карты (тот же при перезапуске).
-							int variant = MapGenerator.StoneVariantFor(x, y, mapData.Seed);
-							_objectLayer.SetCell(pos, GetStoneSourceId(variant), AtlasOrigin);
+							int stoneVariant = UnifiedWorldGenerator.StoneVariantFor(x, y, mapData.Seed) & 3;
+							_objectLayer.SetCell(pos, SourceObjectComposite, new Vector2I(4 + stoneVariant, 0));
+						}
+						else
+						{
+							_objectLayer.EraseCell(pos);
 						}
 					}
 					else
 					{
-						_groundLayer.SetCell(pos, SourceWater, AtlasOrigin);
+						Vector2I coords = waterVariants[variant % waterVariants.Length];
+						_groundLayer.SetCell(pos, SourceWater, coords);
+						_objectLayer.EraseCell(pos);
 					}
 				}
 			}
-			_mountains.RebuildAll(mountainCells);
 
 			// Слои стен/чертежей/госта используют TileSet с terrain-разметкой
 			// из сцены (wood_wall_tile в Main.tscn) — автотайлинг везде считает
@@ -715,72 +868,110 @@ public partial class MapRenderer : Node2D
 	private TileSet CreateGroundTileSet()
 	{
 		var tileSet = new TileSet { TileSize = new Vector2I(TileSizePx, TileSizePx) };
-		var grassTex = LoadTexture(TextureGrass, "grass");
-		if (grassTex != null)
-		{
-			var src = new TileSetAtlasSource { Texture = grassTex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
-			src.CreateTile(Vector2I.Zero);
-			tileSet.AddSource(src, SourceGrass);
-		}
-		var waterTex = LoadTexture(TextureWater, "water");
-		if (waterTex != null)
-		{
-			var src = new TileSetAtlasSource { Texture = waterTex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
-			src.CreateTile(Vector2I.Zero);
-			tileSet.AddSource(src, SourceWater);
-		}
+		AddGroundAtlasSource(tileSet, TextureGrass, "grass", SourceGrass);
+		AddGroundAtlasSource(tileSet, TextureWater, "water", SourceWater);
+		AddGroundAtlasSource(tileSet, TextureSand, "sand", SourceSand);
 		return tileSet;
+	}
+
+	private void AddGroundAtlasSource(TileSet tileSet, string uid, string name, int sourceId)
+	{
+		var tex = LoadTexture(uid, name);
+		if (tex == null) return;
+
+		var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+		int cols = Math.Max(1, tex.GetWidth() / TileSizePx);
+		int rows = Math.Max(1, tex.GetHeight() / TileSizePx);
+		for (int r = 0; r < rows; r++)
+		{
+			for (int c = 0; c < cols; c++)
+			{
+				src.CreateTile(new Vector2I(c, r));
+			}
+		}
+		tileSet.AddSource(src, sourceId);
+	}
+
+	private static Vector2I[] GetAtlasTileCoords(TileSet tileSet, int sourceId)
+	{
+		if (tileSet == null || !tileSet.HasSource(sourceId))
+			return new[] { Vector2I.Zero };
+		var src = tileSet.GetSource(sourceId) as TileSetAtlasSource;
+		if (src == null || src.GetTilesCount() == 0)
+			return new[] { Vector2I.Zero };
+		int count = src.GetTilesCount();
+		var coords = new Vector2I[count];
+		for (int i = 0; i < count; i++)
+			coords[i] = src.GetTileId(i);
+		return coords;
 	}
 
 	private TileSet CreateObjectTileSet()
 	{
 		var tileSet = new TileSet { TileSize = new Vector2I(TileSizePx, TileSizePx) };
-		var t0 = LoadTexture(TextureTree0, "tree");
-		if (t0 != null)
+
+		// 1. Композитный объединенный атлас 512x64 (PLAN.md §36):
+		// [0..3]: 4 варианта деревьев (tree, tree_1, tree_2, tree_3)
+		// [4..7]: 4 варианта камней (4 квадранта 2x2 из stone.png)
+		// Все 70 000 объектов слоя делят ОДНУ текстуру, исключая разрывы батчинга.
+		var atlasImg = Image.CreateEmpty(TileSizePx * 8, TileSizePx, false, Image.Format.Rgba8);
+
+		Texture2D[] treeTextures = {
+			LoadTexture(TextureTree0, "tree"),
+			LoadTexture(TextureTree1, "tree_1"),
+			LoadTexture(TextureTree2, "tree_2"),
+			LoadTexture(TextureTree3, "tree_3")
+		};
+
+		for (int v = 0; v < 4; v++)
 		{
-			var s0 = new TileSetAtlasSource { Texture = t0, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
-			s0.CreateTile(Vector2I.Zero);
-			tileSet.AddSource(s0, SourceTree0);
+			var img = treeTextures[v]?.GetImage();
+			if (img != null)
+			{
+				atlasImg.BlitRect(img, new Rect2I(0, 0, TileSizePx, TileSizePx), new Vector2I(v * TileSizePx, 0));
+			}
 		}
-		var t1 = LoadTexture(TextureTree1, "tree_1");
-		if (t1 != null)
-		{
-			var s1 = new TileSetAtlasSource { Texture = t1, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
-			s1.CreateTile(Vector2I.Zero);
-			tileSet.AddSource(s1, SourceTree1);
-		}
-		var t2 = LoadTexture(TextureTree2, "tree_2");
-		if (t2 != null)
-		{
-			var s2 = new TileSetAtlasSource { Texture = t2, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
-			s2.CreateTile(Vector2I.Zero);
-			tileSet.AddSource(s2, SourceTree2);
-		}
-		else
-		{
-			GD.PrintErr("MapRenderer: текстура tree_2 (uid://do5qth6ieq2q4) не найдена!");
-		}
-		var t3 = LoadTexture(TextureTree3, "tree_3");
-		if (t3 != null)
-		{
-			var s3 = new TileSetAtlasSource { Texture = t3, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
-			s3.CreateTile(Vector2I.Zero);
-			tileSet.AddSource(s3, SourceTree3);
-		}
-		else
-		{
-			GD.PrintErr("MapRenderer: текстура tree_3 (uid://n3xkro0lffbt) не найдена!");
-		}
-		// Камень stone.png 128x128: 4 квадранта 2x2 по 64px — каждый своим Source
-		// (как 4 варианта деревьев). Режем через AtlasTexture с регионом
-		// квадранта: движок сам нарежет Source по 64 из этой 64-картинки.
+
 		var stoneTex = LoadTexture(TextureStone, "stone");
+		var stoneImg = stoneTex?.GetImage();
+		if (stoneImg != null)
+		{
+			for (int v = 0; v < 4; v++)
+			{
+				var (qx, qy) = UnifiedWorldGenerator.StoneAtlasFor(v);
+				atlasImg.BlitRect(stoneImg, new Rect2I(qx * TileSizePx, qy * TileSizePx, TileSizePx, TileSizePx), new Vector2I((4 + v) * TileSizePx, 0));
+			}
+		}
+
+		var compositeSource = new TileSetAtlasSource
+		{
+			Texture = ImageTexture.CreateFromImage(atlasImg),
+			TextureRegionSize = new Vector2I(TileSizePx, TileSizePx)
+		};
+		for (int i = 0; i < 8; i++)
+		{
+			compositeSource.CreateTile(new Vector2I(i, 0));
+		}
+		tileSet.AddSource(compositeSource, SourceObjectComposite);
+
+		// Обратная совместимость: регистрация отдельных SourceTree/SourceStone для внешних вызовов
+		int[] treeSources = { SourceTree0, SourceTree1, SourceTree2, SourceTree3 };
+		for (int v = 0; v < 4; v++)
+		{
+			if (treeTextures[v] != null)
+			{
+				var s = new TileSetAtlasSource { Texture = treeTextures[v], TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+				s.CreateTile(Vector2I.Zero);
+				tileSet.AddSource(s, treeSources[v]);
+			}
+		}
+
 		if (stoneTex != null)
 		{
 			int[] stoneSources = { SourceStone0, SourceStone1, SourceStone2, SourceStone3 };
 			for (int v = 0; v < 4; v++)
 			{
-				var (qx, qy) = MapGenerator.StoneAtlasFor(v);
+				var (qx, qy) = UnifiedWorldGenerator.StoneAtlasFor(v);
 				var quadrant = new AtlasTexture
 				{
 					Atlas = stoneTex,
@@ -795,10 +986,7 @@ public partial class MapRenderer : Node2D
 				tileSet.AddSource(s, stoneSources[v]);
 			}
 		}
-		else
-		{
-			GD.PrintErr("MapRenderer: текстура камня (uid://du6ur8mvtu3le) не найдена!");
-		}
+
 		return tileSet;
 	}
 

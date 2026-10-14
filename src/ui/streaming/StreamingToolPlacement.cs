@@ -34,20 +34,20 @@ public sealed class StreamingToolPlacement : IToolWorldPlacement
     public int PlacedCount { get; private set; }
 
     public bool IsWorldCell(long cellX, long cellY)
-        => !IsIslandCell(cellX, cellY) && _rules.IsLoadedAt(cellX, cellY);
+        => _rules.IsLoadedAt(cellX, cellY);
 
     public bool CanPlaceStockpile(long cellX, long cellY)
-        => !IsIslandCell(cellX, cellY) && _rules.CanStockpileAt(cellX, cellY);
+        => _rules.CanStockpileAt(cellX, cellY);
 
     public bool CanPlaceFarm(long cellX, long cellY)
-        => !IsIslandCell(cellX, cellY) && _rules.CanPlantAt(cellX, cellY);
+        => _rules.CanPlantAt(cellX, cellY);
 
     public bool TryPlaceWall(long cellX, long cellY)
         => Apply(cellX, cellY, _rules.CanPlaceWallAt(cellX, cellY)
             && _manager.TryPlaceBlock(WorldDeltaKind.WallPlan, cellX, cellY));
 
     public bool CanPlaceWall(long cellX, long cellY)
-        => !IsIslandCell(cellX, cellY) && _rules.CanPlaceWallAt(cellX, cellY);
+        => _rules.CanPlaceWallAt(cellX, cellY);
 
     public bool TryRemoveWall(long cellX, long cellY)
         => Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.WallPlan, cellX, cellY)
@@ -89,9 +89,8 @@ public sealed class StreamingToolPlacement : IToolWorldPlacement
     public bool TryCancelMineStone(long cellX, long cellY)
         => Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.MinedStone, cellX, cellY));
 
-    /// <summary>Клетка острова — работа инструмента, не мира.</summary>
-    public bool IsIslandCell(long cellX, long cellY)
-        => cellX >= 0 && cellY >= 0 && cellX < _islandWidth && cellY < _islandHeight;
+    /// <summary>Устаревшее разделение острова и мира ликвидировано.</summary>
+    public bool IsIslandCell(long cellX, long cellY) => false;
 
     private bool Apply(long cellX, long cellY, bool applied)
     {

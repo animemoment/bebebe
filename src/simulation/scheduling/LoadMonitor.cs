@@ -18,6 +18,7 @@ public sealed class LoadMonitor
 
     /// <summary>Шаг роста лёгкого батча.</summary>
     private const int BatchGrowStep = 32;
+    public const int MaxSupportedDop = 128;
 
     private sealed class WorkerAccum
     {
@@ -28,10 +29,22 @@ public sealed class LoadMonitor
         public long Batches;
         public long Items;
         public int Stragglers;
+        // Паддинг 64 байта для предотвращения False Sharing между слотами потоков
+#pragma warning disable CS0169
+        private long _pad0, _pad1, _pad2, _pad3, _pad4, _pad5, _pad6;
+#pragma warning restore CS0169
     }
 
+    private readonly WorkerAccum[] _slots;
     private readonly ThreadLocal<WorkerAccum> _local =
-        new(() => new WorkerAccum(), trackAllValues: true);
+        new(() => new WorkerAccum(), trackAllValues: false);
+
+    public LoadMonitor()
+    {
+        _slots = new WorkerAccum[MaxSupportedDop];
+        for (int i = 0; i < MaxSupportedDop; i++)
+            _slots[i] = new WorkerAccum();
+    }
 
     private double _wallMs;
     private double _cpuMs;
@@ -58,16 +71,10 @@ public sealed class LoadMonitor
     }
 
     /// <summary>
-    /// Записать время одного батча с worker-потока. Lock-free: пишет только в ThreadLocal.
-    /// Сразу адаптирует размер следующего батча этого потока:
-    /// ms&gt;Heavy или Ema&gt;Heavy → размер /2 до Min; ms&lt;Heavy*0.25 → +32 до Max.
-    /// workerId НЕ передаём: источник истины — ThreadLocal, а ManagedThreadId —
-    /// P/Invoke 20–40ns на батч без причины.
+    /// Записать время одного батча с worker-потока по его слоту (0..dop-1).
+    /// Zero-alloc, без блокировок ThreadLocal, без False Sharing благодаря паддингу.
     /// </summary>
-    /// <param name="batchMs">Время батча в мс. Битые замеры (NaN/Inf/&lt;0) игнорируются.</param>
-    /// <param name="batchSize">Размер батча, должен быть &gt; 0.</param>
-    /// <exception cref="ArgumentOutOfRangeException">Если batchSize &lt;= 0.</exception>
-    public void RecordWorkerBatch(double batchMs, int batchSize)
+    public void RecordWorkerBatch(int slot, double batchMs, int batchSize)
     {
         if (batchSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(batchSize), "Размер батча должен быть > 0.");
@@ -75,7 +82,7 @@ public sealed class LoadMonitor
             return; // Битый замер — игнорируем, EMA не портим.
 
         double heavy = _heavyMs;
-        var a = _local.Value;
+        var a = (uint)slot < (uint)MaxSupportedDop ? _slots[slot] : _local.Value;
         a.EmaMs += (batchMs - a.EmaMs) * AdaptRate;
         if (batchMs > heavy || a.EmaMs > heavy)
             a.CurrentSize = Math.Max(DynamicWorkScheduler.MinBatchSize, a.CurrentSize / 2);
@@ -91,8 +98,11 @@ public sealed class LoadMonitor
             a.Stragglers++;
     }
 
+    /// <summary>Фоллбек без указания слота (для sequential/тестов).</summary>
+    public void RecordWorkerBatch(double batchMs, int batchSize) => RecordWorkerBatch(0, batchMs, batchSize);
+
     /// <summary>
-    /// Завершить фазу: агрегировать thread-local аккумуляторы.
+    /// Завершить фазу: агрегировать слоты потоков. Zero-alloc (без _local.Values).
     /// Вызывать однопоточно из sim-потока после join. Битые wall/cpu (NaN/Inf/&lt;=0)
     /// игнорируются (хранятся нули, imbalance = 0).
     /// Per-phase аккумуляторы сбрасываются; EMA и CurrentSize живут между фазами.
@@ -104,8 +114,10 @@ public sealed class LoadMonitor
         long batches = 0;
         int stragglers = 0;
 
-        foreach (var a in _local.Values)
+        int dop = Math.Clamp(degreeOfParallelism, 1, MaxSupportedDop);
+        for (int s = 0; s < dop; s++)
         {
+            var a = _slots[s];
             if (a.MaxMs > maxMs)
                 maxMs = a.MaxMs;
             totalMs += a.TotalMs;
@@ -134,7 +146,6 @@ public sealed class LoadMonitor
         _imbalancePct = 0;
         if (_wallMs > 0.001 && _cpuMs > 0.001)
         {
-            int dop = Math.Max(1, degreeOfParallelism);
             double ideal = _cpuMs / dop;
             int imb = (int)Math.Round(Math.Max(0.0, (_wallMs - ideal) / _wallMs) * 100.0);
             _imbalancePct = Math.Clamp(imb, 0, 100);
@@ -157,9 +168,9 @@ public sealed class LoadMonitor
     /// FIX круг-2 №11: при выставленном флаге steal-contention размер
     /// уменьшается вдвое (сигнал жертве с очередью ужаться на следующей фазе).
     /// </summary>
-    public int SuggestBatchSize(WorkKind kind, float costHint = 1.0f)
+    public int SuggestBatchSize(int slot, WorkKind kind, float costHint = 1.0f)
     {
-        var a = _local.Value;
+        var a = (uint)slot < (uint)MaxSupportedDop ? _slots[slot] : _local.Value;
         // Быстрый путь: hint==1 и нет contention — прямой clamp, без IsFinite/Volatile.
         if (costHint == 1.0f && Volatile.Read(ref _stealContention) == 0)
         {
@@ -189,6 +200,8 @@ public sealed class LoadMonitor
         return size;
     }
 
+    public int SuggestBatchSize(WorkKind kind, float costHint = 1.0f) => SuggestBatchSize(0, kind, costHint);
+
     // FIX круг-2 №11: вор зовёт при успешном steal (глобальный флаг contention).
     /// <summary>
     /// Отметить успешное воровство (зовёт вор). Выставляет глобальный флаг
@@ -204,17 +217,20 @@ public sealed class LoadMonitor
     // FIX круг-2 №3: принудительный shrink после кванта, даже если body не yield'ила.
     /// <summary>
     /// Принудительно ужать следующий батч потока до Min (квант превышен,
-    /// body yield игнорировала). Lock-free: пишет только в ThreadLocal.
+    /// body yield игнорировала). Lock-free.
     /// </summary>
-    public void ShrinkToMin()
+    public void ShrinkToMin(int slot)
     {
-        _local.Value.CurrentSize = DynamicWorkScheduler.MinBatchSize;
+        var a = (uint)slot < (uint)MaxSupportedDop ? _slots[slot] : _local.Value;
+        a.CurrentSize = DynamicWorkScheduler.MinBatchSize;
     }
+
+    public void ShrinkToMin() => ShrinkToMin(0);
 
     /// <summary>
     /// Сброс накопленной статистики и EMA (смена скорости симуляции).
     /// Только в quiescent-состоянии (после join всех workers, из sim-потока),
-    /// никогда конкурентно из worker-потоков.
+    /// никогда конкурентно из worker-потоков. Zero-alloc.
     /// </summary>
     public void Reset()
     {
@@ -224,8 +240,9 @@ public sealed class LoadMonitor
         _emaBatchMs = 0.0;
         _stragglerCount = 0;
         _imbalancePct = 0;
-        foreach (var a in _local.Values)
+        for (int s = 0; s < MaxSupportedDop; s++)
         {
+            var a = _slots[s];
             a.EmaMs = 0.25;
             a.CurrentSize = DynamicWorkScheduler.InitialBatchSize;
             a.TotalMs = 0.0;

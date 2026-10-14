@@ -17,14 +17,28 @@ public enum RegionTraitKind : ulong
     Temperature = 0xE7A1B2C3D4F50687ul
 }
 
-/// <summary>Характеристики региона: пять Q0.16 значений (0..65535) в диапазоне 0..1.</summary>
+/// <summary>Характеристики региона: шесть Q0.16 значений (0..65535) в диапазоне 0..1.</summary>
 public readonly record struct RegionTraits(
     ushort MoistureQ16,
     ushort WaterQ16,
     ushort ForestQ16,
     ushort StoneQ16,
     ushort ElevationQ16,
-    ushort TemperatureQ16);
+    ushort TemperatureQ16)
+{
+    private const int Q16One = ushort.MaxValue;
+
+    /// <summary>Создает упрощенный набор RegionTraits из 18 параметров WorldClimateParams.</summary>
+    public static RegionTraits FromClimate(in WorldClimateParams p) => new(
+        MoistureQ16: p.MoistureQ16,
+        WaterQ16: p.ElevationQ16 < WorldClimateGenerator.SeaLevelQ16 
+            ? (ushort)Math.Clamp(36000 + (WorldClimateGenerator.SeaLevelQ16 - p.ElevationQ16) * 2, 0, Q16One)
+            : (ushort)Math.Clamp(22000 - (p.ElevationQ16 - WorldClimateGenerator.SeaLevelQ16) / 2, 0, Q16One),
+        ForestQ16: p.VegetationDensityQ16,
+        StoneQ16: p.RockExposureQ16,
+        ElevationQ16: p.ElevationQ16,
+        TemperatureQ16: p.TemperatureQ16);
+}
 
 /// <summary>Собственный цвет мировой карты: 1 px = 1 регион (RGB, без Godot-типов).</summary>
 public readonly record struct Rgb24(byte R, byte G, byte B);
@@ -40,24 +54,22 @@ public static class RegionTraitProvider
     private const int Q16One = ushort.MaxValue;
 
     /// <summary>
-    /// Детерминированные случайные характеристики из координат клетки.
-    /// Используется для мировой карты — каждый тайл получает рандомный биом.
+    /// Детерминированные случайные характеристики из координат клетки на основе физической модели климата.
+    /// Используется для мировой карты.
     /// </summary>
     public static RegionTraits FromCoords(long wx, long wy, ulong seed, uint ver)
     {
-        // Используем те же домены что и Sample(), но с world-координатами вместо региона
-        return new(
-            SampleQ16Wd(seed, ver, (ulong)RegionTraitKind.Moisture, wx, wy),
-            SampleQ16Wd(seed, ver, (ulong)RegionTraitKind.Water, wx, wy),
-            SampleQ16Wd(seed, ver, (ulong)RegionTraitKind.Forest, wx, wy),
-            SampleQ16Wd(seed, ver, (ulong)RegionTraitKind.Stone, wx, wy),
-            SampleQ16Wd(seed, ver, (ulong)RegionTraitKind.Elevation, wx, wy),
-            SampleQ16Wd(seed, ver, (ulong)RegionTraitKind.Temperature, wx, wy));
+        var climate = WorldClimateGenerator.SampleAtCell(seed, ver, wx, wy);
+        return RegionTraits.FromClimate(climate);
     }
 
-    private static ushort SampleQ16Wd(ulong seed, uint ver, ulong domain, long wx, long wy)
-        => (ushort)(CoordinateHash.Hash(
-            seed, ver, (GenerationDomain)domain, wx, wy) >> 48);
+    /// <summary>Семпл полного профиля 18 климатических параметров клетки со сглаживанием.</summary>
+    public static WorldClimateParams SampleClimateBlended(ulong seed, uint ver, long wx, long wy)
+        => WorldClimateGenerator.SampleBlendedCell(seed, ver, wx, wy);
+
+    /// <summary>Семпл полного профиля 18 климатических параметров региона.</summary>
+    public static WorldClimateParams SampleClimateRegion(ulong seed, uint ver, RegionKey region)
+        => WorldClimateGenerator.SampleRegion(seed, ver, region);
 
     /// <summary>Порог «водного» региона для цвета мировой карты (0.55).</summary>
     public const ushort WaterHigh = 36044;
@@ -71,15 +83,12 @@ public static class RegionTraitProvider
     /// <summary>Выше этой плотности леса луг затемняется (0.60).</summary>
     public const ushort ForestHigh = 39321;
 
-    /// <summary>Пять базовых характеристик региона одним вызовом.</summary>
+    /// <summary>Пять базовых характеристик региона одним вызовом на основе модели климата.</summary>
     public static RegionTraits Sample(ulong worldSeed, uint generatorVersion, RegionKey region)
-        => new(
-            SampleQ16(worldSeed, generatorVersion, (ulong)RegionTraitKind.Moisture, region),
-            SampleQ16(worldSeed, generatorVersion, (ulong)RegionTraitKind.Water, region),
-            SampleQ16(worldSeed, generatorVersion, (ulong)RegionTraitKind.Forest, region),
-            SampleQ16(worldSeed, generatorVersion, (ulong)RegionTraitKind.Stone, region),
-            SampleQ16(worldSeed, generatorVersion, (ulong)RegionTraitKind.Elevation, region),
-            SampleQ16(worldSeed, generatorVersion, (ulong)RegionTraitKind.Temperature, region));
+    {
+        var climate = WorldClimateGenerator.SampleRegion(worldSeed, generatorVersion, region);
+        return RegionTraits.FromClimate(climate);
+    }
 
     /// <summary>
     /// Произвольная характеристика по числовому id домена — точка расширения для будущих
@@ -132,32 +141,49 @@ public static class RegionTraitProvider
     // ---------- Билинейное смешивание характеристик соседних регионов (бесшовные стыки) ----------
 
     /// <summary>
-    /// Cell-centered веса Q16: u = (lx+0.5)/RegionSize, v = (ly+0.5)/RegionSize.
-    /// Функция весов непрерывна по клеткам, поэтому смешанные характеристики не имеют
-    /// тайловых границ (максимальный скачок между соседними клетками ≤ range/RegionSize).
+    /// Центрированные узлы и веса интерполяции: узлы сетки привязаны строго к центрам регионов
+    /// (rx*512 + 256, ry*512 + 256). В центре любого региона его собственный вес равен ровно 100%,
+    /// устраняя полурегиональный сдвиг и гарантируя симметрию во все 4 стороны света.
+    /// </summary>
+    public static (RegionKey TopLeft, uint U, uint V) CenteredBlendNodes(long worldX, long worldY)
+    {
+        const int halfRegion = WorldRegions.RegionSize / 2; // 256
+        long shiftedX = worldX - halfRegion;
+        long shiftedY = worldY - halfRegion;
+
+        long rx0 = WorldCoordinates.FloorDiv(shiftedX, WorldRegions.RegionSize);
+        long ry0 = WorldCoordinates.FloorDiv(shiftedY, WorldRegions.RegionSize);
+
+        long lx = shiftedX - rx0 * WorldRegions.RegionSize;
+        long ly = shiftedY - ry0 * WorldRegions.RegionSize;
+
+        uint u = (uint)((lx * (long)Q16One + halfRegion) / WorldRegions.RegionSize);
+        uint v = (uint)((ly * (long)Q16One + halfRegion) / WorldRegions.RegionSize);
+
+        return (new RegionKey(rx0, ry0), Math.Min(u, (uint)Q16One), Math.Min(v, (uint)Q16One));
+    }
+
+    /// <summary>
+    /// Cell-centered веса Q16: непрерывны по клеткам мира.
     /// </summary>
     public static (uint U, uint V) BlendWeights(long worldX, long worldY)
     {
-        (int lx, int ly) = WorldRegions.LocalForCell(worldX, worldY);
-        uint u = (uint)(((long)lx * 2 + 1) * (long)Q16One / (2L * WorldRegions.RegionSize));
-        uint v = (uint)(((long)ly * 2 + 1) * (long)Q16One / (2L * WorldRegions.RegionSize));
+        (_, uint u, uint v) = CenteredBlendNodes(worldX, worldY);
         return (u, v);
     }
 
     /// <summary>
-    /// Смешанные характеристики в точке клетки: билинейная интерполяция четырех регионов,
-    /// содержащих [x,y]. Точка расширения для встраивания регионального bias в генерацию
-    /// (§23 шаг 2) — один вызов на клетку, без правок доменов генерации.
+    /// Смешанные характеристики в точке клетки: билинейная интерполяция четырех центров регионов,
+    /// содержащих [x,y]. Точка расширения для встраивания регионального bias в генерацию.
     /// </summary>
     public static RegionTraits SampleBlended(ulong worldSeed, uint generatorVersion, long worldX, long worldY)
     {
-        RegionKey region = WorldRegions.RegionForCell(worldX, worldY);
-        (uint u, uint v) = BlendWeights(worldX, worldY);
+        (RegionKey r, uint u, uint v) = CenteredBlendNodes(worldX, worldY);
         return BlendBilinear(
-            Sample(worldSeed, generatorVersion, region),
-            Sample(worldSeed, generatorVersion, new RegionKey(checked(region.X + 1), region.Y)),
-            Sample(worldSeed, generatorVersion, new RegionKey(region.X, checked(region.Y + 1))),
-            Sample(worldSeed, generatorVersion, new RegionKey(checked(region.X + 1), checked(region.Y + 1))),
+            Sample(worldSeed, generatorVersion, r),
+            Sample(worldSeed, generatorVersion, new RegionKey(checked(r.X + 1), r.Y)),
+            Sample(worldSeed, generatorVersion, new RegionKey(r.X, checked(r.Y + 1))),
+            Sample(worldSeed, generatorVersion, new RegionKey(checked(r.X + 1), checked(r.Y + 1))),
             u, v);
     }
 

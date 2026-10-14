@@ -16,14 +16,18 @@ uniform float sun_width_n = 0.55;
 // Размер квада в px (32x32). Документирует масштаб.
 uniform vec2 quad_size = vec2(32.0, 32.0);
 
+const float FEET_Y = 7.0;
+
 void vertex() {
-	vec2 perp = vec2(-sun_dir.y, sun_dir.x);
-	// Ноги квада — локальные (0,+16). Instance-трансляция уже содержит +16
-	// (CPU пишет oy = py+16), поэтому шейдер возвращает координаты
-	// ОТНОСИТЕЛЬНО origin: ноги → (0,0). Старый вариант возвращал (0,16) —
-	// движок прибавлял ещё +16 из трансляции, ноги тени падали на py+32:
-	// двойной сдвиг вниз, «оторванный квад».
-	float height = 16.0 - VERTEX.y; // 0 (ноги) .. 32 (макушка)
-	VERTEX = sun_dir * height * sun_len_n
-		+ perp * (VERTEX.x * sun_width_n);
+	// CPU instance transform помещает начало в (px, py + FEET_Y).
+	float height = max(0.0, FEET_Y - VERTEX.y);
+	VERTEX.x = VERTEX.x + sun_dir.x * (height * sun_len_n);
+	VERTEX.y = sun_dir.y * (height * sun_len_n * 0.65);
+}
+
+void fragment() {
+	vec4 tex = texture(TEXTURE, UV);
+	float penumbra = mix(0.65, 1.0, clamp((UV.y - 0.19) / (0.72 - 0.19), 0.0, 1.0));
+	COLOR = tex * COLOR;
+	COLOR.a *= penumbra;
 }

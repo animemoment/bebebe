@@ -92,6 +92,7 @@ public partial class BuildMenuController : Control
             _rootPanel = packed.Instantiate<Control>();
             AddChild(_rootPanel);
             _rootPanel.Visible = false;
+            _rootPanel.MouseFilter = MouseFilterEnum.Ignore;
 
             ConfigureInputBlocking(_rootPanel);
 
@@ -166,6 +167,10 @@ public partial class BuildMenuController : Control
 
         ApplyZoneVisibility();
         _rootPanel.Visible = true;
+        ResetDoorMode();
+        HUDController.Instance?.SetDraftDoorMode(false);
+        HUDController.Instance?.StartZoneDraft(_currentZoneId);
+        UpdateModeButtons();
         OnOpened?.Invoke();
     }
 

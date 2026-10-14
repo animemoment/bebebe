@@ -11,7 +11,7 @@ namespace Game.UI.Tools;
 /// </summary>
 public static class WorldPlacementPass
 {
-    public const int MaxAppliedCells = 4096;
+    public const int MaxAppliedCells = 250_000;
     public const int MaxScannedCells = 250_000;
 
     /// <summary>Последнее выделение было обрезано лимитом просмотра (для HUD/диагностики).</summary>
@@ -80,7 +80,6 @@ public static class WorldPlacementPass
         return applied;
     }
 
-    /// <summary>Клетка острова: [0, MapWidth)×[0, MapHeight) — там работает обычная логика.</summary>
-    public static bool IsIslandCell(long cellX, long cellY)
-        => cellX >= 0 && cellY >= 0 && cellX < MapRenderer.MapWidth && cellY < MapRenderer.MapHeight;
+    /// <summary>Устаревшее разделение острова и мира ликвидировано.</summary>
+    public static bool IsIslandCell(long cellX, long cellY) => false;
 }

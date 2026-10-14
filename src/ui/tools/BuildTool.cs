@@ -77,7 +77,7 @@ public class BuildTool : ITool
 
     public void OnClick(Vector2I tilePos, Vector2 worldPos, bool isLeftClick)
     {
-        if (!IsValidCoord(tilePos.X, tilePos.Y)) return;
+        if (!IsValidCoord(tilePos.X, tilePos.Y) && WorldPlacement == null) return;
         _isDragging = true;
         _isLeftClick = isLeftClick;
     }
@@ -87,18 +87,18 @@ public class BuildTool : ITool
         if (!_isDragging || _ghostLayer == null) return;
         ClearGhost();
 
-        // Пересечение с островом (а не кламп): иначе драг целиком за кромкой рисовал
-        // фантомные клетки по краю острова.
-        int minX = Mathf.Max(Mathf.Min(startTile.X, currentTile.X), 0);
-        int maxX = Mathf.Min(Mathf.Max(startTile.X, currentTile.X), MapRenderer.MapWidth - 1);
-        int minY = Mathf.Max(Mathf.Min(startTile.Y, currentTile.Y), 0);
-        int maxY = Mathf.Min(Mathf.Max(startTile.Y, currentTile.Y), MapRenderer.MapHeight - 1);
-        if (minX > maxX || minY > maxY)
+        int minX = Mathf.Min(startTile.X, currentTile.X);
+        int maxX = Mathf.Max(startTile.X, currentTile.X);
+        int minY = Mathf.Min(startTile.Y, currentTile.Y);
+        int maxY = Mathf.Max(startTile.Y, currentTile.Y);
+
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 10000)
             return;
 
         if (_buildingType == BuildingType.WoodWall)
         {
-            var cells = new List<Vector2I>();
+            var cells = new List<Vector2I>((int)Math.Min(cellCount, 4096));
             for (int x = minX; x <= maxX; x++)
                 for (int y = minY; y <= maxY; y++)
                     if (CanPlaceBlueprintAt(x, y))
@@ -190,30 +190,41 @@ public class BuildTool : ITool
 
     private bool CanPlaceBlueprintAt(int x, int y)
     {
-        if (!IsValidCoord(x, y)) return false;
+        if (IsValidCoord(x, y))
+        {
+            if (_mapData != null && _mapData.Ground[x, y] != TileType.Grass)
+                return false;
 
-        if (_mapData != null && _mapData.Ground[x, y] != TileType.Grass)
-            return false;
+            // На камень не строим: сначала добудь россыпь инструментом камня.
+            if (_mapData != null && _mapData.HasStone(x, y))
+                return false;
 
-        // На камень не строим: сначала добудь россыпь инструментом камня.
-        if (_mapData != null && _mapData.HasStone(x, y))
-            return false;
+            if (_wallBuildManager != null && _wallBuildManager.IsWallAt(x, y))
+                return false;
 
-        if (_wallBuildManager != null && _wallBuildManager.IsWallAt(x, y))
-            return false;
+            if (BuildingManager.Instance.HasBuildingAt(x, y))
+                return false;
 
-        if (BuildingManager.Instance.HasBuildingAt(x, y))
-            return false;
+            if (BlueprintManager.Instance.IsBlueprintAt(x, y))
+                return false;
 
-        if (BlueprintManager.Instance.IsBlueprintAt(x, y))
-            return false;
+            // Фермерство стен не терпит: запрет на саму грядку/метку и на кольцо вокруг.
+            // Касается только стен (WoodWall), мебель можно ставить где угодно.
+            if (_buildingType == BuildingType.WoodWall && IsFarmTileOrAdjacent(x, y))
+                return false;
 
-        // Фермерство стен не терпит: запрет на саму грядку/метку и на кольцо вокруг.
-        // Касается только стен (WoodWall), мебель можно ставить где угодно.
-        if (_buildingType == BuildingType.WoodWall && IsFarmTileOrAdjacent(x, y))
-            return false;
+            return true;
+        }
 
-        return true;
+        // Вне острова колонии: проверяем через WorldPlacement
+        if (WorldPlacement != null)
+        {
+            return _buildingType == BuildingType.WoodWall
+                ? WorldPlacement.CanPlaceWall(x, y)
+                : true;
+        }
+
+        return false;
     }
 
     /// <summary>

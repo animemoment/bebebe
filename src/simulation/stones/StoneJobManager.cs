@@ -123,4 +123,19 @@ public class StoneJobManager
             Callable.From(() => OnStoneMined?.Invoke((x, y))).CallDeferred();
         }
     }
+
+    /// <summary>Очистить все метки добычи камня при смене региона / перезапуске карты.</summary>
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            var oldStones = new List<(int X, int Y)>(_markedStones);
+            _markedStones.Clear();
+            if (oldStones.Count > 0)
+            {
+                JobBroker.Instance.UnregisterStoneMineBatch(oldStones);
+                Callable.From(() => OnStonesBatchUnmarked?.Invoke(oldStones)).CallDeferred();
+            }
+        }
+    }
 }

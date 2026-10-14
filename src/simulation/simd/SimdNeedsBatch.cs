@@ -145,54 +145,103 @@ public static class SimdNeedsBatch
 		if (len == 0)
 			return;
 
-		// Добавки предвычисляются один раз — тот же порядок операций, что в скаляре
-		// (rate * deltaTime, затем + к текущему значению поэлементно).
 		float hungerAdd = AgentNeedsConfig.HungerPerGameSec * deltaTime;
 		float sleepAdd = AgentNeedsConfig.SleepPerGameSec * deltaTime;
-
-		// Span поверх массивов пула — без аллокаций (stack-only).
-		var spanHunger = new Span<float>(pool.Hunger, start, len);
-		var spanSleep = new Span<float>(pool.Sleep, start, len);
-
-		bool vectorized = Vector.IsHardwareAccelerated && len >= Vector<float>.Count;
-		if (vectorized)
-		{
-			// Голод и сон — ОДНИМ проходом: обе операции «добавить с потолком 100»
-			// по тем же индексам, второй проход только терял локальность кэша.
-			AddCapped2(spanHunger, hungerAdd, spanSleep, sleepAdd);
-		}
-		else
-		{
-			AddCappedScalar(spanHunger, hungerAdd);
-			AddCappedScalar(spanSleep, sleepAdd);
-		}
-
-		// Усталость — БЕЗ ВЕТВЛЕНИЙ по состоянию (см. ApplyFatigue): на 10k агентов
-		// состояния перемешаны, и промахи предсказания ветвлений стоили дороже
-		// самой арифметики. Дельта берётся таблицей по значению AgentState.
 		float fatigueWorkAdd = AgentNeedsConfig.FatigueWorkPerGameSec * deltaTime;
 		float fatigueIdleSub = AgentNeedsConfig.FatigueIdleRecoveryPerGameSec * deltaTime;
+
+		// 1. Усталость — дельта таблицей по состоянию без ветвлений
 		AgentState[] states = pool.States;
 		float[] fatigue = pool.Fatigue;
 		ApplyFatigue(states, fatigue, start, end, fatigueWorkAdd, fatigueIdleSub);
 
-		// Окружение — одна заливка на диапазон (Span.Fill векторизован внутри).
-		var spanEnv = new Span<float>(pool.EnvironmentSatisfaction, start, len);
+		float[] hunger = pool.Hunger;
+		float[] sleep = pool.Sleep;
+		float[] env = pool.EnvironmentSatisfaction;
+		float[] mood = pool.Mood;
+
 		if (updateEnv)
 		{
-			spanEnv.Fill(AgentNeedsConfig.DefaultEnvironmentSatisfaction);
+			Array.Fill(env, AgentNeedsConfig.DefaultEnvironmentSatisfaction, start, len);
 		}
 
-		// Настроение — ПОСЛЕ обновления всех компонентов (как в скаляре).
-		var spanFatigue = new Span<float>(pool.Fatigue, start, len);
-		var spanMood = new Span<float>(pool.Mood, start, len);
+		// 2. Фьюз SIMD-прохода (PLAN.md §36): Голод, Сон и Настроение вычисляются за ОДИН
+		// проход по памяти с прямой загрузкой из массивов без оверхеда Span.Slice.
+		bool vectorized = Vector.IsHardwareAccelerated && len >= Vector<float>.Count;
 		if (vectorized)
 		{
-			UpdateMoodVectorized(spanHunger, spanSleep, spanFatigue, spanEnv, spanMood);
+			int n = Vector<float>.Count;
+			int limit = len - len % n;
+			var vHungerAdd = new Vector<float>(hungerAdd);
+			var vSleepAdd = new Vector<float>(sleepAdd);
+			var vCap = new Vector<float>(100f);
+			var vZero = Vector<float>.Zero;
+			var wH = new Vector<float>(AgentNeedsConfig.MoodWeightHunger);
+			var wS = new Vector<float>(AgentNeedsConfig.MoodWeightSleep);
+			var wF = new Vector<float>(AgentNeedsConfig.MoodWeightFatigue);
+			var wE = new Vector<float>(AgentNeedsConfig.MoodWeightEnvironment);
+
+			for (int k = 0; k < limit; k += n)
+			{
+				int idx = start + k;
+				Vector<float> h = new Vector<float>(hunger, idx) + vHungerAdd;
+				h = Vector.ConditionalSelect(Vector.GreaterThan(h, vCap), vCap, h);
+				h.CopyTo(hunger, idx);
+
+				Vector<float> s = new Vector<float>(sleep, idx) + vSleepAdd;
+				s = Vector.ConditionalSelect(Vector.GreaterThan(s, vCap), vCap, s);
+				s.CopyTo(sleep, idx);
+
+				Vector<float> f = new Vector<float>(fatigue, idx);
+				Vector<float> e = new Vector<float>(env, idx);
+
+				Vector<float> p = h * wH + s * wS;
+				p += f * wF;
+				p += (vCap - e) * wE;
+				Vector<float> m = vCap - p;
+				var hi = Vector.GreaterThan(m, vCap);
+				m = Vector.ConditionalSelect(hi, vCap, m);
+				var lo = Vector.LessThan(m, vZero);
+				m = Vector.ConditionalSelect(lo, vZero, m);
+				m.CopyTo(mood, idx);
+			}
+
+			// Скалярный остаток
+			for (int i = start + limit; i < end; i++)
+			{
+				float h = hunger[i] + hungerAdd;
+				hunger[i] = h > 100f ? 100f : h;
+
+				float s = sleep[i] + sleepAdd;
+				sleep[i] = s > 100f ? 100f : s;
+
+				float penalty =
+					hunger[i] * AgentNeedsConfig.MoodWeightHunger +
+					sleep[i] * AgentNeedsConfig.MoodWeightSleep +
+					fatigue[i] * AgentNeedsConfig.MoodWeightFatigue +
+					(100f - env[i]) * AgentNeedsConfig.MoodWeightEnvironment;
+				float m = 100f - penalty;
+				mood[i] = m < 0f ? 0f : (m > 100f ? 100f : m);
+			}
 		}
 		else
 		{
-			UpdateMoodScalar(spanHunger, spanSleep, spanFatigue, spanEnv, spanMood);
+			for (int i = start; i < end; i++)
+			{
+				float h = hunger[i] + hungerAdd;
+				hunger[i] = h > 100f ? 100f : h;
+
+				float s = sleep[i] + sleepAdd;
+				sleep[i] = s > 100f ? 100f : s;
+
+				float penalty =
+					hunger[i] * AgentNeedsConfig.MoodWeightHunger +
+					sleep[i] * AgentNeedsConfig.MoodWeightSleep +
+					fatigue[i] * AgentNeedsConfig.MoodWeightFatigue +
+					(100f - env[i]) * AgentNeedsConfig.MoodWeightEnvironment;
+				float m = 100f - penalty;
+				mood[i] = m < 0f ? 0f : (m > 100f ? 100f : m);
+			}
 		}
 	}
 
@@ -363,23 +412,24 @@ public static class SimdNeedsBatch
 	/// <summary>
 	/// Усталость: Working → +workAdd (потолок 100), Idle → −idleSub (пол 0),
 	/// прочие состояния → без изменений. Без ветвлений: дельта выбирается
-	/// таблицей по значению <see cref="AgentState"/> (byte-backed enum, значений
-	/// меньше 256). Таблица — 1 КБ на стеке, попадает в L1.
-	/// Побитово совпадает со скалярным if/else-if: fatigue всегда в [0,100]
-	/// (инициализируется ≥ 0 и меняется только двумя правилами выше), поэтому
-	/// двусторонний clamp не искажает результат, а для «прочих» состояний
-	/// delta == 0 и прибавление +0.0 к значению из [0,100] — тождество.
-	/// (Недостижимое на практике отличие — сохранение -0.0.)
+	/// таблицей по значению <see cref="AgentState"/> (byte-backed enum, значений 0..4).
+	/// Таблица — 32 байта на стеке (ровно половина строки кэша L1), инициализируется
+	/// без delta.Clear() по 256 float. Маска & 7 защищает от поврежденных данных.
 	/// </summary>
 	private static void ApplyFatigue(AgentState[] states, float[] fatigue, int start, int end, float workAdd, float idleSub)
 	{
-		Span<float> delta = stackalloc float[256];
-		delta.Clear();
-		delta[(byte)AgentState.Working] = workAdd;
-		delta[(byte)AgentState.Idle] = -idleSub;
+		Span<float> delta = stackalloc float[8];
+		delta[0] = -idleSub;                  // Idle = 0
+		delta[1] = 0f;                         // MovingToSource = 1
+		delta[2] = workAdd;                    // Working = 2
+		delta[3] = 0f;                         // MovingToTarget = 3
+		delta[4] = 0f;                         // Evacuating = 4
+		delta[5] = 0f;
+		delta[6] = 0f;
+		delta[7] = 0f;
 		for (int i = start; i < end; i++)
 		{
-			float f = fatigue[i] + delta[(byte)states[i]];
+			float f = fatigue[i] + delta[(byte)states[i] & 7];
 			if (f < 0f) f = 0f;
 			else if (f > 100f) f = 100f;
 			fatigue[i] = f;

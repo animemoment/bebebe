@@ -601,4 +601,26 @@ public class StockpileManager
         while (SnapshotQueue.Count > 2)
             SnapshotQueue.TryDequeue(out _);
     }
+
+    /// <summary>Очистить складские зоны и хранилище при смене региона / перезапуске карты.</summary>
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            var oldZones = new List<(int X, int Y)>(_zones);
+            _zones.Clear();
+            _storage.Clear();
+            for (int cy = 0; cy < ChunkDim; cy++)
+                for (int cx = 0; cx < ChunkDim; cx++)
+                    _zoneChunks[cx, cy]?.Clear();
+            _freeSlotsCount = 0;
+            _zoneCount = 0;
+            _isDirty = true;
+            if (oldZones.Count > 0)
+            {
+                var arr = oldZones.ToArray();
+                Callable.From(() => OnZoneTilesBatchRemoved?.Invoke(arr)).CallDeferred();
+            }
+        }
+    }
 }

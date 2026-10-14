@@ -15,6 +15,17 @@ public sealed class AgentDataPool
     public readonly float[] PositionY;
     public readonly float[] TargetPositionX;
     public readonly float[] TargetPositionY;
+    /// <summary>
+    /// Текущая активная точка шага (кэш текущего Waypoint в мировых пикселях).
+    /// Исключает чтение 38.4 МБ разреженного массива WaypointX/Y (stride 192 байта) на каждом шаге.
+    /// </summary>
+    public readonly float[] StepTargetX;
+    public readonly float[] StepTargetY;
+    /// <summary>
+    /// Компактная битовая маска прибытия к StepTarget (1 бит на агента = 12.5 КБ на 100k).
+    /// Заполняется GPU Compute Shader'ом или SIMD-батчем.
+    /// </summary>
+    public readonly uint[] StepReachedMask;
     public readonly float[] LastPositionX;
     public readonly float[] LastPositionY;
     public readonly float[] Speed;
@@ -103,6 +114,9 @@ public sealed class AgentDataPool
         PositionY = new float[capacity];
         TargetPositionX = new float[capacity];
         TargetPositionY = new float[capacity];
+        StepTargetX = new float[capacity];
+        StepTargetY = new float[capacity];
+        StepReachedMask = new uint[Math.Max(1, (capacity + 31) >> 5)];
         LastPositionX = new float[capacity];
         LastPositionY = new float[capacity];
         Speed = new float[capacity];

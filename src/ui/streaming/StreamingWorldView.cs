@@ -9,14 +9,12 @@ using Godot;
 namespace Game.UI.Streaming;
 
 /// <summary>
-/// Главнопоточный Node2D-вид бесконечного мира. На близком масштабе использует
-/// полноразмерные игровые тайлы, но земля и декор заранее скомпонованы в один
-/// точный атлас (уменьшает вызовы TileMapLayer). На обзорном масштабе каждый чанк
-/// представлен 64×64 LOD-текстурой: один пиксель на клетку. Дополнительно ведёт персистентные
-/// клеточные метки-«блоки» нескольких видов (стены, здания, добытое, вырубленное,
-/// склады): изменения кодируются через WorldChunkDeltaCodec и сохраняются
-/// при выгрузке чанка в WorldChunkStore, при повторном входе восстанавливаются из
-/// snapshot'а. Никакого обращения к legacy MapGenerator/MapData/MapRenderer.
+/// Главнопоточный Node2D-вид бесконечного мира. Использует полноразмерные четкие
+/// игровые тайлы с предварительно скомпонованным атласом земли и декора (уменьшает вызовы TileMapLayer).
+/// Дополнительно ведёт персистентные клеточные метки-«блоки» нескольких видов (стены, здания,
+/// добытое, вырубленное, склады): изменения кодируются через WorldChunkDeltaCodec и сохраняются
+/// при выгрузке чанка в WorldChunkStore, при повторном входе восстанавливаются из snapshot'а.
+/// Никакого обращения к legacy MapGenerator/MapData/MapRenderer.
 /// Реализует IWallWorld (контракт для StreamingWorldManager) и IBlockWorld
 /// (мульти-kind доступ для менеджеров главной игры).
 /// </summary>
@@ -27,16 +25,14 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 	/// <summary>Пикселей текстуры на одну игровую клетку (сейчас — тайл 64×64 на клетку).</summary>
 	// Рендер — настоящими тайлами игры: 1 клетка = один тайл 64×64 (TilePx).
-	// Раньше чанк рисовался одной текстурой с 4 текселами на клетку — при 64 px
-	// на клетку это давало «пиксельную кашу» вместо тайлов.
 	private const int TilePx = 64;
 
 	[Export] public ulong WorldSeed = 0x0123456789ABCDEFUL;
 	[Export] public uint GeneratorVersion = 3;
-	[Export] public int MaxConcurrency = 2;
+	[Export] public int MaxConcurrency = 4;
 	// Hard per-frame budgets prevent a large batch of completed jobs / camera teleports
 	// from turning into a single long main-thread frame.
-	[Export(PropertyHint.Range, "1,16,1")] public int MaxReadyChunksPerFrame = 4;
+	[Export(PropertyHint.Range, "1,32,1")] public int MaxReadyChunksPerFrame = 8;
 	[Export(PropertyHint.Range, "1,16,1")] public int MaxUnloadSchedulesPerFrame = 2;
 	[Export] public string SaveDirectory = ""; // "" => user://infinite_world_lab_cache
 	[Export] public bool WipeStoreOnStart = false; // true — стенд стартует с чистого хранилища
@@ -45,13 +41,9 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	[Export] public int MinWindowChunks = 3;
 	[Export] public int MaxWindowChunks = 16;
 	// Each operation is a bounded slice, not a whole 64×64 chunk.
-	[Export(PropertyHint.Range, "1,8,1")] public int MaxChunkOpsPerFrame = 2;
-	[Export(PropertyHint.Range, "128,4096,128")] public int MaxCellsPerPaintSlice = 1024;
-	[Export(PropertyHint.Range, "128,4096,128")] public int MaxCellsErasedPerFrame = 1024;
-	// Enter low detail below this many screen pixels per world cell; leave with hysteresis.
-	[Export(PropertyHint.Range, "0.25,1.5,0.05")] public float LowDetailPixelsPerCellEnter = 0.80f;
-	[Export(PropertyHint.Range, "0.5,2.0,0.05")] public float LowDetailPixelsPerCellExit = 1.15f;
-	[Export(PropertyHint.Range, "1,16,1")] public int MaxLodChunksPerFrame = 2;
+	[Export(PropertyHint.Range, "1,16,1")] public int MaxChunkOpsPerFrame = 4;
+	[Export(PropertyHint.Range, "128,4096,128")] public int MaxCellsPerPaintSlice = 4096;
+	[Export(PropertyHint.Range, "128,4096,128")] public int MaxCellsErasedPerFrame = 2048;
 
 	private ChunkWindowPlanner _planner;
 	private WorldChunkStore _store;
@@ -63,22 +55,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 	/// <summary>Слой чертежей (§29): план рисуется полупрозрачно, готовое — обычными слоями.</summary>
 	private TileMapLayer _planLayer;
-	// Far-zoom renderer. It is last in draw order; LOD sprites cover chunks until
-	// their full-detail representation has been rebuilt after zooming back in.
-	private Node2D _lodRoot;
-	private readonly Dictionary<ChunkKey, Sprite2D> _lodSprites = new();
-	private bool _lowDetailMode;
-	private readonly AverageColor[] _groundCompositeColors = new AverageColor[11];
-	private AverageColor _mountainOverlayColor;
-	private AverageColor _wallOverlayColor;
-	private AverageColor _cropOverlayColor;
-	private AverageColor _stockpileOverlayColor;
-	private AverageColor _workOverlayColor;
 	// Горы и стены — свои слои с TileSet из сцен (terrain-автотайлинг, как на острове).
 	private TileMapLayer _mountainLayer;
 	private TileMapLayer _wallLayer;
+	private TileMapLayer _wallPlanLayer;
 	private TerrainTileLayer _mountainTerrain;
 	private TerrainTileLayer _wallTerrain;
+	private TerrainTileLayer _wallPlanTerrain;
 	private readonly Dictionary<ChunkKey, WorldChunk> _chunkData = new();
 
 	/// <summary>Загруженные персистентные метки: чанк → kind → множество локальных индексов.</summary>
@@ -115,7 +98,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		if (string.IsNullOrWhiteSpace(dir))
 		{
 			string userDir = ProjectSettings.GlobalizePath("user://infinite_world_lab_cache");
-			dir = System.IO.Path.Combine(userDir, $"seed_{WorldSeed:X16}");
+			dir = System.IO.Path.Combine(userDir, $"world_{WorldSeed:x16}");
 		}
 		if (WipeStoreOnStart && System.IO.Directory.Exists(dir))
 		{
@@ -131,26 +114,72 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		}
 		_planner = new ChunkWindowPlanner();
 		_store = new WorldChunkStore(dir);
-		// A serialized scene may still override MaxConcurrency with a large value.
-		// Keep worker pressure modest on low-end CPUs and avoid oversubscribing them.
-		int workerLimit = Math.Min(2, Math.Max(1, Environment.ProcessorCount));
+		// Выделяем до (ядер - 2) воркеров (от 2 до 8) для высокой пропускной способности без конкуренции за CPU
+		int workerLimit = Math.Clamp(System.Environment.ProcessorCount - 2, 2, 8);
 		int workerCount = Math.Clamp(MaxConcurrency, 1, workerLimit);
 		_streamer = new WorldChunkStreamer(_planner, WorldSeed, GeneratorVersion, _store, workerCount);
 		BuildTileLayers();
 		_initialized = true;
 	}
 
-	/// <summary>Применить новое видимое окно, дренировать готовые чанки, запланировать выгрузки.</summary>
-	public void Update(WorldRect visibleTileBounds)
+	/// <summary>
+	/// Сбросить кэш чанков, очереди и слои при смене сида мира или выборе нового региона.
+	/// Гарантирует немедленную очистку устаревших чанков и бесшовный стриминг новой зоны.
+	/// </summary>
+	public void ResetWorld(ulong newSeed = 0)
+	{
+		if (newSeed != 0)
+			WorldSeed = newSeed;
+
+		_eraseQueue.Clear();
+		_eraseScheduled.Clear();
+		_eraseJobs.Clear();
+		_paintQueue.Clear();
+		_paintQueued.Clear();
+		_paintJobs.Clear();
+		_freshPaint.Clear();
+		_textureDirty.Clear();
+		_exitQueue.Clear();
+		_exitScheduled.Clear();
+		_dirtyBuffer.Clear();
+
+		_groundLayer?.Clear();
+		_markLayer?.Clear();
+		_planLayer?.Clear();
+		_mountainLayer?.Clear();
+		_wallLayer?.Clear();
+		_wallPlanLayer?.Clear();
+		_mountainTerrain?.Clear();
+		_wallTerrain?.Clear();
+		_wallPlanTerrain?.Clear();
+
+		_chunkData.Clear();
+		_blocks.Clear();
+		WallCount = 0;
+		_lastPlan = default;
+
+		_streamer?.CancelPending();
+		_ = _streamer?.DisposeAsync();
+
+		string dir = SaveDirectory;
+		if (string.IsNullOrWhiteSpace(dir))
+		{
+			string userDir = ProjectSettings.GlobalizePath("user://infinite_world_lab_cache");
+			dir = System.IO.Path.Combine(userDir, $"world_{WorldSeed:x16}");
+		}
+		_planner = new ChunkWindowPlanner();
+		_store = new WorldChunkStore(dir);
+		int workerLimit = Math.Clamp(System.Environment.ProcessorCount - 2, 2, 8);
+		int workerCount = Math.Clamp(MaxConcurrency, 1, workerLimit);
+		_streamer = new WorldChunkStreamer(_planner, WorldSeed, GeneratorVersion, _store, workerCount);
+	}
+
+	public override void _Process(double delta)
 	{
 		if (!_initialized)
 			return;
-		_focusCellX = (visibleTileBounds.MinX + visibleTileBounds.MaxX) / 2;
-		_focusCellY = (visibleTileBounds.MinY + visibleTileBounds.MaxY) / 2;
-		UpdateDetailMode(visibleTileBounds);
-		ApplyAdaptiveWindow(visibleTileBounds);
-		_lastPlan = _streamer.Update(ClampVisibleToWindow(visibleTileBounds));
 
+		// Непрерывно каждый кадр: дренируем завершившиеся результаты из воркеров
 		int readyBudget = Math.Clamp(MaxReadyChunksPerFrame, 1, _readyBuffer.Length);
 		int readyCount = _streamer.DrainReady(_readyBuffer.AsSpan(0, readyBudget), readyBudget);
 		for (int i = 0; i < readyCount; i++)
@@ -160,6 +189,24 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		for (int i = 0; i < failureCount; i++)
 			GD.PrintErr($"[World] chunk failure {_failureBuffer[i].Key}: {_failureBuffer[i].Message}");
 
+		ProcessExits();
+		RepaintDirty();
+	}
+
+	/// <summary>Применить новое видимое окно, обновить план окна.</summary>
+	public void Update(WorldRect visibleTileBounds)
+	{
+		if (!_initialized)
+			return;
+
+		long currentFocusX = (visibleTileBounds.MinX + visibleTileBounds.MaxX) / 2;
+		long currentFocusY = (visibleTileBounds.MinY + visibleTileBounds.MaxY) / 2;
+
+		_focusCellX = currentFocusX;
+		_focusCellY = currentFocusY;
+		ApplyAdaptiveWindow(visibleTileBounds);
+		_lastPlan = _streamer.Update(ClampVisibleToWindow(visibleTileBounds));
+
 		foreach (ChunkKey key in _lastPlan.Exited)
 		{
 			if (_streamer.IsResident(key) && !_streamer.IsDesired(key) && !_exitScheduled.Contains(key))
@@ -168,6 +215,12 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 				_exitScheduled.Add(key);
 			}
 		}
+
+		// Дренируем порцию готовых чанков и вызываем нарезку
+		int readyBudget = Math.Clamp(MaxReadyChunksPerFrame, 1, _readyBuffer.Length);
+		int readyCount = _streamer.DrainReady(_readyBuffer.AsSpan(0, readyBudget), readyBudget);
+		for (int i = 0; i < readyCount; i++)
+			ApplyReady(_readyBuffer[i]);
 
 		ProcessExits();
 		RepaintDirty();
@@ -489,6 +542,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			_freshPaint.Remove(key);
 		else
 			_freshPaint.Add(key);
+
 		// Тайлы ставит RepaintDirty (главный поток) — здесь только помечаем чанк.
 		_textureDirty.Add(key);
 	}
@@ -544,15 +598,11 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 	private void RemoveChunkTiles(ChunkKey key)
 	{
-		// Low-detail mode has already cleared every detailed TileMap layer.
-		if (_lowDetailMode)
-			RemoveLodChunk(key);
-		else
-			MarkTerrainForUnload(key);
+		MarkTerrainForUnload(key);
 
 		long originX = key.X * (long)WorldCoordinates.ChunkSize;
 		long originY = key.Y * (long)WorldCoordinates.ChunkSize;
-		if (!_lowDetailMode && FitsTileMap(originX, originY))
+		if (FitsTileMap(originX, originY))
 		{
 			_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> oldMap);
 			ScheduleEraseChunk(key,
@@ -567,11 +617,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		_textureDirty.Remove(key);
 		_freshPaint.Remove(key);
 		_paintJobs.Remove(key);
-
-		if (_lowDetailMode)
-			return;
-		// Keep the old queue token if one exists; replacing the job is safe because the
-		// queue resolves the latest state by key, and the new paint waits for erase.
 	}
 
 	/// <summary>
@@ -585,7 +630,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		long needW = ChunkSpan(visible.MinX - margin, visible.MaxX + margin);
 		long needH = ChunkSpan(visible.MinY - margin, visible.MaxY + margin);
 		long need = Math.Max(needW, needH);
-		int side = (int)Math.Clamp(need, MinWindowChunks, MaxWindowChunks);
+
+		// При макро-отдалении камеры ограничиваем фоновое окно, чтобы не рендерить 1M+ тайлов.
+		var cam = GetViewport()?.GetCamera2D();
+		float zoom = cam?.Zoom.X ?? 1f;
+		int maxAllowed = zoom < 0.25f ? Math.Min(MaxWindowChunks, 8) : MaxWindowChunks;
+
+		int side = (int)Math.Clamp(need, MinWindowChunks, maxAllowed);
 		_planner.SetWindowSide(side);
 	}
 
@@ -649,7 +700,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 	private WorldSaveMetadata MakeMetadata()
 		=> new(WorldChunkCodec.CurrentFormatVersion, GeneratorVersion,
-			WorldFeatureGenerator.FeatureSchemaVersion, WorldSeed, GameTimeCheckpoint: 0.0);
+			UnifiedWorldGenerator.FeatureSchemaVersion, WorldSeed, GameTimeCheckpoint: 0.0);
 
 	/// <summary>
 	/// Поставить тайлы изменившимся чанкам и стереть выгруженные — с бюджетом на кадр
@@ -658,23 +709,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	private void RepaintDirty()
 	{
 		int operationBudget = Mathf.Max(1, MaxChunkOpsPerFrame);
-		if (_lowDetailMode)
-		{
-			if (_textureDirty.Count > 0)
-			{
-				SelectNearestDirtyChunks(Math.Max(1, MaxLodChunksPerFrame));
-				foreach (ChunkKey key in _dirtyBuffer)
-				{
-					if (!_textureDirty.Remove(key))
-						continue;
-					if (_chunkData.ContainsKey(key))
-						PaintLodChunk(key);
-					else
-						RemoveLodChunk(key);
-				}
-			}
-			return; // hidden TileMap and terrain layers do no per-cell work
-		}
 
 		ProcessEraseWork(Math.Max(1, MaxCellsErasedPerFrame));
 
@@ -688,7 +722,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 				if (!_chunkData.ContainsKey(key))
 				{
 					_textureDirty.Remove(key); // stale dirty entry must not be reconsidered forever
-					RemoveLodChunk(key);
 					continue;
 				}
 				if (_eraseJobs.ContainsKey(key))
@@ -702,6 +735,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		ProcessPaintSlices(operationBudget);
 		_mountainTerrain?.Flush(IsMountainCell);
 		_wallTerrain?.Flush(IsWallCell);
+		_wallPlanTerrain?.Flush(IsWallPlanCell);
 	}
 
 	private sealed class ChunkPaintJob
@@ -746,10 +780,9 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		long originX = key.X * (long)WorldCoordinates.ChunkSize;
 		long originY = key.Y * (long)WorldCoordinates.ChunkSize;
 		if (!FitsTileMap(originX, originY))
-		{
-			RemoveLodChunk(key);
 			return;
-		}
+		if (IsOccludedByColony(originX, originY))
+			return;
 		_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> map);
 		_paintJobs[key] = new ChunkPaintJob(key, chunk, new BlockLookup(map),
 			originX, originY, clearEmptyLayers);
@@ -757,16 +790,26 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			_paintQueue.Enqueue(key);
 	}
 
+	private static bool IsOccludedByColony(long originX, long originY)
+	{
+		return originX >= 0 && originX + WorldCoordinates.ChunkSize <= MapRenderer.MapWidth
+			&& originY >= 0 && originY + WorldCoordinates.ChunkSize <= MapRenderer.MapHeight;
+	}
+
 	private void ProcessPaintSlices(int maxSlices)
 	{
 		int slices = Math.Max(1, maxSlices);
 		int maxCells = Math.Clamp(MaxCellsPerPaintSlice, 128, WorldCoordinates.ChunkSize * WorldCoordinates.ChunkSize);
+		var sw = System.Diagnostics.Stopwatch.StartNew();
 		while (slices > 0 && _paintQueue.Count > 0)
 		{
+			if (sw.ElapsedMilliseconds >= 4)
+				break;
+
 			ChunkKey key = _paintQueue.Dequeue();
 			_paintQueued.Remove(key);
 			if (!_paintJobs.TryGetValue(key, out ChunkPaintJob job))
-				continue; // stale queue token after unload or LOD transition
+				continue; // stale queue token after unload
 			if (!_chunkData.ContainsKey(key))
 			{
 				_paintJobs.Remove(key);
@@ -779,7 +822,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			{
 				_paintJobs.Remove(key);
 				MarkTerrainRing(job.OriginX, job.OriginY);
-				RemoveLodChunk(key);
 				continue;
 			}
 
@@ -798,7 +840,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			{
 				_paintJobs.Remove(key);
 				MarkTerrainRing(job.OriginX, job.OriginY);
-				RemoveLodChunk(key);
 			}
 			else if (_paintQueued.Add(key))
 			{
@@ -910,7 +951,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		_dirtyBuffer.Clear();
 		foreach (ChunkKey candidate in _textureDirty)
 		{
-			if (!_lowDetailMode && _eraseJobs.ContainsKey(candidate))
+			if (_eraseJobs.ContainsKey(candidate))
 				continue;
 			if (_dirtyBuffer.Count < limit)
 			{
@@ -1057,10 +1098,9 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		AddSingleTile("res://ui/assets/textures/sprites/ProcessOfWork.png", SrcWork);
 		AddAtlasTileSet("res://ui/assets/textures/construction items/wooden_wall.png", SrcWall);
 		BuildCompositeGroundSource();
-		BuildLodPalette();
 
-		_groundLayer = new TileMapLayer { Name = "WorldGroundAndDecor", TileSet = _tileSet };
-		_markLayer = new TileMapLayer { Name = "WorldMark", TileSet = _tileSet };
+		_groundLayer = new TileMapLayer { Name = "WorldGroundAndDecor", TileSet = _tileSet, RenderingQuadrantSize = 64 };
+		_markLayer = new TileMapLayer { Name = "WorldMark", TileSet = _tileSet, RenderingQuadrantSize = 64 };
 		AddChild(_groundLayer);
 		AddChild(_markLayer);
 
@@ -1069,27 +1109,32 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		TileSet mountainTiles = MapRenderer.GetMountainTerrainTileSet();
 		if (mountainTiles != null)
 		{
-			_mountainLayer = new TileMapLayer { Name = "WorldMountain", TileSet = mountainTiles };
+			_mountainLayer = new TileMapLayer { Name = "WorldMountain", TileSet = mountainTiles, RenderingQuadrantSize = 64 };
 			AddChild(_mountainLayer);
 			_mountainTerrain = new TerrainTileLayer(_mountainLayer, MountainTerrainSetId, MountainTerrainId);
 		}
 		TileSet wallTiles = MapRenderer.GetWallTerrainTileSet();
 		if (wallTiles != null)
 		{
-			_wallLayer = new TileMapLayer { Name = "WorldWall", TileSet = wallTiles };
+			_wallLayer = new TileMapLayer { Name = "WorldWall", TileSet = wallTiles, RenderingQuadrantSize = 64 };
 			AddChild(_wallLayer);
 			_wallTerrain = new TerrainTileLayer(_wallLayer, WallTerrainSetId, WallTerrainId);
+
+			_wallPlanLayer = new TileMapLayer
+			{
+				Name = "WorldWallPlan",
+				TileSet = wallTiles,
+				Modulate = new Color(1f, 1f, 1f, PlanAlpha),
+				RenderingQuadrantSize = 64
+			};
+			AddChild(_wallPlanLayer);
+			_wallPlanTerrain = new TerrainTileLayer(_wallPlanLayer, WallTerrainSetId, WallTerrainId);
 		}
 
 		// §29: чертежи (планы) — своим слоем и полупрозрачно, чтобы отличать от готового.
-		_planLayer = new TileMapLayer { Name = "WorldPlan", TileSet = _tileSet };
+		_planLayer = new TileMapLayer { Name = "WorldPlan", TileSet = _tileSet, RenderingQuadrantSize = 64 };
 		_planLayer.Modulate = new Color(1f, 1f, 1f, PlanAlpha);
 		AddChild(_planLayer);
-
-		// Last child so that its averaged LOD image can temporarily cover the whole
-		// chunk while high-detail cells are being recreated after a zoom transition.
-		_lodRoot = new Node2D { Name = "WorldFarLod" };
-		AddChild(_lodRoot);
 	}
 
 	/// <summary>Одиночный тайл 64×64 (трава, вода, дерево, посев, склад, стройка).</summary>
@@ -1140,26 +1185,14 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	private const int CompositeMountain = 2;
 	private const int CompositeTree0 = 3;
 	private const int CompositeStone0 = 7;
-
-	private readonly struct AverageColor
-	{
-		// RGB is premultiplied by alpha, which makes blending layer averages cheap.
-		public readonly float R;
-		public readonly float G;
-		public readonly float B;
-		public readonly float A;
-
-		public AverageColor(float r, float g, float b, float a)
-		{
-			R = r; G = g; B = b; A = a;
-		}
-
-		public static AverageColor FromColor(Color c)
-			=> new(c.R * c.A, c.G * c.A, c.B * c.A, c.A);
-
-		public Color AsOpaque()
-			=> new(Mathf.Clamp(R, 0f, 1f), Mathf.Clamp(G, 0f, 1f), Mathf.Clamp(B, 0f, 1f), 1f);
-	}
+	private const int CompositeSand = 11;
+	private const int CompositeSandStone0 = 12;
+	private const int CompositeSteppe = 16;
+	private const int CompositeSteppeTree0 = 17;
+	private const int CompositeSteppeStone0 = 21;
+	private const int CompositeGlacier = 25;
+	private const int CompositeGlacierStone0 = 26;
+	private const int CompositeAtlasTileCount = 30;
 
 	private static Image LoadTileImage(string path, int atlasX = 0, int atlasY = 0, Color fallback = default)
 	{
@@ -1171,7 +1204,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		{
 			var missing = Image.CreateEmpty(TilePx, TilePx, false, Image.Format.Rgba8);
 			missing.Fill(fallback.A == 0f ? new Color(1f, 0f, 1f, 1f) : fallback);
-			GD.PrintErr($"[World] LOD/composite source tile unavailable: {path} [{atlasX},{atlasY}]");
+			GD.PrintErr($"[World] composite source tile unavailable: {path} [{atlasX},{atlasY}]");
 			return missing;
 		}
 		Image tile = image.GetRegion(new Rect2I(x, y, TilePx, TilePx));
@@ -1180,46 +1213,97 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		return tile;
 	}
 
+	private static Image CreateTintedTile(Image source, Color tint)
+	{
+		Image result = (Image)source.Duplicate();
+		for (int y = 0; y < result.GetHeight(); y++)
+		{
+			for (int x = 0; x < result.GetWidth(); x++)
+			{
+				Color c = result.GetPixel(x, y);
+				result.SetPixel(x, y, new Color(c.R * tint.R, c.G * tint.G, c.B * tint.B, c.A * tint.A));
+			}
+		}
+		return result;
+	}
+
+	private static Image CreateGlacierTile(Image source)
+	{
+		Image result = (Image)source.Duplicate();
+		for (int y = 0; y < result.GetHeight(); y++)
+		{
+			for (int x = 0; x < result.GetWidth(); x++)
+			{
+				Color c = result.GetPixel(x, y);
+				float r = Mathf.Clamp(c.R * 0.35f + 0.65f, 0f, 1f);
+				float g = Mathf.Clamp(c.G * 0.35f + 0.70f, 0f, 1f);
+				float b = Mathf.Clamp(c.B * 0.35f + 0.85f, 0f, 1f);
+				result.SetPixel(x, y, new Color(r, g, b, c.A));
+			}
+		}
+		return result;
+	}
+
 	private static void BlitTile(Image target, Image tile, int atlasX)
 		=> target.BlitRect(tile, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(atlasX * TilePx, 0));
 
 	private void BuildCompositeGroundSource()
 	{
-		// The original ground + transparent decor layers are composited pixel-perfectly
-		// into 11 atlas tiles: grass, water, fallback mountain, 4 trees, 4 stone variants.
-		// This removes up to two TileMap calls per cell without changing close-up pixels.
-		var atlas = Image.CreateEmpty(TilePx * 11, TilePx, false, Image.Format.Rgba8);
+		// Полнопланетарный мульти-биомный атлас (30 тайлов 64×64):
+		// - 0..10: умеренные широты (трава, вода, горы, 4 варианта деревьев, 4 камня)
+		// - 11..15: пустыня (золотой песок sand.png + 4 варианта камней на песке)
+		// - 16..24: степь / саванна (сухая трава + 4 дерева + 4 камня)
+		// - 25..29: ледник / тундра (арктический снег и лед + 4 валуна)
+		var atlas = Image.CreateEmpty(TilePx * CompositeAtlasTileCount, TilePx, false, Image.Format.Rgba8);
 		Image grass = LoadTileImage("res://ui/assets/textures/tiles/grass.png", fallback: new Color(0.2f, 0.55f, 0.2f));
 		Image water = LoadTileImage("res://ui/assets/textures/tiles/water.png", fallback: new Color(0.1f, 0.3f, 0.8f));
 		Image mountain = LoadTileImage("res://ui/assets/textures/tiles/mountains.png", 3, 3, new Color(0.45f, 0.45f, 0.45f));
+		Image sand = LoadTileImage("res://ui/assets/textures/tiles/sand.png", fallback: new Color(0.85f, 0.75f, 0.35f));
+		Image steppe = CreateTintedTile(grass, new Color(0.85f, 0.88f, 0.50f));
+		Image glacier = CreateGlacierTile(grass);
+
 		BlitTile(atlas, grass, CompositeGrass);
 		BlitTile(atlas, water, CompositeWater);
 		BlitTile(atlas, mountain, CompositeMountain);
-		_groundCompositeColors[CompositeGrass] = SampleImageTile(grass, 0, 0);
-		_groundCompositeColors[CompositeWater] = SampleImageTile(water, 0, 0);
-		_groundCompositeColors[CompositeMountain] = SampleImageTile(mountain, 0, 0);
+		BlitTile(atlas, sand, CompositeSand);
+		BlitTile(atlas, steppe, CompositeSteppe);
+		BlitTile(atlas, glacier, CompositeGlacier);
 
 		for (int v = 0; v < TexTrees.Length; v++)
 		{
 			Image tree = LoadTileImage(TexTrees[v], fallback: new Color(0.1f, 0.35f, 0.1f, 1f));
-			int index = CompositeTree0 + v;
-			BlitTile(atlas, grass, index);
-			atlas.BlendRect(tree, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(index * TilePx, 0));
-			_groundCompositeColors[index] = SampleImageTile(atlas, index, 0);
+			int gIndex = CompositeTree0 + v;
+			BlitTile(atlas, grass, gIndex);
+			atlas.BlendRect(tree, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(gIndex * TilePx, 0));
+
+			int sIndex = CompositeSteppeTree0 + v;
+			BlitTile(atlas, steppe, sIndex);
+			atlas.BlendRect(tree, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(sIndex * TilePx, 0));
 		}
 
 		Image stone = LoadTileImage("res://ui/assets/textures/objects/stone.png", 0, 0,
 			new Color(0.45f, 0.45f, 0.45f, 1f));
-		// Load each stone atlas quadrant separately to preserve the exact chosen variant.
 		for (int variant = 0; variant < 4; variant++)
 		{
 			Image stoneTile = variant == 0 ? stone : LoadTileImage(
 				"res://ui/assets/textures/objects/stone.png", variant & 1, (variant >> 1) & 1,
 				new Color(0.45f, 0.45f, 0.45f, 1f));
-			int index = CompositeStone0 + variant;
-			BlitTile(atlas, grass, index);
-			atlas.BlendRect(stoneTile, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(index * TilePx, 0));
-			_groundCompositeColors[index] = SampleImageTile(atlas, index, 0);
+
+			int gStoneIndex = CompositeStone0 + variant;
+			BlitTile(atlas, grass, gStoneIndex);
+			atlas.BlendRect(stoneTile, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(gStoneIndex * TilePx, 0));
+
+			int sandStoneIndex = CompositeSandStone0 + variant;
+			BlitTile(atlas, sand, sandStoneIndex);
+			atlas.BlendRect(stoneTile, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(sandStoneIndex * TilePx, 0));
+
+			int steppeStoneIndex = CompositeSteppeStone0 + variant;
+			BlitTile(atlas, steppe, steppeStoneIndex);
+			atlas.BlendRect(stoneTile, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(steppeStoneIndex * TilePx, 0));
+
+			int glacierStoneIndex = CompositeGlacierStone0 + variant;
+			BlitTile(atlas, glacier, glacierStoneIndex);
+			atlas.BlendRect(stoneTile, new Rect2I(0, 0, TilePx, TilePx), new Vector2I(glacierStoneIndex * TilePx, 0));
 		}
 
 		var source = new TileSetAtlasSource
@@ -1227,124 +1311,9 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			Texture = ImageTexture.CreateFromImage(atlas),
 			TextureRegionSize = new Vector2I(TilePx, TilePx)
 		};
-		for (int i = 0; i < 11; i++)
+		for (int i = 0; i < CompositeAtlasTileCount; i++)
 			source.CreateTile(new Vector2I(i, 0));
 		_tileSet.AddSource(source, SrcCompositeGround);
-	}
-
-	private void BuildLodPalette()
-	{
-		_mountainOverlayColor = SampleImageTile(
-			LoadTileImage("res://ui/assets/textures/tiles/mountains.png", 3, 3, new Color(0.45f, 0.45f, 0.45f)), 0, 0);
-		_wallOverlayColor = SampleImageTile(
-			LoadTileImage("res://ui/assets/textures/construction items/wooden_wall.png", 0, 0, new Color(0.4f, 0.25f, 0.1f)), 0, 0);
-		_cropOverlayColor = SampleImageTile(
-			LoadTileImage("res://ui/assets/textures/food/corn.png", fallback: new Color(0.7f, 0.65f, 0.1f)), 0, 0);
-		_stockpileOverlayColor = SampleImageTile(
-			LoadTileImage("res://ui/assets/textures/icons/logistic_zone.png", fallback: new Color(0.65f, 0.5f, 0.25f)), 0, 0);
-		_workOverlayColor = SampleImageTile(
-			LoadTileImage("res://ui/assets/textures/sprites/ProcessOfWork.png", fallback: new Color(0.7f, 0.7f, 0.7f)), 0, 0);
-	}
-
-	private static AverageColor SampleImageTile(Image image, int atlasX, int atlasY)
-	{
-		int x0 = atlasX * TilePx;
-		int y0 = atlasY * TilePx;
-		int width = Math.Min(TilePx, image.GetWidth() - x0);
-		int height = Math.Min(TilePx, image.GetHeight() - y0);
-		if (width <= 0 || height <= 0)
-			return AverageColor.FromColor(new Color(0.5f, 0.5f, 0.5f, 1f));
-
-		const int samples = 12;
-		double r = 0, g = 0, b = 0, a = 0;
-		int count = samples * samples;
-		for (int sy = 0; sy < samples; sy++)
-		{
-			int py = y0 + Math.Min(height - 1, (sy * 2 + 1) * height / (samples * 2));
-			for (int sx = 0; sx < samples; sx++)
-			{
-				int px = x0 + Math.Min(width - 1, (sx * 2 + 1) * width / (samples * 2));
-				Color c = image.GetPixel(px, py);
-				r += c.R * c.A;
-				g += c.G * c.A;
-				b += c.B * c.A;
-				a += c.A;
-			}
-		}
-		return new AverageColor((float)(r / count), (float)(g / count), (float)(b / count), (float)(a / count));
-	}
-
-	private void UpdateDetailMode(WorldRect visible)
-	{
-		Vector2 viewport = GetViewportRect().Size;
-		double cellsWide = Math.Max(1.0, visible.MaxX - visible.MinX);
-		double cellsHigh = Math.Max(1.0, visible.MaxY - visible.MinY);
-		if (viewport.X <= 0f || viewport.Y <= 0f)
-			return;
-		float pixelsPerCell = (float)Math.Min(viewport.X / cellsWide, viewport.Y / cellsHigh);
-		float enter = Math.Clamp(LowDetailPixelsPerCellEnter, 0.25f, 1.5f);
-		float exit = Math.Max(enter + 0.1f, Math.Clamp(LowDetailPixelsPerCellExit, 0.5f, 2.0f));
-		if (!_lowDetailMode && pixelsPerCell < enter)
-			SetLowDetailMode(true);
-		else if (_lowDetailMode && pixelsPerCell > exit)
-			SetLowDetailMode(false);
-	}
-
-	private void SetLowDetailMode(bool enabled)
-	{
-		if (_lowDetailMode == enabled)
-			return;
-		_lowDetailMode = enabled;
-
-		SetDetailedLayersVisible(!enabled);
-		if (enabled)
-		{
-			// Drop all detailed cells in one engine call per layer. This is much cheaper
-			// than issuing 4K-16K EraseCell calls for every resident chunk on far zoom.
-			_groundLayer?.Clear();
-			_decorLayer?.Clear();
-			_markLayer?.Clear();
-			_planLayer?.Clear();
-			_mountainLayer?.Clear();
-			_wallLayer?.Clear();
-			_eraseQueue.Clear();
-			_eraseScheduled.Clear();
-			_eraseJobs.Clear();
-			_paintQueue.Clear();
-			_paintQueued.Clear();
-			_paintJobs.Clear();
-			_textureDirty.Clear();
-			_freshPaint.Clear();
-			foreach (ChunkKey key in _chunkData.Keys)
-				_textureDirty.Add(key);
-		}
-		else
-		{
-			_eraseQueue.Clear();
-			_eraseScheduled.Clear();
-			_eraseJobs.Clear();
-			_paintQueue.Clear();
-			_paintQueued.Clear();
-			_paintJobs.Clear();
-			_textureDirty.Clear();
-			_freshPaint.Clear();
-			foreach (ChunkKey key in _chunkData.Keys)
-			{
-				_textureDirty.Add(key);
-				_freshPaint.Add(key); // all detailed layers were cleared above
-			}
-			// Existing LOD sprites remain on top until each full-detail chunk is ready.
-		}
-	}
-
-	private void SetDetailedLayersVisible(bool visible)
-	{
-		if (_groundLayer != null) _groundLayer.Visible = visible;
-		if (_decorLayer != null) _decorLayer.Visible = visible;
-		if (_markLayer != null) _markLayer.Visible = visible;
-		if (_planLayer != null) _planLayer.Visible = visible;
-		if (_mountainLayer != null) _mountainLayer.Visible = visible;
-		if (_wallLayer != null) _wallLayer.Visible = visible;
 	}
 
 	private int GetCompositeGroundIndex(long cellX, long cellY, int localIndex, GeneratedCell cell, BlockLookup kinds)
@@ -1359,121 +1328,40 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			int variant = (int)((cellX * 73856093L ^ cellY * 19349663L) & 3L);
 			bool isCut = BlockLookup.Contains(kinds.CutTree, localIndex);
 			bool isMined = BlockLookup.Contains(kinds.MinedStone, localIndex);
+
+			var biome = (BiomeType)cell.Biome;
+			if (biome == BiomeType.DeepWater)
+				return CompositeWater;
+
+			if (biome == BiomeType.Desert)
+			{
+				if (!isMined && cell.StoneQ16 >= StoneDecorMin)
+					return CompositeSandStone0 + variant;
+				return CompositeSand;
+			}
+			if (biome == BiomeType.Glacier)
+			{
+				if (!isMined && cell.StoneQ16 >= StoneDecorMin)
+					return CompositeGlacierStone0 + variant;
+				return CompositeGlacier;
+			}
+			if (biome == BiomeType.Steppe)
+			{
+				if (!isCut && cell.ForestQ16 >= ForestDecorMin)
+					return CompositeSteppeTree0 + variant;
+				if (!isMined && cell.StoneQ16 >= StoneDecorMin)
+					return CompositeSteppeStone0 + variant;
+				return CompositeSteppe;
+			}
+
+			// Plains, Forest, Swamp
 			if (!isCut && cell.ForestQ16 >= ForestDecorMin)
 				return CompositeTree0 + variant;
 			if (!isMined && cell.StoneQ16 >= StoneDecorMin)
 				return CompositeStone0 + variant;
+			return CompositeGrass;
 		}
 		return CompositeGrass;
-	}
-
-	private void PaintLodChunk(ChunkKey key)
-	{
-		if (!_chunkData.TryGetValue(key, out WorldChunk chunk))
-		{
-			RemoveLodChunk(key);
-			return;
-		}
-		long originX = key.X * (long)WorldCoordinates.ChunkSize;
-		long originY = key.Y * (long)WorldCoordinates.ChunkSize;
-		if (!FitsTileMap(originX, originY))
-		{
-			RemoveLodChunk(key);
-			return;
-		}
-
-		_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> kinds);
-		var lookup = new BlockLookup(kinds);
-		int side = WorldCoordinates.ChunkSize;
-		byte[] rgba = new byte[side * side * 4];
-		ReadOnlySpan<GeneratedCell> cells = chunk.Cells.Span;
-		for (int y = 0; y < WorldCoordinates.ChunkSize; y++)
-		{
-			for (int x = 0; x < WorldCoordinates.ChunkSize; x++)
-			{
-				int localIndex = y * WorldCoordinates.ChunkSize + x;
-				GeneratedCell cell = cells[localIndex];
-				int groundIndex = GetCompositeGroundIndex(originX + x, originY + y, localIndex, cell, lookup);
-				Color color = _groundCompositeColors[groundIndex].AsOpaque();
-
-				// Normal marker layer is drawn before mountain/wall terrain layers.
-				if (BlockLookup.Contains(kinds.Wall, localIndex))
-				{
-					if (_wallLayer == null)
-						BlendAverage(ref color, _wallOverlayColor, 1f);
-				}
-				else if (BlockLookup.Contains(kinds.Crop, localIndex))
-					BlendAverage(ref color, _cropOverlayColor, 1f);
-				else if (BlockLookup.Contains(kinds.Stockpile, localIndex))
-					BlendAverage(ref color, _stockpileOverlayColor, 1f);
-				else if (BlockLookup.Contains(kinds.Building, localIndex))
-					BlendAverage(ref color, _workOverlayColor, 1f);
-
-				// Terrain layers are above marks in the original scene's draw order.
-				if (_mountainLayer != null && cell.Terrain == BaseTerrainKind.Mountain)
-					BlendAverage(ref color, _mountainOverlayColor, 1f);
-				if (_wallLayer != null && BlockLookup.Contains(kinds.Wall, localIndex))
-					BlendAverage(ref color, _wallOverlayColor, 1f);
-
-				// Plans are the final layer and use the same 55% alpha as the detailed view.
-				if (BlockLookup.Contains(kinds.WallPlan, localIndex))
-					BlendAverage(ref color, _wallOverlayColor, PlanAlpha);
-				else if (BlockLookup.Contains(kinds.CropPlan, localIndex))
-					BlendAverage(ref color, _cropOverlayColor, PlanAlpha);
-				else if (BlockLookup.Contains(kinds.StockpilePlan, localIndex))
-					BlendAverage(ref color, _stockpileOverlayColor, PlanAlpha);
-				else if (BlockLookup.Contains(kinds.BuildingPlan, localIndex))
-					BlendAverage(ref color, _workOverlayColor, PlanAlpha);
-
-				int pixel = localIndex * 4;
-				rgba[pixel] = ToByte(color.R);
-				rgba[pixel + 1] = ToByte(color.G);
-				rgba[pixel + 2] = ToByte(color.B);
-				rgba[pixel + 3] = 255;
-			}
-		}
-		Image image = Image.CreateFromData(side, side, false, Image.Format.Rgba8, rgba);
-		image.GenerateMipmaps();
-		Texture2D texture = ImageTexture.CreateFromImage(image);
-		if (!_lodSprites.TryGetValue(key, out Sprite2D sprite) || !GodotObject.IsInstanceValid(sprite))
-		{
-			sprite = new Sprite2D
-			{
-				Name = $"LOD_{key.X}_{key.Y}",
-				Centered = false,
-				Position = new Vector2((float)(originX * TilePx), (float)(originY * TilePx)),
-				Scale = new Vector2(TilePx, TilePx),
-				TextureFilter = CanvasItem.TextureFilterEnum.LinearWithMipmaps,
-				Texture = texture
-			};
-			_lodRoot.AddChild(sprite);
-			_lodSprites[key] = sprite;
-		}
-		else
-		{
-			sprite.Texture = texture;
-		}
-	}
-
-	private static byte ToByte(float value)
-		=> (byte)Math.Clamp((int)MathF.Round(Mathf.Clamp(value, 0f, 1f) * 255f), 0, 255);
-
-	private static void BlendAverage(ref Color destination, AverageColor source, float opacity)
-	{
-		float alpha = Mathf.Clamp(source.A * opacity, 0f, 1f);
-		destination = new Color(
-			Mathf.Clamp(source.R * opacity + destination.R * (1f - alpha), 0f, 1f),
-			Mathf.Clamp(source.G * opacity + destination.G * (1f - alpha), 0f, 1f),
-			Mathf.Clamp(source.B * opacity + destination.B * (1f - alpha), 0f, 1f),
-			1f);
-	}
-
-	private void RemoveLodChunk(ChunkKey key)
-	{
-		if (!_lodSprites.Remove(key, out Sprite2D sprite))
-			return;
-		if (GodotObject.IsInstanceValid(sprite))
-			sprite.QueueFree();
 	}
 
 	/// <summary>Поставить тайлы всем клеткам чанка.</summary>
@@ -1517,12 +1405,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		var pos = new Vector2I((int)x, (int)y);
 		_mountainTerrain?.MarkDirty(pos);
 		_wallTerrain?.MarkDirty(pos);
+		_wallPlanTerrain?.MarkDirty(pos);
 	}
 
 	/// <summary>Кольцо 3×3 вокруг одной клетки — для одиночных меток (стена/её снос).</summary>
 	private void MarkTerrainCellRing(long cellX, long cellY)
 	{
-		if (_mountainTerrain == null && _wallTerrain == null)
+		if (_mountainTerrain == null && _wallTerrain == null && _wallPlanTerrain == null)
 			return;
 		for (long y = cellY - 1; y <= cellY + 1; y++)
 		{
@@ -1550,6 +1439,8 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 	private bool IsWallCell(Vector2I cell) => HasBlock(WallKind, cell.X, cell.Y);
 
+	private bool IsWallPlanCell(Vector2I cell) => HasBlock(WorldDeltaKind.WallPlan, cell.X, cell.Y);
+
 	/// <summary>Перерисовать одну клетку (после AddBlock/RemoveBlock).</summary>
 	private void RepaintCell(long cellX, long cellY)
 	{
@@ -1560,7 +1451,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		long originY = key.Y * (long)WorldCoordinates.ChunkSize;
 		if (!FitsTileMap(originX, originY) || !FitsTileMapCell(cellX, cellY))
 			return;
-		if (_lowDetailMode || _paintJobs.ContainsKey(key))
+		if (_paintJobs.ContainsKey(key))
 		{
 			_textureDirty.Add(key);
 			return;
@@ -1589,6 +1480,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		{
 			_markLayer.EraseCell(pos);
 			_planLayer?.EraseCell(pos);
+			_wallPlanLayer?.EraseCell(pos);
 		}
 		if (BlockLookup.Contains(kinds.Wall, localIndex))
 		{
@@ -1605,7 +1497,12 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			_markLayer.SetCell(pos, SrcWork, Vector2I.Zero);
 
 		if (BlockLookup.Contains(kinds.WallPlan, localIndex))
-			_planLayer?.SetCell(pos, SrcWall, Vector2I.Zero);
+		{
+			if (_wallPlanLayer != null)
+				_wallPlanTerrain.MarkDirty(pos);
+			else
+				_planLayer?.SetCell(pos, SrcWall, Vector2I.Zero);
+		}
 		else if (BlockLookup.Contains(kinds.CropPlan, localIndex))
 			_planLayer?.SetCell(pos, SrcCrop, Vector2I.Zero);
 		else if (BlockLookup.Contains(kinds.StockpilePlan, localIndex))

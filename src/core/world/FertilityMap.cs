@@ -93,7 +93,7 @@ public sealed class FertilityMap
     public const float SteepFertSlope = 0.012f;
 
     /// <summary>
-    /// Начальная заливка из MapGenerator (п.19.6-П1/П2/П4): СВОЙ слой шума
+    /// Начальная заливка из UnifiedWorldGenerator (п.19.6-П1/П2/П4): СВОЙ слой шума
     /// (fertile, сид +4242), 0..200 по шуму + пойменный бонус у воды (+40),
     /// +20 под лесом (органика), штраф за склон (до −70%). Вода и горы = 0.
     /// Требует heightMap + forestMask + waterFeed-силу (может быть null —

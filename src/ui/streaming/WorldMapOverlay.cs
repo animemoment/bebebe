@@ -11,15 +11,26 @@ namespace Game.UI.Streaming;
 public partial class WorldMapOverlay : Node2D
 {
 	private const int TileSizePx = 16;
-	private const int GridWidth = 2000;
-	private const int GridHeight = 1000;
+	private const int GridWidth = 2048;
+	private const int GridHeight = 1024;
 	private const int ChunkSize = 64;
-	private const int TileTypeCount = 16;
-	private const float MinZoom = 0.12f;
+	private const int TileTypeCount = WorldMapTileMapper.TotalTileCount;
+	private const float MinZoom = 0.05f;
 	private const float MaxZoom = 4f;
 	private const float ZoomFactor = 1.2f;
 	private const float PanSpeed = 900f;
 	private const string ToggleButtonName = "BtnOpenWorldMap";
+
+	/// <summary>Событие клика по региону мировой карты для выбора спавна.</summary>
+	public event Action<RegionKey> OnRegionSelected;
+	/// <summary>Событие реролла сида планеты.</summary>
+	public event Action<ulong> OnSeedRegenerated;
+	/// <summary>Текущий регион колонии игрока для отображения маркера и центрирования камеры.</summary>
+	public RegionKey CurrentColonyRegion { get; set; } = new RegionKey(-1, -1);
+	/// <summary>Режим первичного выбора спавна (кнопка закрытия скрыта, Esc/M заблокированы).</summary>
+	public bool IsSpawnSelectionMode { get; set; } = false;
+
+	private Label _spawnPromptLabel;
 
 	/// <summary>Ниже этого зума детальные тайлы не рисуются, достаточно overview.</summary>
 	private const float DetailMinZoom = 0.35f;
@@ -72,7 +83,7 @@ public partial class WorldMapOverlay : Node2D
 	static WorldMapOverlay()
 	{
 		for (int i = 0; i < TileTypeCount; i++)
-			AtlasCoordsCached[i] = GetAtlasCoordsRaw(i);
+			AtlasCoordsCached[i] = WorldMapTileMapper.GetAtlasCoords(i);
 	}
 
 	public override void _Ready()
@@ -101,7 +112,7 @@ public partial class WorldMapOverlay : Node2D
 		AddChild(_overviewSprite);
 
 		_camera.Position = new Vector2(GridWidth * TileSizePx / 2f, GridHeight * TileSizePx / 2f);
-		_camera.Zoom = new Vector2(0.4f, 0.4f);
+		_camera.Zoom = new Vector2(0.12f, 0.12f);
 		_camera.Enabled = false;
 		Visible = false;
 		_uiLayer.Visible = false;
@@ -113,6 +124,34 @@ public partial class WorldMapOverlay : Node2D
 		var btnToggle = _uiLayer.GetNodeOrNull<Button>("Control/BtnOpenWorldMap");
 		if (btnToggle != null)
 			btnToggle.Pressed += ToggleMap;
+
+		_spawnPromptLabel = new Label
+		{
+			Name = "SpawnPromptLabel",
+			Text = "ВЫБОР МЕСТА КОЛОНИИ: Кликните ЛКМ по суше для основания колонии  |  ПКМ/СКМ — перемещение  |  Колёсико — зум  |  R — сменить мир",
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Center,
+			CustomMinimumSize = new Vector2(1100, 48),
+			Visible = false
+		};
+		_spawnPromptLabel.AddThemeFontSizeOverride("font_size", 20);
+		_spawnPromptLabel.AddThemeColorOverride("font_color", new Color(1f, 0.95f, 0.7f));
+		var bgBox = new StyleBoxFlat
+		{
+			BgColor = new Color(0f, 0f, 0f, 0.8f),
+			CornerRadiusBottomLeft = 8,
+			CornerRadiusBottomRight = 8,
+			CornerRadiusTopLeft = 8,
+			CornerRadiusTopRight = 8,
+			ContentMarginLeft = 16,
+			ContentMarginRight = 16,
+			ContentMarginTop = 8,
+			ContentMarginBottom = 8
+		};
+		_spawnPromptLabel.AddThemeStyleboxOverride("normal", bgBox);
+		_spawnPromptLabel.SetAnchorsPreset(Control.LayoutPreset.CenterTop);
+		_spawnPromptLabel.Position = new Vector2((1920 - 1100) / 2f, 20);
+		_uiLayer.GetNodeOrNull<Control>("Control")?.AddChild(_spawnPromptLabel);
 
 		// Initialize мог быть вызван до _Ready
 		if (_hasSeed)
@@ -171,8 +210,30 @@ public partial class WorldMapOverlay : Node2D
 		_uiLayer.Visible = true;
 		_camera.Enabled = true;
 		_camera.MakeCurrent();
+
+		var btnToggle = _uiLayer.GetNodeOrNull<Button>("Control/BtnOpenWorldMap");
+		if (btnToggle != null)
+			btnToggle.Visible = !IsSpawnSelectionMode;
+		var btnClose = _uiLayer.GetNodeOrNull<Button>("Control/BtnClose");
+		if (btnClose != null)
+			btnClose.Visible = !IsSpawnSelectionMode;
+
+		if (_spawnPromptLabel != null)
+		{
+			_spawnPromptLabel.Text = "ВЫБОР МЕСТА КОЛОНИИ: Кликните ЛКМ по суше для высадки  |  ПКМ/СКМ — перемещение  |  Колёсико — зум  |  R — сменить мир";
+			_spawnPromptLabel.AddThemeColorOverride("font_color", new Color(1f, 0.95f, 0.7f));
+			_spawnPromptLabel.Visible = IsSpawnSelectionMode;
+		}
+
+		if (CurrentColonyRegion.X >= 0 && CurrentColonyRegion.Y >= 0)
+		{
+			_camera.Position = new Vector2(
+				CurrentColonyRegion.X * TileSizePx + TileSizePx / 2f,
+				CurrentColonyRegion.Y * TileSizePx + TileSizePx / 2f);
+		}
 		ClampCamera();
 		_lastCameraPosition = new Vector2(float.NaN, float.NaN);
+		QueueRedraw();
 	}
 
 	public void CloseMap()
@@ -184,6 +245,8 @@ public partial class WorldMapOverlay : Node2D
 		_uiLayer.Visible = false;
 		_camera.Enabled = false;
 		_isDragging = false;
+		if (_spawnPromptLabel != null)
+			_spawnPromptLabel.Visible = false;
 
 		if (GodotObject.IsInstanceValid(_gameCamera) && _gameCamera.IsInsideTree() && _savedGameCameraEnabled)
 		{
@@ -214,6 +277,42 @@ public partial class WorldMapOverlay : Node2D
 				return;
 			}
 
+			if (mouse.Pressed && mouse.ButtonIndex == MouseButton.Left)
+			{
+				Vector2 mouseWorld = _camera.GetGlobalMousePosition();
+				int cellX = Mathf.FloorToInt(mouseWorld.X / TileSizePx);
+				int cellY = Mathf.FloorToInt(mouseWorld.Y / TileSizePx);
+				if (cellX >= 0 && cellX < GridWidth && cellY >= 0 && cellY < GridHeight)
+				{
+					if (_tileData != null)
+					{
+						int tileIdx = cellY * GridWidth + cellX;
+						short t = _tileData[tileIdx];
+						// DeepWater (6..8): нельзя основывать колонию в океане
+						if (t >= 6 && t <= 8)
+						{
+							GD.Print($"[SPAWN] Регион [{cellX}, {cellY}] — глубокий океан. Выберите сушу для основания колонии!");
+							if (_spawnPromptLabel != null)
+							{
+								_spawnPromptLabel.Text = "ОКЕАН! Нельзя высадиться в воде. Кликните по суше (равнины, пустыни, леса, степи, ледники).";
+								_spawnPromptLabel.AddThemeColorOverride("font_color", new Color(1f, 0.4f, 0.4f));
+								_spawnPromptLabel.Visible = true;
+							}
+							GetViewport().SetInputAsHandled();
+							return;
+						}
+					}
+
+					RegionKey reg = new RegionKey(cellX, cellY);
+					CurrentColonyRegion = reg;
+					IsSpawnSelectionMode = false;
+					OnRegionSelected?.Invoke(reg);
+					CloseMap();
+					GetViewport().SetInputAsHandled();
+					return;
+				}
+			}
+
 			if (mouse.Pressed && mouse.ButtonIndex == MouseButton.WheelUp)
 			{
 				ZoomAtMouse(ZoomFactor);
@@ -232,6 +331,57 @@ public partial class WorldMapOverlay : Node2D
 			_camera.Position -= motion.Relative / _camera.Zoom;
 			ClampCamera();
 			GetViewport().SetInputAsHandled();
+			return;
+		}
+
+		if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
+		{
+			if (keyEvent.Keycode is Key.Escape or Key.M)
+			{
+				if (IsSpawnSelectionMode)
+				{
+					// В режиме выбора спавна закрыть карту нельзя — игрок обязан выбрать регион
+					GetViewport().SetInputAsHandled();
+					return;
+				}
+				CloseMap();
+				GetViewport().SetInputAsHandled();
+				return;
+			}
+
+			if (keyEvent.Keycode == Key.R)
+			{
+				RerollWorld();
+				GetViewport().SetInputAsHandled();
+				return;
+			}
+		}
+	}
+
+	/// <summary>Случайная регенерация сида планеты на лету (по клавише R или кнопке).</summary>
+	public void RerollWorld()
+	{
+		ulong newSeed = (ulong)Random.Shared.NextInt64() ^ ((ulong)DateTime.UtcNow.Ticks << 32);
+		if (newSeed == 0) newSeed = 0xA1B2C3D4E5F60718UL;
+		_seed = newSeed;
+		OnSeedRegenerated?.Invoke(newSeed);
+		StartGeneration();
+		GD.Print($"[WORLD MAP] Сгенерирован новый сид мира: 0x{newSeed:X16} (Архетип: {Game.Core.WorldClimate.WorldClimateParams.GetArchetype(newSeed)})");
+	}
+
+	public override void _Draw()
+	{
+		if (!Visible) return;
+		if (CurrentColonyRegion.X >= 0 && CurrentColonyRegion.Y >= 0)
+		{
+			Rect2 rect = new Rect2(
+				CurrentColonyRegion.X * TileSizePx - 2,
+				CurrentColonyRegion.Y * TileSizePx - 2,
+				TileSizePx + 4,
+				TileSizePx + 4);
+			// Яркая рамка вокруг текущей колонии
+			DrawRect(rect, new Color(1f, 0.2f, 0.2f, 0.95f), false, 2.5f);
+			DrawCircle(new Vector2(CurrentColonyRegion.X * TileSizePx + TileSizePx / 2f, CurrentColonyRegion.Y * TileSizePx + TileSizePx / 2f), 3.5f, new Color(1f, 0.9f, 0.2f, 1f));
 		}
 	}
 
@@ -242,6 +392,8 @@ public partial class WorldMapOverlay : Node2D
 
 		if (!Visible || !IsInsideTree())
 			return;
+
+		QueueRedraw();
 
 		Node main = GetParent();
 		if (main != null && main.GetChildCount() != _lastParentChildCount)
@@ -368,6 +520,7 @@ public partial class WorldMapOverlay : Node2D
 		ulong seed = _seed;
 		uint version = _version;
 		byte[] colors = _tileColors;
+		var macroParams = Game.Core.WorldClimate.WorldClimateProvider.ParamsFor(seed);
 
 		Task.Run(() =>
 		{
@@ -375,41 +528,24 @@ public partial class WorldMapOverlay : Node2D
 			{
 				var tiles = new short[GridWidth * GridHeight];
 				var pixels = new byte[GridWidth * GridHeight * 4];
+				var elevations = new ushort[GridWidth * GridHeight];
 
-				// Характеристики регионов детерминированы и одинаковы для всех клеток региона:
-				// считаем их один раз (регионов на карте единицы), а не 4 раза на клетку.
-				// Индексы регионов: клетка x в [0, GridWidth) → region в [0, GridWidth/RegionSize],
-				// +1 для соседа, поэтому размер сетки с запасом на 2.
-				int regionsW = GridWidth / WorldRegions.RegionSize + 2;
-				// (regionsW/regionsH — с запасом, чтобы индекс nw+1 / sw+1 не выходил за границы)
-				int regionsH = GridHeight / WorldRegions.RegionSize + 2;
-				var regionTraits = new RegionTraits[regionsW * regionsH];
-				for (int ry = 0; ry < regionsH; ry++)
-					for (int rx = 0; rx < regionsW; rx++)
-						regionTraits[ry * regionsW + rx] =
-							RegionTraitProvider.Sample(seed, version, new RegionKey(rx, ry));
-
-				// Строки независимы (запись в непересекающиеся срезы массивов) — параллелим.
-				Parallel.For(0, GridHeight, y =>
+				var popt = new ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount };
+				Parallel.For(0, GridHeight, popt, y =>
 				{
 					if (id != Volatile.Read(ref _genId))
 						return; // пришёл новый Initialize, результат не нужен
 
 					for (int x = 0; x < GridWidth; x++)
 					{
-						RegionKey r = WorldRegions.RegionForCell(x, y);
-						int nw = (int)r.Y * regionsW + (int)r.X;
-						int sw = nw + regionsW;
-						(uint u, uint v) = RegionTraitProvider.BlendWeights(x, y);
-						RegionTraits traits = RegionTraitProvider.BlendBilinear(
-							regionTraits[nw], regionTraits[nw + 1],
-							regionTraits[sw], regionTraits[sw + 1],
-							u, v);
+						RegionKey r = new RegionKey(x, y);
+						WorldClimateParams climate = WorldClimateGenerator.SampleRegion(seed, version, r, in macroParams);
+						int i = y * GridWidth + x;
+						elevations[i] = climate.ElevationQ16;
 
-						TilePick pick = BiomeMapper.Pick(seed, version, x, y, traits);
+						TilePick pick = BiomeMapper.PickFromClimate(seed, version, x, y, climate);
 						int t = WorldMapTileMapper.GetTileId(pick.Biome, pick.Variant);
 
-						int i = y * GridWidth + x;
 						if ((uint)t >= TileTypeCount)
 						{
 							tiles[i] = -1;
@@ -425,6 +561,13 @@ public partial class WorldMapOverlay : Node2D
 						pixels[p + 3] = 255;
 					}
 				});
+
+				if (id != Volatile.Read(ref _genId))
+					return;
+
+				// 2. Физическая планетарная гидрология (речные артерии, древовидные притоки, оазисы в пустыне)
+				Game.Core.WorldClimate.PlanetaryHydrology.SimulateGlobalHydrology(
+					seed, version, GridWidth, GridHeight, elevations, tiles, pixels, colors);
 
 				if (id == Volatile.Read(ref _genId))
 					_pendingResult = new GenResult { Id = id, Tiles = tiles, Pixels = pixels };
@@ -660,10 +803,5 @@ public partial class WorldMapOverlay : Node2D
 	}
 
 	private static Vector2I GetAtlasCoordsRaw(int tileIndex)
-	{
-		if (tileIndex < 3) return new Vector2I(0, tileIndex);
-		if (tileIndex < 6) return new Vector2I(1, tileIndex - 3);
-		if (tileIndex < 9) return new Vector2I(2, tileIndex - 6);
-		return new Vector2I(tileIndex - 6, 0);
-	}
+		=> WorldMapTileMapper.GetAtlasCoords(tileIndex);
 }

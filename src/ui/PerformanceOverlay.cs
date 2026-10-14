@@ -1,5 +1,6 @@
 using Godot;
 using Game.Core;
+using Game.Simulation;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -20,14 +21,16 @@ public partial class PerformanceOverlay : CanvasLayer
 	}
 
 	private PanelContainer _panel;
+	private ScrollContainer _scroll;
 	private RichTextLabel _label;
 	private Label _copyStatus;
 	private Button _pauseButton;
-	private bool _isVisible = true;
+	private bool _isVisible = false;
 	private float _refreshTimer;
 	private float _trendTimer;
-	// Окно снапшота: РЕАЛЬНО прошедшее время и число кадров (а не delta кадра!).
-	// Без этого профайлер врал: сумма за 0.1 с подавалась как «за кадр/за вызов».
+	private float _copyStatusTimer;
+
+	// Окно снапшота
 	private double _sinceSnapshot;
 	private int _framesSinceSnapshot;
 	private double _lastWindowSec = 0.1;
@@ -37,13 +40,12 @@ public partial class PerformanceOverlay : CanvasLayer
 	private readonly List<ScriptGroup> _groups = new();
 	private int _pageIndex;
 
-	// Кольцевые буферы трендов (FPS и % нагрузки от бюджета кадра)
+	// Кольцевые буферы трендов (FPS и % нагрузки)
 	private readonly float[] _fpsHistory = new float[TrendLength];
 	private readonly float[] _loadHistory = new float[TrendLength];
 	private int _trendIndex;
 	private int _trendFilled;
 
-	// --- Новые фичи панели: вкладки, поиск, топ, маркеры, порог, окно ---
 	// Вкладки: 0=Методы, 1=Топ-10, 2=Спайки, 3=Маркеры/Заметки, 4=График
 	private int _tabIndex;
 	private static readonly string[] TabNames = { "Методы", "Топ-10", "Спайки", "Метки", "График" };
@@ -56,6 +58,32 @@ public partial class PerformanceOverlay : CanvasLayer
 	private float _spikeMinMs = 8f;
 	private double _lastCopyMs;
 
+	// Перетаскивание (Drag & Drop)
+	private bool _isDragging = false;
+	private Vector2 _dragOffset = Vector2.Zero;
+
+	// Режим Mini-HUD
+	private bool _isMiniMode = false;
+	private Button _miniButton;
+	private HBoxContainer _tabsRow;
+	private HBoxContainer _toolsRow;
+	private HBoxContainer _marksRow;
+
+	// Автопауза при спайке
+	private bool _freezeOnSpike = false;
+	private Button _freezeButton;
+
+	private Button _fpsButton;
+	private Button _simBackendButton;
+	private int _fpsPresetIndex = 0;
+	private static readonly (int MaxFps, DisplayServer.VSyncMode Vsync, string Label)[] FpsPresets = new[]
+	{
+		(1000, DisplayServer.VSyncMode.Disabled, "FPS: 1000"),
+		(60, DisplayServer.VSyncMode.Enabled, "FPS: VSync 60"),
+		(144, DisplayServer.VSyncMode.Disabled, "FPS: 144"),
+		(240, DisplayServer.VSyncMode.Disabled, "FPS: 240")
+	};
+
 	public override void _Ready()
 	{
 		Layer = 120;
@@ -65,21 +93,46 @@ public partial class PerformanceOverlay : CanvasLayer
 			Name = "ProfilerPanel",
 			Position = new Vector2(16, 16),
 			CustomMinimumSize = new Vector2(780, 430),
-			MouseFilter = Control.MouseFilterEnum.Pass // клики мимо кнопок проходят в игру
+			MouseFilter = Control.MouseFilterEnum.Stop // клики внутри панели не пробивают в мир
 		};
 		_panel.AddThemeStyleboxOverride("panel", MakePanelStyle());
+
+		// Разблокируем до 1000 FPS и отключаем VSync
+		Engine.MaxFps = 1000;
+		DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
 
 		var root = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
 		root.AddThemeConstantOverride("separation", 6);
 		_panel.AddChild(root);
 
-		// Ряд 1: навигация по скриптам + управление базой
+		// Ряд 1: навигация, управление, перетаскивание, копирование
 		var header = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
 		header.AddThemeConstantOverride("separation", 4);
 		root.AddChild(header);
 
 		header.AddChild(MakeTrackedButton("<", "пагинация", () => _pageIndex = Math.Max(0, _pageIndex - 1)));
 		header.AddChild(MakeTrackedButton(">", "пагинация", () => _pageIndex = Math.Min(_groups.Count - 1, _pageIndex + 1)));
+
+		_fpsButton = MakeTrackedButton(FpsPresets[_fpsPresetIndex].Label, "fps_limit", () =>
+		{
+			_fpsPresetIndex = (_fpsPresetIndex + 1) % FpsPresets.Length;
+			var preset = FpsPresets[_fpsPresetIndex];
+			Engine.MaxFps = preset.MaxFps;
+			DisplayServer.WindowSetVsyncMode(preset.Vsync);
+			_fpsButton.Text = preset.Label;
+			ProfilerLogService.Instance.RecordFunction("FPS Limit", preset.Label);
+		});
+		header.AddChild(_fpsButton);
+
+		_simBackendButton = MakeTrackedButton(AgentSimulationThread.SimBackendLabel, "sim_backend", () =>
+		{
+			AgentSimulationThread.ActiveBackend = AgentSimulationThread.ActiveBackend == AgentSimulationThread.SimulationBackend.CpuSimd
+				? AgentSimulationThread.SimulationBackend.GpuCompute
+				: AgentSimulationThread.SimulationBackend.CpuSimd;
+			_simBackendButton.Text = AgentSimulationThread.SimBackendLabel;
+			ProfilerLogService.Instance.RecordFunction("Simulation Backend", AgentSimulationThread.SimBackendLabel);
+		});
+		header.AddChild(_simBackendButton);
 
 		_pauseButton = MakeButton("Pause", () =>
 		{
@@ -96,7 +149,22 @@ public partial class PerformanceOverlay : CanvasLayer
 			_pageIndex = 0;
 		}));
 
-		// Фича 1: быстрое Copy — компактный срез с замером времени (фриз виден сразу).
+		// Кнопка [Copy AI] — главный инструмент экспорта для AI
+		var copyAiBtn = MakeTrackedButton("Copy AI", "шапка", () =>
+		{
+			var sw = System.Diagnostics.Stopwatch.StartNew();
+			var ctx = GatherAiContext();
+			string report = ProfilerLogService.Instance.BuildAiReport(ctx);
+			DisplayServer.ClipboardSet(report);
+			sw.Stop();
+			_lastCopyMs = sw.Elapsed.TotalMilliseconds;
+			_copyStatus.Text = $"AI report copied ({_lastCopyMs:F0}ms)";
+			_copyStatusTimer = 2.5f;
+		});
+		copyAiBtn.Modulate = new Color(0.4f, 1.0f, 0.6f);
+		header.AddChild(copyAiBtn);
+
+		// Кнопка Copy — обычный текстовый срез
 		header.AddChild(MakeTrackedButton("Copy", "шапка", () =>
 		{
 			var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -104,29 +172,41 @@ public partial class PerformanceOverlay : CanvasLayer
 			sw.Stop();
 			_lastCopyMs = sw.Elapsed.TotalMilliseconds;
 			_copyStatus.Text = $"copied {_lastCopyMs:F0}ms";
+			_copyStatusTimer = 2.5f;
 		}));
 
-		// Фича 2: Copy CSV — полный дамп окна + журнал кнопок/функций для Excel.
+		// Кнопка CSV
 		header.AddChild(MakeTrackedButton("CSV", "шапка", () =>
 		{
 			var sw = System.Diagnostics.Stopwatch.StartNew();
 			DisplayServer.ClipboardSet(ProfilerLogService.Instance.BuildCsv());
 			sw.Stop();
 			_copyStatus.Text = $"csv {sw.Elapsed.TotalMilliseconds:F0}ms";
+			_copyStatusTimer = 2.5f;
 		}));
 
-		// Фича 3: Save — отчёт в user://logs с именем по времени.
+		// Кнопка Save — сохранение в user://logs/
 		header.AddChild(MakeTrackedButton("Save", "шапка", () =>
 		{
 			try
 			{
 				string dir = ProjectSettings.GlobalizePath("user://logs");
-				string path = System.IO.Path.Combine(dir, $"profiler_manual_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
-				ProfilerLogService.Instance.SaveToFile(path);
-				_copyStatus.Text = "saved";
+				string path = System.IO.Path.Combine(dir, $"profiler_ai_{DateTime.Now:yyyyMMdd_HHmmss}.md");
+				ProfilerLogService.Instance.SaveAiReportToFile(path, GatherAiContext());
+				_copyStatus.Text = "saved .md";
+				_copyStatusTimer = 2.5f;
 			}
-			catch (Exception ex) { _copyStatus.Text = "save err"; GD.PrintErr(ex.Message); }
+			catch (Exception ex)
+			{
+				_copyStatus.Text = "save err";
+				_copyStatusTimer = 2.5f;
+				GD.PrintErr(ex.Message);
+			}
 		}));
+
+		// Кнопка Mini-HUD
+		_miniButton = MakeTrackedButton("Mini", "шапка", ToggleMiniMode);
+		header.AddChild(_miniButton);
 
 		_copyStatus = new Label
 		{
@@ -137,77 +217,98 @@ public partial class PerformanceOverlay : CanvasLayer
 		};
 		header.AddChild(_copyStatus);
 
-		// Ряд 2: вкладки + поиск + окно топа
-		var tabs = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
-		tabs.AddThemeConstantOverride("separation", 4);
-		root.AddChild(tabs);
+		// Ряд 2: вкладки
+		_tabsRow = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
+		_tabsRow.AddThemeConstantOverride("separation", 4);
+		root.AddChild(_tabsRow);
 		for (int t = 0; t < TabNames.Length; t++)
 		{
 			int idx = t;
-			// Переключение вкладок тоже пишется в лог как функция.
-			tabs.AddChild(MakeTrackedButton(TabNames[t], "вкладки", () => _tabIndex = idx));
+			_tabsRow.AddChild(MakeTrackedButton(TabNames[t], "вкладки", () => _tabIndex = idx));
 		}
 		_tabLabel = new Label { Text = "", MouseFilter = Control.MouseFilterEnum.Ignore };
-		tabs.AddChild(_tabLabel);
+		_tabsRow.AddChild(_tabLabel);
 
-		// Ряд 3: поиск по методам + окно топа + порог спайков
-		var tools = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
-		tools.AddThemeConstantOverride("separation", 4);
-		root.AddChild(tools);
-		// Фича 4: живой поиск-фильтр по имени метода.
+		// Ряд 3: поиск + фильтры + Freeze on Spike
+		_toolsRow = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
+		_toolsRow.AddThemeConstantOverride("separation", 4);
+		root.AddChild(_toolsRow);
+
 		_searchBox = new LineEdit { PlaceholderText = "фильтр…", CustomMinimumSize = new Vector2(140, 26) };
-		_searchBox.TextChanged += text => _searchFilter = text ?? "";
-		tools.AddChild(_searchBox);
-		// Фича 5: окно агрегации топа 10/30/60 сек.
-		tools.AddChild(MakeTrackedButton("10s", "окно топа", () => _topWindowSecs = 10));
-		tools.AddChild(MakeTrackedButton("30s", "окно топа", () => _topWindowSecs = 30));
-		tools.AddChild(MakeTrackedButton("60s", "окно топа", () => _topWindowSecs = 60));
-		// Фича 6: порог спайков прямо из панели.
-		tools.AddChild(MakeTrackedButton("спайк+", "порог", () =>
+		_searchBox.TextChanged += text => { _searchFilter = text ?? ""; _pageIndex = 0; };
+		_toolsRow.AddChild(_searchBox);
+
+		_toolsRow.AddChild(MakeTrackedButton("10s", "окно топа", () => _topWindowSecs = 10));
+		_toolsRow.AddChild(MakeTrackedButton("30s", "окно топа", () => _topWindowSecs = 30));
+		_toolsRow.AddChild(MakeTrackedButton("60s", "окно топа", () => _topWindowSecs = 60));
+
+		_toolsRow.AddChild(MakeTrackedButton("спайк+", "порог", () =>
 		{
 			_spikeMinMs = Math.Min(100f, _spikeMinMs + 2f);
 			ProfilerLogService.Instance.SpikeThresholdMs = _spikeMinMs;
 		}));
-		tools.AddChild(MakeTrackedButton("спайк-", "порог", () =>
+		_toolsRow.AddChild(MakeTrackedButton("спайк-", "порог", () =>
 		{
 			_spikeMinMs = Math.Max(1f, _spikeMinMs - 2f);
 			ProfilerLogService.Instance.SpikeThresholdMs = _spikeMinMs;
 		}));
 
-		// Ряд 4: маркер + заметка + CSV-фильтр
-		var marks = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
-		marks.AddThemeConstantOverride("separation", 4);
-		root.AddChild(marks);
-		// Фича 7: маркер одним кликом. Фича 8: заметка с текстом.
-		marks.AddChild(MakeTrackedButton("Метка", "метки", () =>
+		_freezeButton = MakeTrackedButton("Freeze: OFF", "шапка", () =>
+		{
+			_freezeOnSpike = !_freezeOnSpike;
+			_freezeButton.Text = _freezeOnSpike ? "Freeze: ON" : "Freeze: OFF";
+			ProfilerLogService.Instance.RecordFunction("Freeze on Spike", _freezeOnSpike);
+		});
+		_toolsRow.AddChild(_freezeButton);
+
+		// Ряд 4: метки + заметки
+		_marksRow = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
+		_marksRow.AddThemeConstantOverride("separation", 4);
+		root.AddChild(_marksRow);
+
+		_marksRow.AddChild(MakeTrackedButton("Метка", "метки", () =>
 		{
 			ProfilerLogService.Instance.AddMarker($"метка #{ProfilerLogService.Instance.MarkerCount + 1}");
 			_copyStatus.Text = "метка+";
+			_copyStatusTimer = 2.0f;
 		}));
+
 		_noteBox = new LineEdit { PlaceholderText = "заметка…", CustomMinimumSize = new Vector2(180, 26) };
-		marks.AddChild(_noteBox);
-		marks.AddChild(MakeTrackedButton("Заметка+", "метки", () =>
+		_marksRow.AddChild(_noteBox);
+		_marksRow.AddChild(MakeTrackedButton("Заметка+", "метки", () =>
 		{
 			ProfilerLogService.Instance.AddNote(_noteBox.Text);
 			_noteBox.Text = "";
 			_copyStatus.Text = "заметка+";
+			_copyStatusTimer = 2.0f;
 		}));
-		// Фича 9: фильтр CSV-экспорта.
+
 		_csvFilterBox = new LineEdit { PlaceholderText = "csv-фильтр…", CustomMinimumSize = new Vector2(120, 26) };
 		_csvFilterBox.TextChanged += text => ProfilerLogService.Instance.CsvEventFilter = text;
-		marks.AddChild(_csvFilterBox);
-		// Фича 10: очистка меток/спаеков. Фича 11: глубина отчёта 30/120 сек.
-		marks.AddChild(MakeTrackedButton("Чист.метки", "метки", () => ProfilerLogService.Instance.ClearMarkers()));
-		marks.AddChild(MakeTrackedButton("Отчёт 30с", "глубина", () =>
+		_marksRow.AddChild(_csvFilterBox);
+
+		_marksRow.AddChild(MakeTrackedButton("Чист.метки", "метки", () => ProfilerLogService.Instance.ClearMarkers()));
+		_marksRow.AddChild(MakeTrackedButton("Отчёт 30с", "глубина", () =>
 		{
 			ProfilerLogService.Instance.ReportSeconds = 30;
 			ProfilerLogService.Instance.RecordFunction("Глубина отчёта", "30с");
 		}));
-		marks.AddChild(MakeTrackedButton("Отчёт 120с", "глубина", () =>
+		_marksRow.AddChild(MakeTrackedButton("Отчёт 120с", "глубина", () =>
 		{
 			ProfilerLogService.Instance.ReportSeconds = 120;
 			ProfilerLogService.Instance.RecordFunction("Глубина отчёта", "120с");
 		}));
+
+		// Скролл-контейнер для таблицы методов (предотвращает обрезание)
+		_scroll = new ScrollContainer
+		{
+			Name = "ProfilerScroll",
+			CustomMinimumSize = new Vector2(760, 290),
+			SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+			SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+			MouseFilter = Control.MouseFilterEnum.Pass
+		};
+		root.AddChild(_scroll);
 
 		_label = new RichTextLabel
 		{
@@ -215,51 +316,102 @@ public partial class PerformanceOverlay : CanvasLayer
 			FitContent = true,
 			AutowrapMode = TextServer.AutowrapMode.Off,
 			CustomMinimumSize = new Vector2(740, 0),
-			MouseFilter = Control.MouseFilterEnum.Ignore
+			MouseFilter = Control.MouseFilterEnum.Pass
 		};
-		root.AddChild(_label);
+		_scroll.AddChild(_label);
 
 		AddChild(_panel);
+		_panel.Visible = _isVisible;
 	}
 
-	/// <summary>
-	/// Запись ВСЕХ нажатий (включая клики по HUD-кнопкам, которые _UnhandledInput не видит)
-	/// в базу. Работает независимо от видимости панели.
-	/// Клавиши/мышь — с видом key/mouse; кнопки панели пишут себя сами через
-	/// MakeButton (вид button + имя), вкл/выкл функций — через RecordFunction.
-	/// </summary>
+	private void ToggleMiniMode()
+	{
+		_isMiniMode = !_isMiniMode;
+		_miniButton.Text = _isMiniMode ? "Full" : "Mini";
+		_tabsRow.Visible = !_isMiniMode;
+		_toolsRow.Visible = !_isMiniMode;
+		_marksRow.Visible = !_isMiniMode;
+		_scroll.Visible = !_isMiniMode;
+		_panel.CustomMinimumSize = _isMiniMode ? new Vector2(500, 48) : new Vector2(780, 430);
+	}
+
 	public override void _Input(InputEvent @event)
 	{
-		if (@event is InputEventKey key && key.Pressed)
-		{
-			ProfilerLogService.Instance.RecordInput("key", $"Key {key.Keycode} (phys {key.PhysicalKeycode})");
-		}
-		else if (@event is InputEventMouseButton mouse && mouse.Pressed)
-		{
-			ProfilerLogService.Instance.RecordInput("mouse", $"Mouse {mouse.ButtonIndex} @ ({mouse.Position.X:0},{mouse.Position.Y:0})");
-		}
-	}
-
-	public override void _UnhandledInput(InputEvent @event)
-	{
-		if (@event is InputEventKey key && key.Pressed && key.Keycode == Key.F3)
+		// Переключение видимости по F3
+		if (@event is InputEventKey key && key.Pressed && !key.Echo && (key.Keycode == Key.F3 || key.PhysicalKeycode == Key.F3))
 		{
 			_isVisible = !_isVisible;
 			_panel.Visible = _isVisible;
 			GetViewport().SetInputAsHandled();
+			return;
+		}
+
+		// Перетаскивание панели мышью за шапку
+		if (@event is InputEventMouseButton mb)
+		{
+			if (mb.ButtonIndex == MouseButton.Left)
+			{
+				if (mb.Pressed && _isVisible && _panel.GetGlobalRect().HasPoint(mb.Position))
+				{
+					// Если клик в верхней части панели (первые 36px) — начинаем перетаскивание
+					if (mb.Position.Y <= _panel.Position.Y + 36)
+					{
+						_isDragging = true;
+						_dragOffset = mb.Position - _panel.Position;
+					}
+				}
+				else if (!mb.Pressed)
+				{
+					_isDragging = false;
+				}
+			}
+		}
+		else if (@event is InputEventMouseMotion mm && _isDragging)
+		{
+			_panel.Position = mm.Position - _dragOffset;
+			return;
+		}
+
+		// Фильтрация шума: не логируем нажатия, если фокус в поле ввода
+		var focus = GetViewport()?.GuiGetFocusOwner();
+		if (focus is LineEdit or TextEdit)
+			return;
+
+		// Не логируем клики мыши внутри панели оверлея как клики по миру
+		if (@event is InputEventMouseButton mouse)
+		{
+			if (_isVisible && _panel.GetGlobalRect().HasPoint(mouse.Position))
+				return;
+
+			if (mouse.Pressed)
+				ProfilerLogService.Instance.RecordInput("mouse", $"Mouse {mouse.ButtonIndex} @ ({mouse.Position.X:0},{mouse.Position.Y:0})");
+			return;
+		}
+
+		// Клавиатура: убираем шум повторов (Echo)
+		if (@event is InputEventKey keyLog && keyLog.Pressed && !keyLog.Echo)
+		{
+			ProfilerLogService.Instance.RecordInput("key", $"Key {keyLog.Keycode}");
 		}
 	}
 
 	public override void _Process(double delta)
 	{
+		// Плавное затухание статуса копирования
+		if (_copyStatusTimer > 0f)
+		{
+			_copyStatusTimer -= (float)delta;
+			if (_copyStatusTimer <= 0f)
+				_copyStatus.Text = "";
+		}
+
 		_refreshTimer += (float)delta;
 		_sinceSnapshot += delta;
 		_framesSinceSnapshot++;
-		if (_refreshTimer < 0.10f) // 10 раз в секунду
+		if (_refreshTimer < 0.10f)
 			return;
 		_refreshTimer = 0f;
 
-		// Окно снапшота = реально прошедшее время и реальное число кадров.
 		double windowSec = _sinceSnapshot > 0.0 ? _sinceSnapshot : 0.1;
 		int frames = _framesSinceSnapshot;
 		_sinceSnapshot = 0.0;
@@ -267,27 +419,59 @@ public partial class PerformanceOverlay : CanvasLayer
 		_lastWindowSec = windowSec;
 		_lastFrames = frames;
 
-		// Снапшот и запись в базу идут ВСЕГДА, независимо от видимости панели (F3)
 		GameProfiler.SnapshotMetrics(out _metrics, windowSec, frames);
 		ProfilerLogService.Instance.Accumulate(_metrics, windowSec, frames);
 
-		// Тренды: 1 точка в секунду (кольцевой буфер на 60 сек)
+		// Автопауза при обнаружении спайка
+		if (_freezeOnSpike)
+		{
+			foreach (var m in _metrics)
+			{
+				if (m.MaxMs >= _spikeMinMs)
+				{
+					_freezeOnSpike = false;
+					_freezeButton.Text = "Freeze: OFF";
+					ProfilerLogService.Instance.AddMarker($"AUTO-FREEZE SPIKE: {m.Name} {m.MaxMs:F1}ms");
+					_copyStatus.Text = $"FROZEN ON SPIKE: {m.MaxMs:F0}ms!";
+					_copyStatusTimer = 5.0f;
+					if (TimeManager.Instance != null && !TimeManager.Instance.IsPaused)
+					{
+						TimeManager.Instance.SetSpeed(GameSpeed.Paused);
+						ProfilerLogService.Instance.RecordFunction("Simulation Auto-Freeze", "Spike detected");
+					}
+					break;
+				}
+			}
+		}
+
+		// Тренды: 1 точка в секунду
 		_trendTimer += (float)delta;
 		if (_trendTimer >= 1.0f)
 		{
 			_trendTimer = 0f;
-			// Суммируем ВКЛАД В КАДР, а не «мс за окно» — иначе график завышался в 6 раз.
 			double totalMsPerFrame = 0.0;
 			foreach (var m in _metrics) totalMsPerFrame += m.MsPerFrame;
 
+			double currentBudgetMs = 1000.0 / Math.Max(1.0, Engine.GetFramesPerSecond());
 			_fpsHistory[_trendIndex] = (float)Engine.GetFramesPerSecond();
-			_loadHistory[_trendIndex] = (float)(totalMsPerFrame / FrameBudgetMs * 100.0);
+			_loadHistory[_trendIndex] = (float)(totalMsPerFrame / currentBudgetMs * 100.0);
 			_trendIndex = (_trendIndex + 1) % TrendLength;
 			_trendFilled = Math.Min(_trendFilled + 1, TrendLength);
 		}
 
 		if (!_isVisible)
 			return;
+
+		if (_isMiniMode)
+		{
+			double fps = Engine.GetFramesPerSecond();
+			long ram = GC.GetTotalMemory(false) / (1024 * 1024);
+			long dc = (long)Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
+			GameProfiler.MetricSnapshot simCycle = default;
+			foreach (var m in _metrics) if (m.Name == "Simulation.TotalStepCycle") { simCycle = m; break; }
+			_copyStatus.Text = $"FPS: {fps:F0} | Sim: {simCycle.AvgMs:F2}ms | RAM: {ram}MB | DC: {dc}";
+			return;
+		}
 
 		UpdateGroups();
 		_tabLabel.Text = $"[{TabNames[_tabIndex]}] топ-окно {_topWindowSecs}с спайк≥{_spikeMinMs:F0}мс";
@@ -301,6 +485,105 @@ public partial class PerformanceOverlay : CanvasLayer
 		};
 	}
 
+	private AiReportContext GatherAiContext()
+	{
+		double fps = Engine.GetFramesPerSecond();
+		double frameTimeMs = 1000.0 / Math.Max(1.0, fps);
+		long ramMb = GC.GetTotalMemory(false) / (1024 * 1024);
+
+		long drawCalls = (long)Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
+		long objects = (long)Performance.GetMonitor(Performance.Monitor.RenderTotalObjectsInFrame);
+		long prims = (long)Performance.GetMonitor(Performance.Monitor.RenderTotalPrimitivesInFrame);
+		double vramMb = (double)Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / (1024.0 * 1024.0);
+		double processTimeMs = (double)Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0;
+		double physicsTimeMs = (double)Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
+
+		GameProfiler.MetricSnapshot simCycle = default;
+		GameProfiler.MetricSnapshot p2Metric = default;
+		GameProfiler.MetricSnapshot p3aMetric = default;
+		GameProfiler.MetricSnapshot p3bMetric = default;
+		GameProfiler.MetricSnapshot snapMetric = default;
+		foreach (var m in _metrics)
+		{
+			if (m.Name == "Simulation.TotalStepCycle") simCycle = m;
+			else if (m.Name.Contains("Phase2")) p2Metric = m;
+			else if (m.Name.Contains("Phase3a")) p3aMetric = m;
+			else if (m.Name.Contains("Phase3b")) p3bMetric = m;
+			else if (m.Name.Contains("Snapshots")) snapMetric = m;
+		}
+
+		GameProfiler.SnapshotBalance(out var balance);
+
+		float minFps = 1000f;
+		int filled = Math.Max(1, _trendFilled);
+		for (int i = 0; i < filled; i++)
+		{
+			float f = _fpsHistory[i];
+			if (f > 0 && f < minFps) minFps = f;
+		}
+
+		var cam = GetViewport()?.GetCamera2D();
+		string camPos = cam != null ? $"({cam.Position.X:0}, {cam.Position.Y:0})" : "(0, 0)";
+		string camZoom = cam != null ? $"{cam.Zoom.X:F2}x" : "1.00x";
+
+		int day = TimeManager.Instance != null ? TimeManager.Instance.DayNumber : 1;
+		float timeOfDay = TimeManager.Instance != null ? TimeManager.Instance.TimeOfDaySeconds : 0f;
+		int hour = (int)(timeOfDay / 3600f);
+		int minute = (int)((timeOfDay % 3600f) / 60f);
+
+		int activeJobs = JobBroker.Instance != null ? JobBroker.Instance.ActiveBlueprintCount : 0;
+		int groundItems = GroundItemManager.Instance != null ? GroundItemManager.Instance.TotalGroundPilesCount : 0;
+
+		int gc0 = GC.CollectionCount(0);
+		int gc1 = GC.CollectionCount(1);
+		int gc2 = GC.CollectionCount(2);
+		double gcPause = GC.GetTotalPauseDuration().TotalMilliseconds;
+
+		return new AiReportContext
+		{
+			OsDescription = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+			CpuCores = System.Environment.ProcessorCount,
+			EngineMaxFps = Engine.MaxFps,
+			Fps = fps,
+			FrameTimeMs = frameTimeMs,
+			FpsMin = minFps < 999f ? minFps : fps,
+			Fps1PercentLow = Math.Max(1.0, (minFps < 999f ? minFps : fps) * 0.95),
+			ProcessMs = processTimeMs,
+			PhysicsMs = physicsTimeMs,
+			DrawCalls = drawCalls,
+			RenderObjects = objects,
+			Primitives = prims,
+			VramMb = vramMb,
+			RamMb = ramMb,
+
+			GcGen0Count = gc0,
+			GcGen1Count = gc1,
+			GcGen2Count = gc2,
+			GcTotalPauseMs = gcPause,
+
+			GameDay = day,
+			GameHour = hour,
+			GameMinute = minute,
+			CameraPos = camPos,
+			CameraZoom = camZoom,
+			ActiveJobsCount = activeJobs,
+			GroundPilesCount = groundItems,
+
+			AgentCount = 10000,
+			SimBackend = AgentSimulationThread.SimBackendLabel,
+			SimSpeed = 1.0,
+			SimCycleAvgMs = simCycle.AvgMs,
+			SimCycleMaxMs = simCycle.MaxMs,
+			SimStepsPerSec = simCycle.CallsPerSec,
+			SimMsPerFrame = simCycle.MsPerFrame,
+			Phase2AvgMs = p2Metric.AvgMs,
+			Phase3aAvgMs = p3aMetric.AvgMs,
+			Phase3bAvgMs = p3bMetric.AvgMs,
+			SnapshotAvgMs = snapMetric.AvgMs,
+			Balance = balance
+		};
+	}
+
 	/// <summary>Группирует живой снапшот по скриптам, сортирует по нагрузке.</summary>
 	private void UpdateGroups()
 	{
@@ -310,7 +593,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		foreach (var m in _metrics)
 		{
 			if (m.TotalMs < 0.005 && m.Calls == 0) continue;
-			// Фича 4: фильтр применяется и к живой таблице, не только к отчёту.
 			if (useFilter && !m.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
 
 			int dot = m.Name.LastIndexOf('.');
@@ -324,7 +606,6 @@ public partial class PerformanceOverlay : CanvasLayer
 			}
 
 			group.Methods.Add(m);
-			// Группа ранжируется по вкладу в кадр (мс/кадр), а не по «мс за окно».
 			group.TotalMs += m.MsPerFrame;
 		}
 
@@ -339,23 +620,67 @@ public partial class PerformanceOverlay : CanvasLayer
 		long ramMb = GC.GetTotalMemory(false) / (1024 * 1024);
 		var log = ProfilerLogService.Instance;
 
-		var sb = new StringBuilder(2048);
-		sb.Append("[b][color=#61afef]=== SCRIPT PERFORMANCE PROFILER (F3) ===[/color][/b]\n");
-		sb.Append($"[b]FPS:[/b] {FormatFps(fps)} ({frameTimeMs,4:F1}ms)  |  [b]RAM:[/b] {ramMb} MB  |  [b]База:[/b] {log.SecondCount} сек");
-		// Прозрачность учёта: замеры берутся раз в 0.1 с, поэтому показываем,
-		// за какое окно и сколько кадров собраны цифры ниже.
-		sb.Append($"  |  [color=#5c6370]окно {_lastWindowSec * 1000.0:F0}мс / {_lastFrames} кадр.[/color]");
-		if (log.IsPaused)
-			sb.Append("  [b][color=#e06c75]PAUSED[/color][/b]");
-		sb.Append("\n");
+		long drawCalls = (long)Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
+		long objects = (long)Performance.GetMonitor(Performance.Monitor.RenderTotalObjectsInFrame);
+		long prims = (long)Performance.GetMonitor(Performance.Monitor.RenderTotalPrimitivesInFrame);
+		double vramMb = (double)Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / (1024.0 * 1024.0);
+		double processTimeMs = (double)Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0;
+		double physicsTimeMs = (double)Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
+		double currentBudgetMs = 1000.0 / Math.Max(1.0, fps);
 
-		// Символьные тренды за последние 60 секунд
+		GameProfiler.MetricSnapshot simCycle = default;
+		GameProfiler.MetricSnapshot p2Metric = default;
+		GameProfiler.MetricSnapshot p3aMetric = default;
+		GameProfiler.MetricSnapshot p3bMetric = default;
+		GameProfiler.MetricSnapshot snapMetric = default;
+		foreach (var m in _metrics)
+		{
+			if (m.Name == "Simulation.TotalStepCycle") simCycle = m;
+			else if (m.Name.Contains("Phase2")) p2Metric = m;
+			else if (m.Name.Contains("Phase3a")) p3aMetric = m;
+			else if (m.Name.Contains("Phase3b")) p3bMetric = m;
+			else if (m.Name.Contains("Snapshots")) snapMetric = m;
+		}
+
+		var sb = new StringBuilder(2048);
+		sb.Append("[b][color=#61afef]=== SCRIPT & GPU PERFORMANCE PROFILER (F3) ===[/color][/b]\n");
+		sb.Append($"[b][color=#98c379]● MAIN THREAD (RENDER):[/color][/b] " +
+				  $"[b]FPS:[/b] {FormatFps(fps)} ({frameTimeMs,4:F1}ms) [color=#5c6370][Cap: {Engine.MaxFps}][/color]  |  " +
+				  $"[b]Process:[/b] {processTimeMs,4:F2}ms  |  [b]Physics:[/b] {physicsTimeMs,4:F2}ms\n");
+		sb.Append($"  [color=#98c379]DrawCalls:[/color] {drawCalls}  |  " +
+				  $"[color=#61afef]Objects (CanvasItems):[/color] {objects:N0}  |  " +
+				  $"[color=#e5c07b]Primitives:[/color] {prims:N0}  |  " +
+				  $"[b]VRAM:[/b] {vramMb:F1} MB  |  [b]RAM:[/b] {ramMb} MB\n");
+
+		if (simCycle.Calls > 0 || simCycle.CallsPerSec > 0)
+		{
+			string avgCol = simCycle.AvgMs <= 1.0 ? "#98c379" : simCycle.AvgMs <= 1.5 ? "#e5c07b" : "#e06c75";
+			string peakCol = simCycle.MaxMs <= 1.5 ? "#98c379" : simCycle.MaxMs <= 3.0 ? "#e5c07b" : "#e06c75";
+			sb.Append($"[b][color=#e5c07b]● SIMULATION THREAD (C# BACKGROUND):[/color][/b] " +
+					  $"[b]1-Step (1 tick):[/b] [color={avgCol}][b]{simCycle.AvgMs:F3}ms[/b][/color]  |  " +
+					  $"[b]Peak Max:[/b] [color={peakCol}]{simCycle.MaxMs:F2}ms[/color]  |  " +
+					  $"[b]Steps/sec:[/b] {simCycle.CallsPerSec:N0}  |  " +
+					  $"[b]Sim/Frame:[/b] {simCycle.MsPerFrame:F2}ms\n");
+			sb.Append($"  [color=#abb2bf]Фазы шага: " +
+					  $"P2(AI/Движ): {p2Metric.AvgMs:F3}ms  |  " +
+					  $"P3a(Нужды): {p3aMetric.AvgMs:F3}ms  |  " +
+					  $"P3b(Ресурсы): {p3bMetric.AvgMs:F3}ms  |  " +
+					  $"Снапшот: {snapMetric.AvgMs:F3}ms[/color]\n");
+		}
+		else
+		{
+			sb.Append("[b][color=#e5c07b]● SIMULATION THREAD (C# BACKGROUND):[/color][/b] [color=#5c6370]Симуляция ожидает или на паузе[/color]\n");
+		}
+
+		if (log.IsPaused)
+			sb.Append("  [b][color=#e06c75]PAUSED[/color][/b]\n");
+
+		// Символьные тренды
 		float maxFps = MaxOf(_fpsHistory, _trendFilled);
 		sb.Append($"[color=#98c379]FPS  :[/color] {RenderTrend(_fpsHistory, maxFps)}  [color=#5c6370](max {maxFps:F0})[/color]\n");
 		sb.Append($"[color=#e5c07b]LOAD :[/color] {RenderTrend(_loadHistory, 100f)}  [color=#5c6370](% бюджета кадра)[/color]\n");
-		// Баланс параллельных фаз: wall vs cpu, дисбаланс = простой ядер (straggler).
-		// Все величины — НА КАДР (окно нормируется), поэтому их можно сравнивать
-		// с таблицей методов и с бюджетом кадра без пересчётов.
+
+		// Баланс параллельных фаз
 		GameProfiler.SnapshotBalance(out var balance);
 		if (balance.Length > 0)
 		{
@@ -388,13 +713,12 @@ public partial class PerformanceOverlay : CanvasLayer
 			if (m.TotalMs < 0.005 && m.Calls == 0) continue;
 
 			string name = FormatMethodName(m.Name, 31);
-			// %КАДРА теперь честный: вклад метода в бюджет одного кадра.
-			double framePct = m.MsPerFrame / FrameBudgetMs * 100.0;
+			double framePct = m.MsPerFrame / currentBudgetMs * 100.0;
 			sb.Append($"{name}  {FormatMs(m.MsPerFrame, 7)}  {FormatLoad(framePct, 5)}  {FormatCalls(m.CallsPerSec, 7)}  {FormatMs(m.AvgMs, 8)}  {FormatMs(m.MaxMs, 8)}  {FormatLoad(m.PercentLoad, 4)}\n");
 		}
 		sb.Append("\n");
 
-		// Легенда-пагинация: по 2 скрипта в строке, текущий подсвечен
+		// Легенда-пагинация
 		sb.Append("[color=#3e4451]--- СКРИПТЫ ---[/color]\n");
 		for (int i = 0; i < _groups.Count; i++)
 		{
@@ -403,13 +727,10 @@ public partial class PerformanceOverlay : CanvasLayer
 			sb.Append($"{marker}{sname} {_groups[i].Methods.Count}ф.  ");
 			if ((i & 1) == 1) sb.Append("\n");
 		}
-		if (_lastCopyMs > 0.5)
-			sb.Append($"\n[color=#5c6370]copy: {_lastCopyMs:F0}ms (было 20-30с до фикса среза)[/color]\n");
 
 		return sb.ToString();
 	}
 
-	// --- Фича 12: вкладка Топ-10 за окно (агрегация окна, не живой снапшот) ---
 	private string BuildTopText()
 	{
 		var log = ProfilerLogService.Instance;
@@ -426,7 +747,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		return sb.ToString();
 	}
 
-	// --- Фича 13: вкладка Спайки (пики выше порога, последние 30) ---
 	private string BuildSpikesText()
 	{
 		var log = ProfilerLogService.Instance;
@@ -440,7 +760,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		return sb.ToString();
 	}
 
-	// --- Фича 14: вкладка Метки/Заметки/Нажатия ---
 	private string BuildMarksText()
 	{
 		var log = ProfilerLogService.Instance;
@@ -458,7 +777,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		return sb.ToString();
 	}
 
-	// --- Фича 15: вкладка График — символьный ряд нагрузки окна (60 точек) ---
 	private string BuildGraphText()
 	{
 		var log = ProfilerLogService.Instance;
@@ -475,7 +793,6 @@ public partial class PerformanceOverlay : CanvasLayer
 			sb.Append(bar[Math.Clamp(level, 0, bar.Length - 1)]);
 		}
 		sb.Append($"\n[color=#5c6370]max {max:F1}ms/s, точек {series.Length}[/color]\n");
-		// Фича 16: дифф двух последних секунд — что скакнуло.
 		if (log.SecondCount >= 2)
 		{
 			var diff = log.DiffSeconds(log.SecondCount - 2, log.SecondCount - 1, 5);
@@ -486,7 +803,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		return sb.ToString();
 	}
 
-	/// <summary>Рисует символьный тренд (10 уровней плотности) из кольцевого буфера.</summary>
 	private static string RenderTrend(float[] history, float maxValue)
 	{
 		const string bar = " .:-=+*#%@";
@@ -520,11 +836,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		return button;
 	}
 
-	/// <summary>
-	/// Кнопка с автозаписью в лог: каждое нажатие панели падает в CSV как
-	/// [button] «панель: имя», а вкл/выкл-обработчики дописывают [func].
-	/// Обычный MakeButton оставлен для мест, где запись не нужна.
-	/// </summary>
 	private static Button MakeTrackedButton(string text, string panel, Action onClick)
 	{
 		var button = new Button
@@ -562,7 +873,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		};
 	}
 
-	/// <summary>Автосохранение лога при закрытии сцены/игры в user://logs/.</summary>
 	public override void _ExitTree()
 	{
 		try

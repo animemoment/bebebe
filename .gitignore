@@ -1,10 +1,23 @@
-﻿# Godot 4 & C# ignores
+# Godot 4 engine cache
 .godot/
-.mono/
+
+# C# / .NET build artifacts
 bin/
 obj/
-*.sln.DotSettings.user
+*.tmp
+*.TMP
+*.bak
+*.bak_*
+*.user
+*.userprefs
+*.suo
+
+# Visual Studio / Rider / VSCode IDE cache
 .vs/
 .idea/
-*.tmp
-*.log
+.vscode/
+*.sln.docstates
+
+# Temporary / helper scripts
+powershell.cmd
+cde.txt

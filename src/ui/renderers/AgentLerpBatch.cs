@@ -83,7 +83,11 @@ public static class AgentLerpBatch
 	/// </summary>
 	/// <exception cref="ArgumentOutOfRangeException">count &lt; 0.</exception>
 	/// <exception cref="ArgumentException">count больше длин спанов; buffer короче count*8.</exception>
-	public static void FillRenderBuffer(Span<float> buffer, ReadOnlySpan<Vector2> positions, int count)
+	public static void FillRenderBuffer(
+		Span<float> buffer,
+		ReadOnlySpan<Vector2> positions,
+		ReadOnlySpan<float> angles,
+		int count)
 	{
 		if (count < 0)
 			throw new ArgumentOutOfRangeException(nameof(count), "count не может быть отрицательным.");
@@ -98,39 +102,49 @@ public static class AgentLerpBatch
 		{
 			float px = positions[i].X;
 			float py = positions[i].Y;
+			float angle = angles.Length > i ? angles[i] : 0f;
+			float c = MathF.Cos(angle);
+			float s = MathF.Sin(angle);
+
 			int idx = i * 8;
-			buffer[idx + 0] = 1.0f;
-			buffer[idx + 1] = 0.0f;
+			buffer[idx + 0] = c;
+			buffer[idx + 1] = s;
 			buffer[idx + 2] = 0.0f;
 			buffer[idx + 3] = px;
-			buffer[idx + 4] = 0.0f;
-			buffer[idx + 5] = 1.0f;
+			buffer[idx + 4] = -s;
+			buffer[idx + 5] = c;
 			buffer[idx + 6] = 0.0f;
 			buffer[idx + 7] = py;
 		}
 	}
 
+	public static void FillRenderBuffer(Span<float> buffer, ReadOnlySpan<Vector2> positions, int count)
+	{
+		FillRenderBuffer(buffer, positions, ReadOnlySpan<float>.Empty, count);
+	}
+
 	/// <summary>
-	/// Пакует identity Transform2D и custom data (prev.x, prev.y, target.x, target.y).
-	/// Vertex shader выполняет lerp на GPU; CPU делает этот проход только при snapshot.
-	/// Формат MultiMesh 2D: 8 float transform + 4 float INSTANCE_CUSTOM.
+	/// Пакует identity Transform2D, Color (cos, sin, 0, 1) и custom data (prev.x, prev.y, target.x, target.y).
+	/// Vertex shader выполняет lerp на GPU и вращает спрайт по направлению движения; CPU делает этот проход только при snapshot.
+	/// Формат MultiMesh 2D: 8 float transform + 4 float COLOR + 4 float INSTANCE_CUSTOM = 16 float.
 	/// </summary>
 	public static void FillGpuInstanceBuffer(
 		Span<float> buffer,
 		ReadOnlySpan<Vector2> prev,
 		ReadOnlySpan<Vector2> target,
+		ReadOnlySpan<float> angles,
 		int count)
 	{
 		if (count < 0)
 			throw new ArgumentOutOfRangeException(nameof(count), "count не может быть отрицательным.");
 		if (count > prev.Length || count > target.Length)
 			throw new ArgumentException("count больше длин спанов позиций.");
-		if ((long)buffer.Length < (long)count * 12)
-			throw new ArgumentException("GPU buffer короче count*12.");
+		if ((long)buffer.Length < (long)count * 16)
+			throw new ArgumentException("GPU buffer короче count*16.");
 
 		for (int i = 0; i < count; i++)
 		{
-			int index = i * 12;
+			int index = i * 16;
 			buffer[index + 0] = 1.0f;
 			buffer[index + 1] = 0.0f;
 			buffer[index + 2] = 0.0f;
@@ -139,30 +153,38 @@ public static class AgentLerpBatch
 			buffer[index + 5] = 1.0f;
 			buffer[index + 6] = 0.0f;
 			buffer[index + 7] = 0.0f;
-			buffer[index + 8] = prev[i].X;
-			buffer[index + 9] = prev[i].Y;
-			buffer[index + 10] = target[i].X;
-			buffer[index + 11] = target[i].Y;
+
+			float angle = angles.Length > i ? angles[i] : 0f;
+			buffer[index + 8] = MathF.Cos(angle);
+			buffer[index + 9] = MathF.Sin(angle);
+			buffer[index + 10] = 0.0f;
+			buffer[index + 11] = 1.0f;
+
+			buffer[index + 12] = prev[i].X;
+			buffer[index + 13] = prev[i].Y;
+			buffer[index + 14] = target[i].X;
+			buffer[index + 15] = target[i].Y;
 		}
+	}
+
+	public static void FillGpuInstanceBuffer(
+		Span<float> buffer,
+		ReadOnlySpan<Vector2> prev,
+		ReadOnlySpan<Vector2> target,
+		int count)
+	{
+		FillGpuInstanceBuffer(buffer, prev, target, ReadOnlySpan<float>.Empty, count);
 	}
 
 	/// <summary>
 	/// Слитый проход главного цикла <c>AgentRenderer._Process</c>: lerp
-	/// <c>px = prev + (target - prev) * factor</c> на лету + заливка 8 float
-	/// на инстанс в буфер. Без промежуточного массива позиций (как и раньше —
-	/// px/py нигде не хранятся). prev/target НЕ мутируются (в отличие от
-	/// <see cref="Interpolate"/>). РЕАЛИЗАЦИЯ — СКАЛЯРНАЯ (см. remarks класса:
-	/// stride-8 scatter memory-bound); единство цикла — для тестируемости,
-	/// а не для ALU-выигрыша.
-	/// Теневая заливка сюда НЕ входит (шаг G4, отдельный проход в рендерере).
+	/// <c>px = prev + (target - prev) * factor</c> на лету + вращение и заливка 8 float
+	/// на инстанс в буфер.
 	/// </summary>
-	/// <exception cref="ArgumentOutOfRangeException">count &lt; 0.</exception>
-	/// <exception cref="ArgumentException">
-	/// count больше длин спанов позиций; buffer короче count*8; factor — NaN или Infinity.
-	/// </exception>
 	public static void LerpFill(
 		ReadOnlySpan<Vector2> prev,
 		ReadOnlySpan<Vector2> target,
+		ReadOnlySpan<float> angles,
 		float factor,
 		Span<float> buffer,
 		int count)
@@ -181,16 +203,30 @@ public static class AgentLerpBatch
 		{
 			float px = prev[i].X + (target[i].X - prev[i].X) * factor;
 			float py = prev[i].Y + (target[i].Y - prev[i].Y) * factor;
+			float angle = angles.Length > i ? angles[i] : 0f;
+			float c = MathF.Cos(angle);
+			float s = MathF.Sin(angle);
+
 			int idx = i * 8;
-			buffer[idx + 0] = 1.0f;
-			buffer[idx + 1] = 0.0f;
+			buffer[idx + 0] = c;
+			buffer[idx + 1] = s;
 			buffer[idx + 2] = 0.0f;
 			buffer[idx + 3] = px;
-			buffer[idx + 4] = 0.0f;
-			buffer[idx + 5] = 1.0f;
+			buffer[idx + 4] = -s;
+			buffer[idx + 5] = c;
 			buffer[idx + 6] = 0.0f;
 			buffer[idx + 7] = py;
 		}
+	}
+
+	public static void LerpFill(
+		ReadOnlySpan<Vector2> prev,
+		ReadOnlySpan<Vector2> target,
+		float factor,
+		Span<float> buffer,
+		int count)
+	{
+		LerpFill(prev, target, ReadOnlySpan<float>.Empty, factor, buffer, count);
 	}
 
 	/// <summary>Проверка factor: NaN/Infinity запрещены. Диапазон не ограничиваем

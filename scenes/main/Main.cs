@@ -1,3 +1,4 @@
+using System;
 using Godot;
 using Game.Core;
 using Game.Core.WorldStreaming;
@@ -6,12 +7,13 @@ using Game.Simulation;
 using Game.UI;
 using Game.UI.Streaming;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace Game.Main;
 
 public partial class Main : Node2D
 {
-	private const ulong WorldMapSeed = 0x0123456789ABCDEFUL;
+	[Export] public ulong WorldSeed = 0;
 	private const uint WorldGeneratorVersion = 3;
 	private const long WorldRegionsX = 2048; // регионов по X (мировая карта §23)
 	private const long WorldRegionsY = 1024; // регионов по Y
@@ -37,12 +39,14 @@ public partial class Main : Node2D
 	private PackedScene _worldMapScene;
 	private WorldMapOverlay _mapOverlay;
 	private float _syncTimer;
+	private long _lastStreamerTileX = long.MinValue;
+	private long _lastStreamerTileY = long.MinValue;
 
 	/// <summary>Точка выбора игрока на мировой карте. (-1,-1) = ожидает выбора.</summary>
 	private RegionKey _spawnRegion = new(-1, -1);
 	private bool _spawnPending = false;
 
-	[Export] public int AgentCount = 100;
+	[Export] public int AgentCount = 10000;
 	[Export] public HUDController HUD;
 
 	/// <summary>Привязать кнопку ButtonMap к ToggleWorldMap. Вызывается из _Ready().</summary>
@@ -64,8 +68,22 @@ public partial class Main : Node2D
 
 	public override void _Ready()
 	{
+		if (WorldSeed == 0)
+		{
+			WorldSeed = (ulong)Random.Shared.NextInt64() ^ ((ulong)DateTime.UtcNow.Ticks << 32);
+			if (WorldSeed == 0) WorldSeed = 0x51EED4C0FFEEUL;
+		}
+
 		_timeManager = new TimeManager { Name = "TimeManager" };
 		AddChild(_timeManager);
+		_timeManager.OnSpeedChanged += speed =>
+		{
+			if (_agentThread != null)
+			{
+				_agentThread.IsPaused = (speed == GameSpeed.Paused);
+				_agentThread.SpeedMultiplier = (float)speed;
+			}
+		};
 
 		// Смена сутит: один CanvasModulate на весь мир (O(1) для GPU).
 		// HUD в CanvasLayer не затемняется. Движение — игровое время из SimThread.
@@ -92,107 +110,215 @@ public partial class Main : Node2D
 			MapRenderer.MapWidth * MapRenderer.TileSizePx / 2f,
 			MapRenderer.MapHeight * MapRenderer.TileSizePx / 2f);
 
-		// §24: стриминговый фон бесконечного мира ПОД островом (океан-архипелаг за кромкой).
-		// Мир рисуется настоящими тайлами игры по 64 px (1 клетка = 1 тайл) — масштаб 1,
-		// как и у острова (MapRenderer.TileSizePx = 64).
+		// §24: стриминговый фон бесконечного мира ПОД островом и на всю планету.
 		_worldView = new StreamingWorldView
 		{
 			Name = "StreamingWorldView",
-			WorldSeed = WorldMapSeed,
+			WorldSeed = WorldSeed,
 			GeneratorVersion = WorldGeneratorVersion,
-			// Мир — ФОН: сценовые слои острова (mountains_tile, wood_wall_tile, грядки)
-			// идут раньше него в дереве, поэтому без z=-1 стриминговые тайлы рисовались
-			// ПОВЕРХ них (отсюда «странные горы» вместо автотайлов острова).
-			ZIndex = -1
+			ZIndex = -1,
+			Visible = true
 		};
 		AddChild(_worldView);
 
-		// §26 шаг 2: менеджер и правила мира — через них инструменты ставят ЗА кромкой
-		// острова (метки мира, персистентные дельтами). Клетки [0,512)² идут прежним путём.
-		string worldSaveDir = ProjectSettings.GlobalizePath("user://infinite_world_lab_cache");
-		var worldCoordinator = new WorldSaveCoordinator(
-			worldSaveDir, WorldMapSeed, WorldGeneratorVersion, WorldFeatureGenerator.FeatureSchemaVersion);
-		_worldManager = new StreamingWorldManager(_worldView, worldCoordinator);
-		_worldManager.Open(0, 0);
-		_worldRules = new WorldGameRules(_worldView, WorldMapSeed, WorldGeneratorVersion);
-
+		// Создание игровых слоев и менеджеров UI ДО стримингового хранилища
 		_selection = new SelectionBox { Name = "Selection" };
 		AddChild(_selection);
 
 		_interactionManager = new PlayerInteractionManager { Name = "PlayerInteractionManager" };
 		AddChild(_interactionManager);
 
-		_mapRenderer = new MapRenderer { Name = "MapRenderer" };
+		_mapRenderer = new MapRenderer { Name = "MapRenderer", DeferAutoGeneration = true };
 		AddChild(_mapRenderer);
 		_mapRenderer.OnMapApplied += OnMapApplied;
 
 		var farmZoneRenderer = new FarmZoneRenderer { Name = "FarmZoneRenderer" };
 		AddChild(farmZoneRenderer);
 
-  		var cropRenderer = new CropRenderer { Name = "CropRenderer" };
-  		AddChild(cropRenderer);
-  		_cropRenderer = cropRenderer;
-  
-  		var itemRenderer = new GroundItemRenderer { Name = "GroundItemRenderer" };
-  		AddChild(itemRenderer);
-  		_itemRenderer = itemRenderer;
+		var cropRenderer = new CropRenderer { Name = "CropRenderer" };
+		AddChild(cropRenderer);
+		_cropRenderer = cropRenderer;
 
-  		// Тени мелочи (Syx ShadowBatch): один MultiMesh на предметы+урожай+склад.
-  		_itemShadows = new ItemShadowRenderer { Name = "ItemShadowRenderer" };
-  		AddChild(_itemShadows);
-  		_itemRenderer.ItemShadows = _itemShadows;
-  		_cropRenderer.ItemShadows = _itemShadows;
-  		if (_mapRenderer.StockpileItems != null)
-  			_mapRenderer.StockpileItems.ItemShadows = _itemShadows;
+		var itemRenderer = new GroundItemRenderer { Name = "GroundItemRenderer" };
+		AddChild(itemRenderer);
+		_itemRenderer = itemRenderer;
 
+		// Тени мелочи (Syx ShadowBatch): один MultiMesh на предметы+урожай+склад.
+		_itemShadows = new ItemShadowRenderer { Name = "ItemShadowRenderer" };
+		AddChild(_itemShadows);
+		_itemRenderer.ItemShadows = _itemShadows;
+		_cropRenderer.ItemShadows = _itemShadows;
+		if (_mapRenderer.StockpileItems != null)
+			_mapRenderer.StockpileItems.ItemShadows = _itemShadows;
+
+		// Профайлер производительности (F3) — инициализируется гарантированно
 		_profilerOverlay = new PerformanceOverlay { Name = "PerformanceOverlay" };
 		AddChild(_profilerOverlay);
 
-		// Привязка кнопки ButtonMap к ToggleWorldMap ДО любых других операций,
-		// чтобы кнопка работала всегда (до и после старта игры).
+		// Привязка кнопки ButtonMap к ToggleWorldMap — гарантированно при старте сцены
 		SetupButtonMapBinding();
 
 		// Загружаем сцену мировой карты (CanvasLayer + Camera2D + TileMapLayer)
 		_worldMapScene = GD.Load<PackedScene>("res://scenes/ui/WorldMap.tscn");
 		_mapOverlay = _worldMapScene.Instantiate<WorldMapOverlay>();
 		_mapOverlay.Name = "WorldMapOverlay";
-		_mapOverlay.Initialize(WorldMapSeed, WorldGeneratorVersion);
+		_mapOverlay.IsSpawnSelectionMode = true; // Первичный выбор спавна!
+		_mapOverlay.Initialize(WorldSeed, WorldGeneratorVersion);
+		_mapOverlay.OnRegionSelected += OnRegionSelected;
+		_mapOverlay.OnSeedRegenerated += OnSeedRegenerated;
 		AddChild(_mapOverlay);
+
+		// Сразу открываем мировую карту для выбора точки спавна игроком
+		Callable.From(() => _mapOverlay.OpenMap()).CallDeferred();
+	}
+
+	private void InitStreamingWorld(ulong seed)
+	{
+		try
+		{
+			string baseCacheDir = ProjectSettings.GlobalizePath("user://infinite_world_lab_cache");
+			string worldSaveDir = System.IO.Path.Combine(baseCacheDir, $"world_{seed:x16}");
+			var worldCoordinator = new WorldSaveCoordinator(
+				worldSaveDir, seed, WorldGeneratorVersion, UnifiedWorldGenerator.FeatureSchemaVersion);
+			_worldManager = new StreamingWorldManager(_worldView, worldCoordinator);
+			_worldManager.Open(0, 0);
+			_worldRules = new WorldGameRules(_worldView, seed, WorldGeneratorVersion);
+			if (_worldPlacement != null)
+				_worldPlacement = new StreamingToolPlacement(_worldManager, _worldRules);
+		}
+		catch (Exception ex)
+		{
+			GD.PrintErr($"[MAIN] Ошибка инициализации стримингового хранилища мира для сида 0x{seed:x16}: {ex.Message}");
+		}
+	}
+
+	private void UpdateCameraWorldBounds()
+	{
+		if (_camera == null) return;
+		long totalPlanetCellsX = WorldRegionsX * WorldRegionCells;
+		long totalPlanetCellsY = WorldRegionsY * WorldRegionCells;
+		long minTileX = -UnifiedWorldGenerator.WorldOriginX;
+		long maxTileX = totalPlanetCellsX - UnifiedWorldGenerator.WorldOriginX;
+		long minTileY = -UnifiedWorldGenerator.WorldOriginY;
+		long maxTileY = totalPlanetCellsY - UnifiedWorldGenerator.WorldOriginY;
+		_camera.SetWorldBoundsTiles(minTileX, minTileY, maxTileX, maxTileY);
+	}
+
+	private async void OnSeedRegenerated(ulong newSeed)
+	{
+		WorldSeed = newSeed;
+		if (_worldView != null)
+			_worldView.WorldSeed = newSeed;
+
+		GD.Print($"[MAIN] Синхронизирован новый сид мира: 0x{WorldSeed:X16} (Архетип: {Game.Core.WorldClimate.WorldClimateParams.GetArchetype(WorldSeed)})");
+
+		// Если игрок еще на этапе первичного выбора спавна, не тратим ресурсы на фоновую генерацию колонии
+		if (_mapOverlay != null && _mapOverlay.IsSpawnSelectionMode)
+			return;
+
+		RegionKey spawnRegion = UnifiedWorldGenerator.FindHabitableSpawn(WorldSeed, WorldGeneratorVersion);
+		UnifiedWorldGenerator.SetWorldOrigin(spawnRegion.X * WorldRegionCells, spawnRegion.Y * WorldRegionCells);
+		UpdateCameraWorldBounds();
+
+		var startClimate = WorldClimateGenerator.SampleRegion(WorldSeed, WorldGeneratorVersion, spawnRegion);
+		var mapData = await Task.Run(() => UnifiedWorldGenerator.GenerateColonyWindow(
+			WorldSeed,
+			WorldGeneratorVersion,
+			0,
+			0,
+			MapRenderer.MapWidth,
+			MapRenderer.MapHeight,
+			startClimate));
+
+		if (_agentThread != null)
+		{
+			_agentThread.Stop();
+			_agentThread = null;
+		}
+
+		BlueprintManager.Instance.ClearAll();
+		BuildingManager.Instance.ClearAll();
+		StockpileManager.Instance.ClearAll();
+		FarmJobManager.Instance.ClearAll();
+		TreeJobManager.Instance.ClearAll();
+		StoneJobManager.Instance.ClearAll();
+		GroundItemManager.Instance.ClearAll();
+
+		_mapRenderer.ExternalPendingMap = mapData;
+		_mapRenderer.StartAsync();
+
+		if (_camera != null)
+		{
+			_camera.Position = new Vector2(
+				MapRenderer.MapWidth * MapRenderer.TileSizePx / 2f,
+				MapRenderer.MapHeight * MapRenderer.TileSizePx / 2f);
+			_camera.Zoom = new Vector2(0.5f, 0.5f);
+		}
+
+		if (_mapOverlay != null)
+			_mapOverlay.CurrentColonyRegion = spawnRegion;
+
+		_lastStreamerTileX = long.MinValue;
+		_lastStreamerTileY = long.MinValue;
+
+		_worldView?.ResetWorld(newSeed);
+		InitStreamingWorld(newSeed);
+		GD.Print($"[MAIN] Синхронизирован новый сид мира: 0x{WorldSeed:X16} (Архетип: {Game.Core.WorldClimate.WorldClimateParams.GetArchetype(WorldSeed)})");
 	}
 
 	/// <summary>Игрок выбрал регион на мировой карте — генерируем карту и начинаем игру.</summary>
-	private void OnRegionSelected(RegionKey region)
+	private async void OnRegionSelected(RegionKey region)
 	{
-		// Если игра уже начата — просто телепортируем камеру
-		if (_agentThread != null)
-		{
-			long tileX = region.X * WorldRegionCells + WorldRegionCells / 2;
-			long tileY = region.Y * WorldRegionCells + WorldRegionCells / 2;
-			_camera.Position = new Vector2(tileX * MapRenderer.TileSizePx, tileY * MapRenderer.TileSizePx);
-			return;
-		}
-
 		GD.Print($"[SPAWN] Выбран регион [{region.X}, {region.Y}] → генерация карты...");
 
-		// Генерируем карту вокруг выбранной точки через MapGenerator.RegionAPI
-		int spawnTileX = (int)(region.X * WorldRegionCells + WorldRegionCells / 2);
-		int spawnTileY = (int)(region.Y * WorldRegionCells + WorldRegionCells / 2);
+		ulong seed = WorldSeed;
+		uint version = WorldGeneratorVersion;
+		UnifiedWorldGenerator.SetWorldOrigin(region.X * WorldRegionCells, region.Y * WorldRegionCells);
+		UpdateCameraWorldBounds();
 
-		var mapData = MapGenerator.GenerateRegion(
-			spawnTileX - MapRenderer.MapWidth / 2,
-			spawnTileX + MapRenderer.MapWidth / 2,
-			spawnTileY - MapRenderer.MapHeight / 2,
-			spawnTileY + MapRenderer.MapHeight / 2,
-			unchecked((uint)WorldMapSeed),
-			isPlayableMap: true,
-			spawnCenterX: spawnTileX,
-			spawnCenterY: spawnTileY);
+		var climate = WorldClimateGenerator.SampleRegion(seed, version, region);
+		var mapData = await Task.Run(() => UnifiedWorldGenerator.GenerateColonyWindow(
+			seed,
+			version,
+			0,
+			0,
+			MapRenderer.MapWidth,
+			MapRenderer.MapHeight,
+			null));
 
-		// Задаём внешнюю карту ДО вызова StartAsync, чтобы StartAsync увидел _hasExternalMap
+		if (_agentThread != null)
+		{
+			_agentThread.Stop();
+			_agentThread = null;
+		}
+
+		BlueprintManager.Instance.ClearAll();
+		BuildingManager.Instance.ClearAll();
+		StockpileManager.Instance.ClearAll();
+		FarmJobManager.Instance.ClearAll();
+		TreeJobManager.Instance.ClearAll();
+		StoneJobManager.Instance.ClearAll();
+		GroundItemManager.Instance.ClearAll();
+
 		_mapRenderer.ExternalPendingMap = mapData;
-		
-		// Запускаем MapRenderer с уже заданной внешней картой
 		_mapRenderer.StartAsync();
+
+		if (_camera != null)
+		{
+			_camera.Position = new Vector2(
+				MapRenderer.MapWidth * MapRenderer.TileSizePx / 2f,
+				MapRenderer.MapHeight * MapRenderer.TileSizePx / 2f);
+			_camera.Zoom = new Vector2(0.5f, 0.5f);
+		}
+
+		if (_mapOverlay != null)
+			_mapOverlay.CurrentColonyRegion = region;
+
+		_lastStreamerTileX = long.MinValue;
+		_lastStreamerTileY = long.MinValue;
+
+		_worldView?.ResetWorld(seed);
+		InitStreamingWorld(seed);
 	}
 
 	private void OnMapApplied()
@@ -209,17 +335,11 @@ public partial class Main : Node2D
 			int centerY = MapRenderer.MapHeight / 2;
 			GroundItemManager.Instance.SpawnItems(centerX, centerY, ItemId.Grain, 100);
 
-			_timeManager.OnSpeedChanged += speed =>
+			if (_agentRenderer == null)
 			{
-				if (_agentThread != null)
-				{
-					_agentThread.IsPaused = (speed == GameSpeed.Paused);
-					_agentThread.SpeedMultiplier = (float)speed;
-				}
-			};
-
-			_agentRenderer = new AgentRenderer { Name = "AgentRenderer" };
-			AddChild(_agentRenderer);
+				_agentRenderer = new AgentRenderer { Name = "AgentRenderer" };
+				AddChild(_agentRenderer);
+			}
 			_agentRenderer.Initialize(_agentThread, AgentCount);
 		}
 
@@ -273,19 +393,38 @@ public partial class Main : Node2D
   			}
 		}
 
-		// §24: окно стримингового фона следует за камерой острова (мировые клетки).
-		if (_worldView != null)
+		// §24: окно стримингового фона следует за камерой (мировые клетки, троттлинг для 60 FPS).
+		if (_worldView != null && _camera != null)
 		{
-			Rect2 viewport = GetViewport().GetVisibleRect();
-			float scale = (float)MapRenderer.TileSizePx;
-			float halfW = viewport.Size.X / (2f * _camera.Zoom.X);
-			float halfH = viewport.Size.Y / (2f * _camera.Zoom.Y);
-			var visible = new WorldRect(
-				(long)Mathf.Floor(_camera.Position.X / scale - halfW / scale) - 3,
-				(long)Mathf.Floor(_camera.Position.Y / scale - halfH / scale) - 3,
-				(long)Mathf.Ceil(_camera.Position.X / scale + halfW / scale) + 3,
-				(long)Mathf.Ceil(_camera.Position.Y / scale + halfH / scale) + 3);
-			_worldView.Update(visible);
+			long camTileX = (long)(_camera.Position.X / MapRenderer.TileSizePx);
+			long camTileY = (long)(_camera.Position.Y / MapRenderer.TileSizePx);
+			if (Math.Abs(camTileX - _lastStreamerTileX) >= 8 || Math.Abs(camTileY - _lastStreamerTileY) >= 8)
+			{
+				_lastStreamerTileX = camTileX;
+				_lastStreamerTileY = camTileY;
+				Rect2 viewport = GetViewport().GetVisibleRect();
+				float scale = (float)MapRenderer.TileSizePx;
+				float halfW = viewport.Size.X / (2f * _camera.Zoom.X);
+				float halfH = viewport.Size.Y / (2f * _camera.Zoom.Y);
+				var visible = new WorldRect(
+					(long)Mathf.Floor(_camera.Position.X / scale - halfW / scale) - 3,
+					(long)Mathf.Floor(_camera.Position.Y / scale - halfH / scale) - 3,
+					(long)Mathf.Ceil(_camera.Position.X / scale + halfW / scale) + 3,
+					(long)Mathf.Ceil(_camera.Position.Y / scale + halfH / scale) + 3);
+				_worldView.Update(visible);
+			}
+		}
+	}
+
+	public override void _UnhandledInput(InputEvent @event)
+	{
+		if (@event is InputEventKey key && key.Pressed && !key.Echo)
+		{
+			if (key.Keycode == Key.M || key.PhysicalKeycode == Key.M)
+			{
+				ToggleWorldMap();
+				GetViewport().SetInputAsHandled();
+			}
 		}
 	}
 
@@ -307,7 +446,11 @@ public partial class Main : Node2D
 		if (_mapRenderer != null)
 			_mapRenderer.OnMapApplied -= OnMapApplied;
 
-		// Очищаем открытую карту при выходе
+		if (_mapOverlay != null)
+		{
+			_mapOverlay.OnRegionSelected -= OnRegionSelected;
+			_mapOverlay.OnSeedRegenerated -= OnSeedRegenerated;
+		}
 		_mapOverlay?.QueueFree();
 		_worldView?.Shutdown();
 		_agentThread?.Stop();

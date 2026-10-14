@@ -83,7 +83,7 @@ public sealed class HumidityMap
     public const int WindDirX = 1;
 
     /// <summary>
-    /// Начальная заливка из MapGenerator (п.19.5-П1/П2): вода = 200, поверх фона
+    /// Начальная заливка из UnifiedWorldGenerator (п.19.5-П1/П2): вода = 200, поверх фона
     /// 10..110 по шуму — плавный sqrt-градиент от воды, орографический бонус
     /// наветренных склонов + rain shadow за горами + сухость высокогорья.
     /// + строит waterFeed. Требует heightMap (может быть null — тогда без орографии).
@@ -248,6 +248,15 @@ public sealed class HumidityMap
         int gh = ground != null ? ground.GetLength(1) : 0;
         // Сезон (п.19.5-П5): −1 = лето (суше), +1 = зима (мокрее). Карта «дышит».
         int seasonDelta = season > 0.33f ? 1 : season < -0.33f ? -1 : 0;
+
+        // Попытка выполнения через GPU Compute Shader (PLAN.md §38)
+        if (Game.Simulation.Gpu.GpuHumiditySimulator.Instance.TryTick(_cur, _nxt, Width, Height, ground, _waterFeed, highMask, forestMask, farmMask, downhillMask, season))
+        {
+            int[] tmp = _cur;
+            _cur = _nxt;
+            _nxt = tmp;
+            return;
+        }
 
         Parallel.For(0, h, y =>
         {

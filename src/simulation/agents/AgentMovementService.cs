@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Game.Core;
@@ -42,9 +42,16 @@ public sealed class AgentMovementService
             }
             else
             {
-                int wpBase = agentIndex * AgentPathConfig.MaxWaypoints;
-                float wpX = pool.WaypointX[wpBase + idx] * ctx.TileSize + 32f;
-                float wpY = pool.WaypointY[wpBase + idx] * ctx.TileSize + 32f;
+                float wpX = pool.StepTargetX[agentIndex];
+                float wpY = pool.StepTargetY[agentIndex];
+                if (wpX == 0f && wpY == 0f)
+                {
+                    int wpBase = agentIndex * AgentPathConfig.MaxWaypoints;
+                    wpX = pool.WaypointX[wpBase + idx] * ctx.TileSize + 32f;
+                    wpY = pool.WaypointY[wpBase + idx] * ctx.TileSize + 32f;
+                    pool.StepTargetX[agentIndex] = wpX;
+                    pool.StepTargetY[agentIndex] = wpY;
+                }
 
                 bool reachedWp = MoveToPoint(agentIndex, new Vector2(wpX, wpY), 16f, deltaTime, pool, ctx);
 
@@ -70,13 +77,20 @@ public sealed class AgentMovementService
                     }
                     pool.WaypointIndex[agentIndex] = (byte)next;
                     pool.StuckTimer[agentIndex] = 0f;
-                    if (pool.WaypointIndex[agentIndex] >= pool.WaypointCount[agentIndex])
+                    if (next >= total)
                     {
                         pool.WaypointCount[agentIndex] = 0;
                         pool.WaypointIndex[agentIndex] = 0;
+                        pool.StepTargetX[agentIndex] = target.X;
+                        pool.StepTargetY[agentIndex] = target.Y;
                         // Цепочка завершена этим тиком — проваливаемся в фазу 2
                         // сразу (иначе агент стоит один лишний тик: return false ниже).
                         goto Phase2;
+                    }
+                    else
+                    {
+                        pool.StepTargetX[agentIndex] = pool.WaypointX[wpBase2 + next] * ctx.TileSize + 32f;
+                        pool.StepTargetY[agentIndex] = pool.WaypointY[wpBase2 + next] * ctx.TileSize + 32f;
                     }
                 }
                 else if (pool.StuckTimer[agentIndex] >= 1.5f)
@@ -85,6 +99,8 @@ public sealed class AgentMovementService
                     // ниже сработает прямой fallback + запрос нового пути.
                     pool.WaypointCount[agentIndex] = 0;
                     pool.WaypointIndex[agentIndex] = 0;
+                    pool.StepTargetX[agentIndex] = target.X;
+                    pool.StepTargetY[agentIndex] = target.Y;
                     // Waypoints сброшены — сразу прямое движение этим тиком.
                     goto Phase2;
                 }
@@ -143,7 +159,8 @@ public sealed class AgentMovementService
 
         // P0-1: без Stopwatch/счётчиков на запрос — A* идёт из тысяч агентов,
         // каждый Count = lock(_cLock). Тяжёлые пути видны по кванту Phase2.
-        bool ok = HierarchicalPathfinder.Instance.TryFindPath(sx, sy, tx, ty, out int[] path, out int count);
+        // ZERO-ALLOC: используем TryFindPathScratch без создания new int[smoothed] на каждый вызов!
+        bool ok = HierarchicalPathfinder.Instance.TryFindPathScratch(sx, sy, tx, ty, out int[] path, out int count);
         if (ok)
         {
             if (count > 0)
@@ -158,6 +175,8 @@ public sealed class AgentMovementService
                 }
                 pool.WaypointCount[agentIndex] = (byte)cap;
                 pool.WaypointIndex[agentIndex] = 0;
+                pool.StepTargetX[agentIndex] = pool.WaypointX[wpBase] * ctx.TileSize + 32f;
+                pool.StepTargetY[agentIndex] = pool.WaypointY[wpBase] * ctx.TileSize + 32f;
             }
 
             pool.PathRequestCooldown[agentIndex] = 1.5f;
@@ -199,10 +218,37 @@ public sealed class AgentMovementService
             speed *= WaterSpeedMultiplier;
         }
 
-        // Крупный dt (0.5 на 100x) давал шаг 60px за суб-степ: агент
-        // перепрыгивал через цель и возвращался — пинг-понг у финиша.
-        // Режем на суб-шаги ≤16px, каждый со своим arrive-капом.
         float totalStep = speed * deltaTime;
+
+        // Быстрый путь прибытия: цель ближе полного шага — ставим ровно в цель без перепрыгивания
+        if (totalStep >= dist)
+        {
+            if (!IsTileBlocked(target.X, target.Y, ctx))
+            {
+                pool.PositionX[agentIndex] = target.X;
+                pool.PositionY[agentIndex] = target.Y;
+                pool.StuckTimer[agentIndex] = 0f;
+                return true;
+            }
+            return distSq <= (reachDistance + 6f) * (reachDistance + 6f);
+        }
+
+        // Быстрый путь на открытой местности (90%+ случаев): шаг без препятствий
+        float fastInvDist = 1.0f / dist;
+        float fastStepX = dx * fastInvDist * totalStep;
+        float fastStepY = dy * fastInvDist * totalStep;
+        float fastDesiredX = curX + fastStepX;
+        float fastDesiredY = curY + fastStepY;
+
+        if (!IsTileBlocked(fastDesiredX, fastDesiredY, ctx))
+        {
+            pool.PositionX[agentIndex] = fastDesiredX;
+            pool.PositionY[agentIndex] = fastDesiredY;
+            pool.StuckTimer[agentIndex] = 0f;
+            return false;
+        }
+
+        // Препятствие на прямом пути — дробление на суб-шаги со скольжением вдоль стен
         int subSteps = (int)(totalStep / 16f) + 1;
         if (subSteps > 4) subSteps = 4;
         if (subSteps < 1) subSteps = 1;
@@ -340,24 +386,40 @@ public sealed class AgentMovementService
         if ((uint)tx >= (uint)ctx.MapWidth || (uint)ty >= (uint)ctx.MapHeight)
             return true;
 
+        byte[] cost = HierarchicalPathfinder.Instance.Cost;
+        if (cost != null && HierarchicalPathfinder.Instance.MapWidth == ctx.MapWidth)
+        {
+            int w = ctx.MapWidth;
+            int idx = ty * w + tx;
+            if (cost[idx] == HierarchicalPathfinder.CostBlocked)
+                return true;
+
+            int subX = (int)worldX & 63;
+            int subY = (int)worldY & 63;
+
+            if (subX < AgentRadius && tx > 0 && cost[idx - 1] == HierarchicalPathfinder.CostBlocked) return true;
+            if (subX > 64 - AgentRadius && tx < w - 1 && cost[idx + 1] == HierarchicalPathfinder.CostBlocked) return true;
+            if (subY < AgentRadius && ty > 0 && cost[idx - w] == HierarchicalPathfinder.CostBlocked) return true;
+            if (subY > 64 - AgentRadius && ty < ctx.MapHeight - 1 && cost[idx + w] == HierarchicalPathfinder.CostBlocked) return true;
+
+            return false;
+        }
+
+        // Fallback: прямое чтение 2D-массивов (если оверлей пути еще не построен)
         if (ctx.SolidWalls[tx, ty])
             return true;
 
-        // Гора = стена (блокирует), а не вода (замедляет).
-        if (ctx.Ground[tx, ty] == TileType.Mountain)
+        // Гора и вода блокируют движение агентов
+        if (ctx.Ground[tx, ty] == TileType.Mountain || ctx.Ground[tx, ty] == TileType.Water)
             return true;
 
-        // Каменная россыпь проходима: агенты ходят прямо по ней.
-        // Добытчик всё равно работает с соседней stand-клетки (Mining).
+        int fallbackSubX = (int)worldX & 63;
+        int fallbackSubY = (int)worldY & 63;
 
-        // Проверяем соседей только если агент подошел вплотную к краю тайла (быстрая маска 63)
-        int subX = (int)worldX & 63;
-        int subY = (int)worldY & 63;
-
-        if (subX < AgentRadius && tx > 0 && (ctx.SolidWalls[tx - 1, ty] || ctx.Ground[tx - 1, ty] == TileType.Mountain)) return true;
-        if (subX > 64 - AgentRadius && tx < ctx.MapWidth - 1 && (ctx.SolidWalls[tx + 1, ty] || ctx.Ground[tx + 1, ty] == TileType.Mountain)) return true;
-        if (subY < AgentRadius && ty > 0 && (ctx.SolidWalls[tx, ty - 1] || ctx.Ground[tx, ty - 1] == TileType.Mountain)) return true;
-        if (subY > 64 - AgentRadius && ty < ctx.MapHeight - 1 && (ctx.SolidWalls[tx, ty + 1] || ctx.Ground[tx, ty + 1] == TileType.Mountain)) return true;
+        if (fallbackSubX < AgentRadius && tx > 0 && (ctx.SolidWalls[tx - 1, ty] || ctx.Ground[tx - 1, ty] == TileType.Mountain || ctx.Ground[tx - 1, ty] == TileType.Water)) return true;
+        if (fallbackSubX > 64 - AgentRadius && tx < ctx.MapWidth - 1 && (ctx.SolidWalls[tx + 1, ty] || ctx.Ground[tx + 1, ty] == TileType.Mountain || ctx.Ground[tx + 1, ty] == TileType.Water)) return true;
+        if (fallbackSubY < AgentRadius && ty > 0 && (ctx.SolidWalls[tx, ty - 1] || ctx.Ground[tx, ty - 1] == TileType.Mountain || ctx.Ground[tx, ty - 1] == TileType.Water)) return true;
+        if (fallbackSubY > 64 - AgentRadius && ty < ctx.MapHeight - 1 && (ctx.SolidWalls[tx, ty + 1] || ctx.Ground[tx, ty + 1] == TileType.Mountain || ctx.Ground[tx, ty + 1] == TileType.Water)) return true;
 
         return false;
     }

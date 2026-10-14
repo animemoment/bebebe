@@ -31,7 +31,7 @@ public sealed class WanderJobSystem
 
         if (tx >= 0 && ty >= 0 && tx < ctx.MapWidth && ty < ctx.MapHeight)
         {
-            if (!ctx.SolidWalls[tx, ty] && !ctx.TreeOnGrass[tx, ty])
+            if (!ctx.SolidWalls[tx, ty] && !ctx.TreeOnGrass[tx, ty] && (ctx.Ground == null || ctx.Ground[tx, ty] != TileType.Water))
             {
                 pool.TargetPositionX[agentIndex] = tx * ctx.TileSize + 32f;
                 pool.TargetPositionY[agentIndex] = ty * ctx.TileSize + 32f;

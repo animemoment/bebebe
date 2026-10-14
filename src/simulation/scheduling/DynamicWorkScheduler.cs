@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Game.Core;
@@ -67,6 +68,8 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 	// свой индекс (deques[slot]), гонки нет; MaxDegreeOfParallelism == длине.
 	// Полный persistent-пул воркеров (вариант 2 из Finding) — отдельно, не в этом коммите.
 	private readonly System.Collections.Concurrent.ConcurrentDictionary<int, ParallelOptions> _optionsCache = new();
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<int, WorkStealingQueue<WorkItem>[]> _dequesCache = new();
+	private readonly System.Collections.Concurrent.ConcurrentQueue<WorkItem> _sharedOverflow = new();
 
 	private ParallelOptions GetOptions(int dop)
 	{
@@ -74,6 +77,15 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 			return cached;
 		var fresh = new ParallelOptions { MaxDegreeOfParallelism = dop };
 		_optionsCache[dop] = fresh;
+		return fresh;
+	}
+
+	private WorkStealingQueue<WorkItem>[] GetDeques(int dop)
+	{
+		if (_dequesCache.TryGetValue(dop, out var cached) && cached.Length == dop)
+			return cached;
+		var fresh = new WorkStealingQueue<WorkItem>[dop];
+		_dequesCache[dop] = fresh;
 		return fresh;
 	}
 
@@ -114,7 +126,10 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 	/// <summary>Эффективный DOP планировщика (P-1: одно ядро под рендер).</summary>
 	internal static int EffectiveDopValue => ComputeEffectiveDop(Environment.ProcessorCount);
 
-	private int GetDop() => _forcedDop ?? EffectiveDopValue;
+	/// <summary>Глобальное переопределение DOP для тестов и профилирования (например, лок на 3 потока).</summary>
+	public static int? GlobalForcedDop { get; set; }
+
+	private int GetDop() => _forcedDop ?? GlobalForcedDop ?? EffectiveDopValue;
 
 	private static double EffectiveQuantumMs()
 	{
@@ -193,10 +208,9 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 		long batchSeq = 0;
 		long totalCpuTicks = 0;
 		int phaseErrors = 0;
-		var deques = new WorkStealingQueue<WorkItem>[dop];
-		// FIX круг-2 №2: overflow для украденного при полном deque (было: молча
-		// терялся хвост stealBuf). Покрытие [0,count) не должно теряться.
-		var overflow = new ConcurrentQueue<WorkItem>();
+		var deques = GetDeques(dop);
+		var overflow = _sharedOverflow;
+		overflow.Clear();
 
 		Parallel.For(0, dop, GetOptions(dop), slot =>
 		{
@@ -237,7 +251,7 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					}
 					long t1 = Stopwatch.GetTimestamp();
 					localCpuTicks += t1 - t0;
-					_monitor.RecordWorkerBatch((t1 - t0) * 1000.0 / Stopwatch.Frequency, li.Count);
+					_monitor.RecordWorkerBatch(slot, (t1 - t0) * 1000.0 / Stopwatch.Frequency, li.Count);
 					continue;
 				}
 				if (overflow.TryDequeue(out WorkItem gi))
@@ -260,14 +274,14 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					}
 					long t1 = Stopwatch.GetTimestamp();
 					localCpuTicks += t1 - t0;
-					_monitor.RecordWorkerBatch((t1 - t0) * 1000.0 / Stopwatch.Frequency, gi.Count);
+					_monitor.RecordWorkerBatch(slot, (t1 - t0) * 1000.0 / Stopwatch.Frequency, gi.Count);
 					continue;
 				}
 				// 2) Центральный курсор (первичен).
 				// Замер батча — 1 GetTimestamp: старт следующего = конец прошлого
 				// не делаем (батчи не contiguous), но ManagedThreadId не читаем
-				// (P/Invoke 20–40ns на батч) — RecordWorkerBatch без workerId.
-				int want = _monitor.SuggestBatchSize(kind, kind == WorkKind.Heavy ? 2.0f : 1.0f);
+				// (P/Invoke 20–40ns на батч) — RecordWorkerBatch со слотом.
+				int want = _monitor.SuggestBatchSize(slot, kind, kind == WorkKind.Heavy ? 2.0f : 1.0f);
 				long start = Interlocked.Add(ref batchSeq, want) - want;
 				if (start < count)
 				{
@@ -294,7 +308,7 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					}
 					long t1 = Stopwatch.GetTimestamp();
 					localCpuTicks += t1 - t0;
-					_monitor.RecordWorkerBatch((t1 - t0) * 1000.0 / Stopwatch.Frequency, size);
+					_monitor.RecordWorkerBatch(slot, (t1 - t0) * 1000.0 / Stopwatch.Frequency, size);
 					continue;
 				}
 				// 3) Steal-half при простое: до 2 попыток у случайной жертвы.
@@ -358,6 +372,9 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 				Interlocked.Add(ref phaseErrors, localErrors);
 		});
 
+		Array.Clear(deques, 0, dop);
+		overflow.Clear();
+
 		double wallMs2 = (Stopwatch.GetTimestamp() - wall0) * 1000.0 / Stopwatch.Frequency;
 		double cpuMs = totalCpuTicks * 1000.0 / Stopwatch.Frequency;
 		Volatile.Write(ref _lastPhaseErrors, Volatile.Read(ref phaseErrors));
@@ -372,10 +389,46 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 	}
 
 	/// <inheritdoc/>
+	private interface IRangeBody
+	{
+		void Invoke(int slot, int start, int end);
+	}
+
+	private readonly struct TwoArgBody : IRangeBody
+	{
+		private readonly Action<int, int> _body;
+		public TwoArgBody(Action<int, int> body) => _body = body;
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		public void Invoke(int slot, int start, int end) => _body(start, end);
+	}
+
+	private readonly struct ThreeArgBody : IRangeBody
+	{
+		private readonly Action<int, int, int> _body;
+		public ThreeArgBody(Action<int, int, int> body) => _body = body;
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		public void Invoke(int slot, int start, int end) => _body(slot, start, end);
+	}
+
+	/// <inheritdoc/>
 	public int ForEachRange(int count, Action<int, int> body, WorkKind kind = WorkKind.Fast, string profilerScope = null)
 	{
 		if (body == null)
 			throw new ArgumentNullException(nameof(body));
+		return ForEachRangeCore(count, new TwoArgBody(body), kind, profilerScope);
+	}
+
+	/// <inheritdoc/>
+	public int ForEachRange(int count, Action<int, int, int> body, WorkKind kind = WorkKind.Fast, string profilerScope = null)
+	{
+		if (body == null)
+			throw new ArgumentNullException(nameof(body));
+		return ForEachRangeCore(count, new ThreeArgBody(body), kind, profilerScope);
+	}
+
+	private int ForEachRangeCore<TBody>(int count, TBody body, WorkKind kind, string profilerScope)
+		where TBody : struct, IRangeBody
+	{
 		if (count < 0)
 			throw new ArgumentOutOfRangeException(nameof(count), "Count должен быть >= 0.");
 		if (count == 0)
@@ -397,7 +450,7 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 			// Разрешены: чистые вычисления, SoA-массивы, Interlocked/Volatile,
 			// ConcurrentQueue.Enqueue (снапшоты), ThreadLocal, ParallelRng.
 			int errors = 0;
-			try { body(0, count); }
+			try { body.Invoke(0, 0, count); }
 			catch { errors++; }
 			// Примечание: range-body атомарна по смыслу (один вызов на диапазон);
 			// при исключении остаток диапазона добить поэлементно нельзя без
@@ -415,9 +468,8 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 		int processed = 0;
 		long totalCpuTicks = 0;
 		int phaseErrors = 0;
-		var deques = new WorkStealingQueue<WorkItem>[dop];
-		// FIX круг-2 №2: overflow для украденного при полном deque.
-		var overflow = new ConcurrentQueue<WorkItem>();
+		var deques = GetDeques(dop);
+		var overflow = _sharedOverflow;
 
 		Parallel.For(0, dop, GetOptions(dop), slot =>
 		{
@@ -439,27 +491,27 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					{
 						// SCHEDULING RULE: из body(start,end) запрещены ЛЮБЫЕ Godot Node API
 						// (AddChild/GetNode/SetCell/MultiMesh/QueueRedraw/EmitSignal/ResourceLoader).
-						body(li.Start, li.Start + li.Count);
+						body.Invoke(slot, li.Start, li.Start + li.Count);
 					}
 					catch { localErrors++; }
 					long t1 = Stopwatch.GetTimestamp();
 					localCpuTicks += t1 - t0;
-					_monitor.RecordWorkerBatch((t1 - t0) * 1000.0 / Stopwatch.Frequency, li.Count);
+					_monitor.RecordWorkerBatch(slot, (t1 - t0) * 1000.0 / Stopwatch.Frequency, li.Count);
 					localProcessed += li.Count;
 					continue;
 				}
 				if (overflow.TryDequeue(out WorkItem gi))
 				{
 					long t0 = Stopwatch.GetTimestamp();
-					try { body(gi.Start, gi.Start + gi.Count); }
+					try { body.Invoke(slot, gi.Start, gi.Start + gi.Count); }
 					catch { localErrors++; }
 					long t1 = Stopwatch.GetTimestamp();
 					localCpuTicks += t1 - t0;
-					_monitor.RecordWorkerBatch((t1 - t0) * 1000.0 / Stopwatch.Frequency, gi.Count);
+					_monitor.RecordWorkerBatch(slot, (t1 - t0) * 1000.0 / Stopwatch.Frequency, gi.Count);
 					localProcessed += gi.Count;
 					continue;
 				}
-				int want = _monitor.SuggestBatchSize(kind, kind == WorkKind.Heavy ? 2.0f : 1.0f);
+				int want = _monitor.SuggestBatchSize(slot, kind, kind == WorkKind.Heavy ? 2.0f : 1.0f);
 				long start = Interlocked.Add(ref batchSeq, want) - want;
 				if (start < count)
 				{
@@ -467,11 +519,11 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					long t0 = Stopwatch.GetTimestamp();
 					// SCHEDULING RULE: из body(start,end) запрещены ЛЮБЫЕ Godot Node API
 					// (AddChild/GetNode/SetCell/MultiMesh/QueueRedraw/EmitSignal/ResourceLoader).
-					try { body((int)start, end); }
+					try { body.Invoke(slot, (int)start, end); }
 					catch { localErrors++; }
 					long t1 = Stopwatch.GetTimestamp();
 					localCpuTicks += t1 - t0;
-					_monitor.RecordWorkerBatch((t1 - t0) * 1000.0 / Stopwatch.Frequency, end - (int)start);
+					_monitor.RecordWorkerBatch(slot, (t1 - t0) * 1000.0 / Stopwatch.Frequency, end - (int)start);
 					localProcessed += end - (int)start;
 					continue;
 				}
@@ -531,6 +583,9 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 			if (localErrors > 0)
 				Interlocked.Add(ref phaseErrors, localErrors);
 		});
+
+		Array.Clear(deques, 0, dop);
+		overflow.Clear();
 
 		double wallMs2 = (Stopwatch.GetTimestamp() - wall0) * 1000.0 / Stopwatch.Frequency;
 		double cpuMs = totalCpuTicks * 1000.0 / Stopwatch.Frequency;
@@ -604,8 +659,8 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 		int processed = 0;
 		long totalCpuTicks = 0;
 		int phaseErrors = 0;
-		var deques = new WorkStealingQueue<WorkItem>[dop];
-		var overflow = new ConcurrentQueue<WorkItem>();
+		var deques = GetDeques(dop);
+		var overflow = _sharedOverflow;
 		double quantumMs = EffectiveQuantumMs();
 		double quantumTicksD = quantumMs * Stopwatch.Frequency / 1000.0;
 
@@ -639,7 +694,7 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					// FIX круг-2 №10: hint влияет на размер следующего батча:
 					// Heavy-курсор просит батч с costHint=2.0 (режется мельче).
 					float wantHint = kind == WorkKind.Heavy ? 2.0f : 1.0f;
-					int want = _monitor.SuggestBatchSize(kind, wantHint);
+					int want = _monitor.SuggestBatchSize(slot, kind, wantHint);
 					long start = Interlocked.Add(ref batchSeq, want) - want;
 					if (start < count)
 					{
@@ -677,13 +732,13 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					long t1 = Stopwatch.GetTimestamp();
 					double batchMs = (t1 - t0) * 1000.0 / Stopwatch.Frequency;
 					localCpuTicks += t1 - t0;
-					_monitor.RecordWorkerBatch(batchMs, item.Count);
+					_monitor.RecordWorkerBatch(slot, batchMs, item.Count);
 					// FIX круг-2 №3: квант enforced даже если body игнорит yield:
 					// превышение кванта = straggler + принудительный shrink до Min.
 					// Безопасно: RecordWorkerBatch уже засчитал straggler по HeavyMs;
 					// здесь дожимаем адаптацию следующего батча этого потока.
 					if ((t1 - t0) > quantumTicksD)
-						_monitor.ShrinkToMin();
+						_monitor.ShrinkToMin(slot);
 					// FIX круг-2 №1 (ZeroProgressHang): body вернула done<=0 без
 					// прогресса — НЕ класть обратно в очередь (был бы бесконечный
 					// Requeue). Засчитать батч обработанным целиком + errors++.
@@ -770,6 +825,9 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 			if (localErrors > 0)
 				Interlocked.Add(ref phaseErrors, localErrors);
 		});
+
+		Array.Clear(deques, 0, dop);
+		overflow.Clear();
 
 		double wallMs2 = (Stopwatch.GetTimestamp() - wall0) * 1000.0 / Stopwatch.Frequency;
 		double cpuMs = totalCpuTicks * 1000.0 / Stopwatch.Frequency;

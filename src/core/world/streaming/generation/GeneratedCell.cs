@@ -18,4 +18,6 @@ public readonly record struct GeneratedCell(
     ushort MoistureQ16,
     ushort ForestQ16,
     ushort StoneQ16,
-    ushort TemperatureQ16);
+    ushort TemperatureQ16,
+    byte Biome = 0,
+    byte Variant = 0);

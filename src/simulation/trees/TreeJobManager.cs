@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Godot;
 
@@ -111,6 +111,21 @@ public class TreeJobManager
             _markedTrees.Remove((x, y));
             JobBroker.Instance.UnregisterTreeChop(x, y);
             Callable.From(() => OnTreeChopped?.Invoke((x, y))).CallDeferred();
+        }
+    }
+
+    /// <summary>Очистить все метки рубки при смене региона / перезапуске карты.</summary>
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            var oldTrees = new List<(int X, int Y)>(_markedTrees);
+            _markedTrees.Clear();
+            if (oldTrees.Count > 0)
+            {
+                JobBroker.Instance.UnregisterTreeChopBatch(oldTrees);
+                Callable.From(() => OnTreesBatchUnmarked?.Invoke(oldTrees)).CallDeferred();
+            }
         }
     }
 }

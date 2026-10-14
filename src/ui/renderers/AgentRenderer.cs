@@ -13,6 +13,7 @@ public partial class AgentRenderer : Node2D
 
     private System.Numerics.Vector2[] _prevPositions;
     private System.Numerics.Vector2[] _targetPositions;
+    private float[] _facingAngles;
     private float[] _renderBuffer;
     private MultiMeshInstance2D _shadowInstance;
     private MultiMesh _shadowMultiMesh;
@@ -45,18 +46,33 @@ public partial class AgentRenderer : Node2D
     // при 60 FPS) — на скорости артефакты незаметны, -50% upload теней.
     private bool _shadowUploadSkip;
 
-    // Спрайт человека — 32x32 (НЕ 64, как тайл). Полквада=16, четверть=8.
-    // Эти числа сидят в якоре тени (ноги) и в shader-uniform sun_len_n,
-    // поэтому вынесены в константы, а не размазаны 0.5f/0.25f по коду.
+    public enum AgentRenderLod
+    {
+        FullWithShadows,
+        FullNoShadows,
+        MacroDots
+    }
+    private AgentRenderLod _currentLod = AgentRenderLod.FullWithShadows;
+    public AgentRenderLod CurrentLod => _currentLod;
+    public bool ShadowsEnabled => _shadowInstance != null && _shadowInstance.Visible;
+    private const float LodShadowCutoff = 0.38f;
+    private const float LodMacroCutoff = 0.22f;
+    private const float LodHysteresis = 0.03f;
+
     private const float AgentSize = 32f;
-    private const float AgentHalf = AgentSize * 0.5f;    // 16: ноги = центр + полтела вниз
+    private const float FeetOffsetY = 7.0f;              // 7: подошвы колониста в people.png (строка 23)
+    private const float AgentHalf = AgentSize * 0.5f;    // 16: половина квада
     private const float AgentQuarter = AgentSize * 0.25f; // 8: сдвиг якоря к ногам
     private const string TexturePath = "uid://clysp24n2dgat";
     private const string ShadowShaderPath = "res://src/ui/renderers/AgentShadow.gdshader";
     private const string AgentInterpolationShaderPath = "res://src/ui/renderers/AgentInterpolation.gdshader";
     private const string AgentShadowInterpolatedShaderPath = "res://src/ui/renderers/AgentShadowInterpolated.gdshader";
-    // LOD как у Syx (DivRenderer: зум<3 стрелки, дальше точки):
-    // при зуме камеры < 0.35 тень 10k агентов считается через кадр (−50% CPU).
+    private const string AgentLodShaderPath = "res://src/ui/renderers/AgentLod.gdshader";
+
+    private ShaderMaterial _agentLodMaterial;
+    private QuadMesh _fullQuadMesh;
+    private QuadMesh _lodQuadMesh;
+    private Texture2D _agentTexture;
     private const float ShadowLodZoom = 0.35f;
     private bool _shadowLodSkip;
 
@@ -66,8 +82,20 @@ public partial class AgentRenderer : Node2D
         _simulationThread = simulationThread ?? throw new ArgumentNullException(nameof(simulationThread));
         _agentCount = agentCount;
 
+        if (_multiMeshInstance != null && GodotObject.IsInstanceValid(_multiMeshInstance))
+        {
+            _multiMeshInstance.QueueFree();
+            _multiMeshInstance = null;
+        }
+        if (_shadowInstance != null && GodotObject.IsInstanceValid(_shadowInstance))
+        {
+            _shadowInstance.QueueFree();
+            _shadowInstance = null;
+        }
+
         _prevPositions = new System.Numerics.Vector2[agentCount];
         _targetPositions = new System.Numerics.Vector2[agentCount];
+        _facingAngles = new float[agentCount];
 
         Shader interpolationShader = null;
         Shader interpolatedShadowShader = null;
@@ -97,7 +125,7 @@ public partial class AgentRenderer : Node2D
         _renderBuffer = new float[agentCount * 8];
         _shadowBuffer = new float[agentCount * 8];
         if (_gpuInterpolationEnabled)
-            _gpuInstanceBuffer = new float[agentCount * 12];
+            _gpuInstanceBuffer = new float[agentCount * 16];
 
         var texture = ResourceLoader.Load<Texture2D>(TexturePath);
         if (texture == null)
@@ -110,6 +138,28 @@ public partial class AgentRenderer : Node2D
         {
             Size = new Vector2(AgentSize, AgentSize)
         };
+        _fullQuadMesh = quadMesh;
+        _lodQuadMesh = new QuadMesh
+        {
+            Size = new Vector2(6f, 6f)
+        };
+        _agentTexture = texture;
+
+        Shader lodShader = null;
+        try
+        {
+            lodShader = GD.Load<Shader>(AgentLodShaderPath);
+        }
+        catch (Exception)
+        {
+            // LOD shader fallback
+        }
+        if (lodShader != null)
+        {
+            _agentLodMaterial = new ShaderMaterial { Shader = lodShader };
+            _agentLodMaterial.SetShaderParameter("lerp_factor", 0f);
+            _agentLodMaterial.SetShaderParameter("agent_color", new Color(0.35f, 0.75f, 1f, 1f));
+        }
 
         float mapSizePx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
         var mapAabb = new Aabb(Godot.Vector3.Zero, new Godot.Vector3(mapSizePx, mapSizePx, 1000f));
@@ -118,7 +168,7 @@ public partial class AgentRenderer : Node2D
         {
             Mesh = quadMesh,
             TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
-            UseColors = false,
+            UseColors = _gpuInterpolationEnabled,
             UseCustomData = _gpuInterpolationEnabled,
             InstanceCount = agentCount,
             CustomAabb = mapAabb
@@ -144,7 +194,7 @@ public partial class AgentRenderer : Node2D
         {
             Mesh = quadMesh,
             TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
-            UseColors = false,
+            UseColors = _gpuInterpolationEnabled,
             UseCustomData = _gpuInterpolationEnabled,
             InstanceCount = agentCount,
             VisibleInstanceCount = 0,
@@ -207,25 +257,25 @@ public partial class AgentRenderer : Node2D
             return;
         _sun = sun;
         _hasSunState = true;
-        bool show = sun.Alpha > 0.004f && sun.LengthPx >= 0.5f;
+        var cam = GetViewport()?.GetCamera2D();
+        float zoom = cam?.Zoom.X ?? 1f;
+        bool speedAllowsShadows = _simulationThread == null || _simulationThread.SpeedMultiplier < 25f;
+        bool shadowsAllowed = speedAllowsShadows && zoom >= LodShadowCutoff && _currentLod == AgentRenderLod.FullWithShadows;
+        bool show = shadowsAllowed && sun.Alpha > 0.004f && sun.LengthPx >= 0.5f;
         _shadowInstance.Visible = show;
         _shadowMultiMesh.VisibleInstanceCount = show ? _agentCount : 0;
         if (show)
-            _shadowInstance.Modulate = new Color(0f, 0f, 0f, sun.Alpha);
+            _shadowInstance.Modulate = sun.ShadowColor;
         if (!show)
             return;
         // CPU fallback загружает матрицы на смене солнца; GPU path меняет только uniforms.
         if (!_gpuInterpolationEnabled)
             _shadowsDirty = true;
-        // Точка привязки тени = ноги агента. Никакого сдвига на CPU:
-        // смещение — работа шейдера (клин от ног), иначе тень — отдельный
-        // квад рядом с агентом, а не клин от ног.
-        float sLen = sun.LengthPx + AgentHalf;
+        // Точка привязки тени = ноги агента.
+        float sLen = sun.LengthPx;
         if (_shadowUseShader && _shadowMaterial != null && IsInstanceValid(_shadowMaterial))
         {
             // O(1): 4 uniform-сета на кадр-независимый тик, не на инстанс.
-            // sun_anchor_shift НЕ ставим — якорь на CPU, в шейдере он дал бы
-            // двойной сдвиг.
             _shadowMaterial.SetShaderParameter("sun_dir", sun.Dir);
             _shadowMaterial.SetShaderParameter("sun_len_n", sLen / AgentSize);
             _shadowMaterial.SetShaderParameter("sun_width_n", sun.WidthScale);
@@ -233,6 +283,84 @@ public partial class AgentRenderer : Node2D
             if (_gpuInterpolationEnabled)
                 _shadowMaterial.SetShaderParameter("lerp_factor", _lerpFactor);
         }
+    }
+
+    public void UpdateLod(float zoom)
+    {
+        AgentRenderLod targetLod;
+        if (_currentLod == AgentRenderLod.FullWithShadows)
+        {
+            if (zoom < LodMacroCutoff) targetLod = AgentRenderLod.MacroDots;
+            else if (zoom < LodShadowCutoff) targetLod = AgentRenderLod.FullNoShadows;
+            else targetLod = AgentRenderLod.FullWithShadows;
+        }
+        else if (_currentLod == AgentRenderLod.FullNoShadows)
+        {
+            if (zoom < LodMacroCutoff) targetLod = AgentRenderLod.MacroDots;
+            else if (zoom > LodShadowCutoff + LodHysteresis) targetLod = AgentRenderLod.FullWithShadows;
+            else targetLod = AgentRenderLod.FullNoShadows;
+        }
+        else // MacroDots
+        {
+            if (zoom > LodShadowCutoff + LodHysteresis) targetLod = AgentRenderLod.FullWithShadows;
+            else if (zoom > LodMacroCutoff + LodHysteresis) targetLod = AgentRenderLod.FullNoShadows;
+            else targetLod = AgentRenderLod.MacroDots;
+        }
+
+        if (targetLod != _currentLod)
+        {
+            SetLod(targetLod);
+        }
+        else if (_currentLod == AgentRenderLod.FullWithShadows && _hasSunState)
+        {
+            bool speedAllowsShadows = _simulationThread == null || _simulationThread.SpeedMultiplier < 25f;
+            var cam = GetViewport()?.GetCamera2D();
+            bool shouldBeVisible = speedAllowsShadows && (cam?.Zoom.X ?? 1f) >= LodShadowCutoff && _sun.Alpha > 0.004f && _sun.LengthPx >= 0.5f;
+            if (_shadowInstance != null && _shadowInstance.Visible != shouldBeVisible)
+            {
+                ApplyShadow(_sun);
+            }
+        }
+    }
+
+    private void SetLod(AgentRenderLod newLod)
+    {
+        _currentLod = newLod;
+        if (newLod == AgentRenderLod.MacroDots)
+        {
+            if (_agentLodMaterial != null && _multiMeshInstance != null)
+                _multiMeshInstance.Material = _agentLodMaterial;
+            if (_lodQuadMesh != null && _multiMesh != null)
+                _multiMesh.Mesh = _lodQuadMesh;
+            if (_multiMeshInstance != null)
+                _multiMeshInstance.Texture = null;
+            if (_shadowInstance != null && IsInstanceValid(_shadowInstance))
+                _shadowInstance.Visible = false;
+            if (_shadowMultiMesh != null)
+                _shadowMultiMesh.VisibleInstanceCount = 0;
+        }
+        else
+        {
+            if (_agentInterpolationMaterial != null && _multiMeshInstance != null)
+                _multiMeshInstance.Material = _agentInterpolationMaterial;
+            if (_fullQuadMesh != null && _multiMesh != null)
+                _multiMesh.Mesh = _fullQuadMesh;
+            if (_multiMeshInstance != null)
+                _multiMeshInstance.Texture = _agentTexture;
+
+            if (newLod == AgentRenderLod.FullNoShadows)
+            {
+                if (_shadowInstance != null && IsInstanceValid(_shadowInstance))
+                    _shadowInstance.Visible = false;
+                if (_shadowMultiMesh != null)
+                    _shadowMultiMesh.VisibleInstanceCount = 0;
+            }
+            else if (_hasSunState)
+            {
+                ApplyShadow(_sun);
+            }
+        }
+        _bodiesDirty = true;
     }
 
     /// <summary>Совместимость со старым вызовом ApplyShadow(offset, alpha).</summary>
@@ -250,6 +378,10 @@ public partial class AgentRenderer : Node2D
 
         using (GameProfiler.Scope("Render: Agent MultiMesh"))
         {
+            var cam = GetViewport()?.GetCamera2D();
+            float zoom = cam?.Zoom.X ?? 1f;
+            UpdateLod(zoom);
+
             // P1 early-out: ничего нового, lerp сошёлся, тела и тени чистые —
             // кадр пропускаем целиком (ни LerpFill, ни Buffer=, ни GetCamera2D).
             // _bodiesDirty/_shadowsDirty стартуют true → первый кадр всегда идёт.
@@ -259,31 +391,46 @@ public partial class AgentRenderer : Node2D
                 return;
 
             bool hasNewSnapshot = false;
+            System.Numerics.Vector2[] latestSnapshot = null;
             while (_simulationThread.PositionQueue.TryDequeue(out var snapshot))
             {
-                // Фиксируем текущее интерполированное положение перед подменой снапшота.
-                // Формула та же, что была: prev + (target - prev) * factor (см. AgentLerpBatch).
-                AgentLerpBatch.Interpolate(
-                    new Span<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
-                    new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
-                    _lerpFactor);
-                Array.Copy(snapshot, _targetPositions, _agentCount);
-                hasNewSnapshot = true;
+                latestSnapshot = snapshot;
             }
 
-            if (hasNewSnapshot)
+            if (latestSnapshot != null)
             {
                 if (!_hasInitialSnapshot)
                 {
                     // Первый снапшот: заполняем и prev, и target стартовыми позициями,
                     // чтобы агенты не «выстреливали» из угла (0,0) в начале работы.
+                    Array.Copy(latestSnapshot, _targetPositions, _agentCount);
                     for (int i = 0; i < _agentCount; i++)
                     {
                         _prevPositions[i] = _targetPositions[i];
+                        _facingAngles[i] = 0f;
                     }
                     _hasInitialSnapshot = true;
                 }
+                else
+                {
+                    // Фиксируем текущее интерполированное положение перед подменой снапшота.
+                    AgentLerpBatch.Interpolate(
+                        new Span<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
+                        new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
+                        _lerpFactor);
+                    Array.Copy(latestSnapshot, _targetPositions, _agentCount);
+                    for (int i = 0; i < _agentCount; i++)
+                    {
+                        float dx = _targetPositions[i].X - _prevPositions[i].X;
+                        float dy = _targetPositions[i].Y - _prevPositions[i].Y;
+                        if (dx * dx + dy * dy > 0.04f)
+                        {
+                            _facingAngles[i] = MathF.Atan2(dy, dx);
+                        }
+                    }
+                }
                 _lerpFactor = 0f;
+                hasNewSnapshot = true;
             }
 
             float lerpSpeed = _simulationThread.SpeedMultiplier >= 5f ? 45f : 25f;
@@ -294,33 +441,16 @@ public partial class AgentRenderer : Node2D
 
             // Finding 2: тела грязны только пока lerp не сошёлся или есть новый снапшот.
             // Пауза / settled-idle: тел не трогаем ВООБЩЕ (ни LerpFill, ни Buffer=).
-            // @destroyer: инвариант — если тела чистые, _renderBuffer уже залит на
-            // GPU в прошлом кадре (Buffer= идёт в том же if). Первый кадр после
-            // Initialize: _bodiesDirty=true стартово, заливка гарантирована.
             bool bodiesNeedUpdate = _gpuInterpolationEnabled
                 ? hasNewSnapshot || _bodiesDirty
                 : hasNewSnapshot || _lerpFactor < 1f || _bodiesDirty;
             if (hasNewSnapshot)
                 _bodiesDirty = true;
 
-            bool shadowOn = _hasSunState && _sun.Alpha > 0.004f && _sun.LengthPx >= 0.5f
+            bool shadowOn = _shadowInstance != null && _shadowInstance.Visible
+                && _hasSunState && _sun.Alpha > 0.004f && _sun.LengthPx >= 0.5f
                 && _shadowMultiMesh != null && _shadowBuffer != null;
-            if (shadowOn)
-            {
-                // LOD дальнего зума (Syx: точки вместо стрелок): тень мелкая (32px*зум<12px),
-                // пересчёт через кадр незаметен, −50% CPU теневого прохода на 10k.
-                var cam = GetViewport()?.GetCamera2D();
-                if (cam != null && cam.Zoom.X < ShadowLodZoom)
-                {
-                    _shadowLodSkip = !_shadowLodSkip;
-                    if (_shadowLodSkip)
-                        shadowOn = false;
-                }
-                else
-                {
-                    _shadowLodSkip = false;
-                }
-            }
+
             // Шейдерный путь: трансляция = ноги (px, py+16), без сдвига.
             // Fallback (без шейдера): старая матричная арифметика растяжения на CPU.
             float sdx = 0f, sdy = 0f, sLen = 0f, sLenN = 0f, sWdtN = 0f, sPx = 0f, sPy = 0f;
@@ -337,20 +467,27 @@ public partial class AgentRenderer : Node2D
             // lerp-factor обновляем как один uniform на кадр. Без readback.
             if (_gpuInterpolationEnabled)
             {
-                _agentInterpolationMaterial.SetShaderParameter("lerp_factor", _lerpFactor);
-                _shadowMaterial.SetShaderParameter("lerp_factor", _lerpFactor);
+                if (_currentLod == AgentRenderLod.MacroDots && _agentLodMaterial != null)
+                    _agentLodMaterial.SetShaderParameter("lerp_factor", _lerpFactor);
+                else
+                    _agentInterpolationMaterial?.SetShaderParameter("lerp_factor", _lerpFactor);
+
+                if (shadowOn && _shadowMaterial != null)
+                    _shadowMaterial.SetShaderParameter("lerp_factor", _lerpFactor);
+
                 if (bodiesNeedUpdate)
                 {
                     var swB = System.Diagnostics.Stopwatch.StartNew();
                     AgentLerpBatch.FillGpuInstanceBuffer(
-                        new Span<float>(_gpuInstanceBuffer, 0, _agentCount * 12),
+                        new Span<float>(_gpuInstanceBuffer, 0, _agentCount * 16),
                         new ReadOnlySpan<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
                         new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
+                        new ReadOnlySpan<float>(_facingAngles, 0, _agentCount),
                         _agentCount);
                     _multiMesh.Buffer = _gpuInstanceBuffer;
                     swB.Stop();
                     SimEvents.Record("render", "AgentRenderer.bodies_gpu_upload", (float)swB.Elapsed.TotalMilliseconds,
-                        _agentCount * 12 * 4);
+                        _agentCount * 16 * 4);
                     _bodiesDirty = false;
                     _shadowsDirty = true;
                 }
@@ -362,6 +499,7 @@ public partial class AgentRenderer : Node2D
                 AgentLerpBatch.LerpFill(
                     new ReadOnlySpan<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
                     new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
+                    new ReadOnlySpan<float>(_facingAngles, 0, _agentCount),
                     _lerpFactor,
                     new Span<float>(_renderBuffer, 0, _agentCount * 8),
                     _agentCount);
@@ -406,7 +544,7 @@ public partial class AgentRenderer : Node2D
                             _shadowBuffer[idx + 4] = 0.0f;
                             _shadowBuffer[idx + 5] = 1.0f;
                             _shadowBuffer[idx + 6] = 0.0f;
-                            _shadowBuffer[idx + 7] = py + AgentHalf;
+                            _shadowBuffer[idx + 7] = py + FeetOffsetY;
                         }
                     }
                     else
@@ -423,7 +561,7 @@ public partial class AgentRenderer : Node2D
                             _shadowBuffer[idx + 4] = sdx * sLenN;
                             _shadowBuffer[idx + 5] = sdy * sLenN;
                             _shadowBuffer[idx + 6] = 0.0f;
-                            _shadowBuffer[idx + 7] = py + AgentHalf + sdy * (sLen * 0.5f - AgentQuarter);
+                            _shadowBuffer[idx + 7] = py + FeetOffsetY + sdy * (sLen * 0.5f - AgentQuarter);
                         }
                     }
                     _shadowMultiMesh.Buffer = _shadowBuffer;

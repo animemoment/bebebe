@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Numerics;
 using System.Threading;
 using Game.Core;
@@ -31,14 +32,20 @@ public sealed class FlowFieldManager
 	}
 
 	private readonly ThreadLocal<SearchBuffers> _buffers = new(() => new SearchBuffers());
+	private readonly ConcurrentDictionary<int, Vector2[]> _targetFlowFieldCache = new();
+	private const int MaxCachedFlowFields = 64;
 
-	public void ClearCache() { }
+	public void ClearCache()
+	{
+		_targetFlowFieldCache.Clear();
+	}
 
+	/// <summary>
+	/// Получить вектор направления к целевой клетке (targetTileX, targetTileY).
+	/// Если есть кэшированное поле GPU Flow Field для целевой клетки — читает направление за O(1).
+	/// </summary>
 	public Vector2 GetDirection(float worldX, float worldY, int targetTileX, int targetTileY, SimulationContext ctx)
 	{
-		// Горячий путь (10k агентов x десятки вызовов/с): без GameProfiler.Scope —
-		// Record идёт через ConcurrentDictionary+Interlocked и становится глобальной
-		// точкой contention. Профилируем только верхний Phase-уровень.
 		int startTileX = (int)(worldX / ctx.TileSize);
 		int startTileY = (int)(worldY / ctx.TileSize);
 
@@ -49,9 +56,7 @@ public sealed class FlowFieldManager
 			return toTarget.LengthSquared() > 0.001f ? Vector2.Normalize(toTarget) : Vector2.Zero;
 		}
 
-		// P0.2: ранний выход без BFS для близких целей (<=5 тайлов): большинство локальных
-		// работ (грядки/склад рядом) не нуждаются в поиске обхода 33x33. BFS только при
-		// дальнем/заблокированном движении. ~40-50% Phase3a экономим здесь.
+		// P0.2: ранний выход без BFS для близких целей (<=5 тайлов)
 		int ddx = targetTileX - startTileX;
 		int ddy = targetTileY - startTileY;
 		if (ddx * ddx + ddy * ddy <= 25)
@@ -61,8 +66,46 @@ public sealed class FlowFieldManager
 			return toTarget.LengthSquared() > 0.001f ? Vector2.Normalize(toTarget) : Vector2.Zero;
 		}
 
-		// GPU-трек удалён: только локальный BFS-детур.
+		// GPU Flow Field кэш для частых целей (склады, центры зон, целевые клетки)
+		int targetPacked = (targetTileY * ctx.MapWidth) + targetTileX;
+		if (_targetFlowFieldCache.TryGetValue(targetPacked, out var cachedField))
+		{
+			int agentIdx = startTileY * ctx.MapWidth + startTileX;
+			if ((uint)agentIdx < (uint)cachedField.Length)
+			{
+				Vector2 v = cachedField[agentIdx];
+				if (v != Vector2.Zero)
+					return v;
+			}
+		}
+
+		// Локальный BFS-детур при застревании или отсутствии глобального поля
 		return CalculateLocalDetourDirection(startTileX, startTileY, targetTileX, targetTileY, ctx);
+	}
+
+	/// <summary>
+	/// Запекает или возвращает готовое поле GPU Flow Field для целевой клетки.
+	/// </summary>
+	public Vector2[] GetOrCreateTargetFlowField(int targetTileX, int targetTileY, SimulationContext ctx)
+	{
+		int targetPacked = (targetTileY * ctx.MapWidth) + targetTileX;
+		if (_targetFlowFieldCache.TryGetValue(targetPacked, out var existing))
+			return existing;
+
+		if (_targetFlowFieldCache.Count >= MaxCachedFlowFields)
+			_targetFlowFieldCache.Clear();
+
+		int total = ctx.MapWidth * ctx.MapHeight;
+		var flowVectors = new Vector2[total];
+		byte[] cost = HierarchicalPathfinder.Instance.Cost;
+
+		if (cost != null && cost.Length >= total)
+		{
+			Gpu.GpuFlowFieldSimulator.Instance.ComputeFlowField(cost, ctx.MapWidth, ctx.MapHeight, targetTileX, targetTileY, flowVectors);
+		}
+
+		_targetFlowFieldCache.TryAdd(targetPacked, flowVectors);
+		return flowVectors;
 	}
 
 	private Vector2 CalculateLocalDetourDirection(int startX, int startY, int targetX, int targetY, SimulationContext ctx)

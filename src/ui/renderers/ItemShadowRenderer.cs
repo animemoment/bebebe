@@ -54,17 +54,24 @@ public partial class ItemShadowRenderer : Node2D
         Visible = false;
     }
 
+    public const float ItemShadowZoomCutoff = 0.28f;
+
     /// <summary>Солнце на тик (O(1)). Звать из Main рядом с остальными тенями.</summary>
     public void SetSun(DayNightCycle.SunState sun)
     {
         _sun = sun;
-        _shadowOn = sun.Alpha > 0.004f && sun.LengthPx >= 0.5f;
+        var cam = GetViewport()?.GetCamera2D();
+        float zoom = cam?.Zoom.X ?? 1f;
+        bool zoomAllowed = zoom >= ItemShadowZoomCutoff;
+        _shadowOn = zoomAllowed && sun.Alpha > 0.004f && sun.LengthPx >= 0.5f;
         Visible = _shadowOn;
         if (_instance != null)
         {
             _instance.Visible = _shadowOn;
             if (_shadowOn)
                 _instance.Modulate = new Color(0f, 0f, 0f, sun.Alpha * ItemAlphaScale);
+            else if (_multiMesh != null)
+                _multiMesh.VisibleInstanceCount = 0;
         }
         UpdateView();
     }
@@ -85,10 +92,10 @@ public partial class ItemShadowRenderer : Node2D
     {
         if (_multiMesh == null)
             return;
-        _multiMesh.VisibleInstanceCount = _accumulated;
-        if (_accumulated > 0)
-            _multiMesh.Buffer = _buffer;
         bool show = _shadowOn && _accumulated > 0;
+        _multiMesh.VisibleInstanceCount = show ? _accumulated : 0;
+        if (show)
+            _multiMesh.Buffer = _buffer;
         Visible = show;
         if (_instance != null)
             _instance.Visible = show;

@@ -58,5 +58,5 @@ public static class WorldCellQuery
     }
 
     private static GeneratedCell Sample(ulong seed, uint ver, long x, long y)
-        => WorldChunkGenerator.SampleCell(seed, ver, x, y);
+        => UnifiedWorldGenerator.SampleCell(seed, ver, UnifiedWorldGenerator.WorldOriginX + x, UnifiedWorldGenerator.WorldOriginY + y);
 }

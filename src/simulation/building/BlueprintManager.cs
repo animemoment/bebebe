@@ -276,4 +276,23 @@ public class BlueprintManager
             return false;
         }
     }
+
+    /// <summary>Очистить все активные чертежи при смене региона / перезапуске карты.</summary>
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            var keys = new List<(int X, int Y)>(_blueprints.Keys);
+            _blueprints.Clear();
+            foreach (var (x, y) in keys)
+            {
+                WorkProgressTracker.Instance.Clear(x, y);
+                JobBroker.Instance.UnregisterBlueprint(x, y);
+            }
+            if (keys.Count > 0)
+            {
+                Callable.From(() => OnBlueprintsBatchRemoved?.Invoke(keys)).CallDeferred();
+            }
+        }
+    }
 }

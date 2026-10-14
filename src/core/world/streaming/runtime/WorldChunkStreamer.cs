@@ -54,6 +54,12 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
     private readonly Queue<ChunkStreamFailure> _failures = new();
     private readonly Queue<UnloadWork> _unloadQueue = new();
 
+    // Reusable buffers to eliminate per-update / per-drain heap allocations
+    private readonly Queue<ChunkStreamResult> _readyStaleBuffer = new();
+    private readonly Queue<ChunkStreamFailure> _failureStaleBuffer = new();
+    private readonly List<ChunkKey> _pendingRebuildBuffer = new();
+    private readonly List<(ChunkKey Key, WorkPriority Priority)> _orderedDesiredBuffer = new(256);
+
     // Pulse-all condition variable. Every waiter observes the same current TCS; a producer
     // swaps it under _gate before completing the old one, so work cannot be lost.
     private TaskCompletionSource<bool> _workSignal = NewSignal();
@@ -269,7 +275,7 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
                 $"Payload превышает лимит {WorldChunkCodec.MaxPayloadBytes} байт.");
         if (metadata.Seed != _worldSeed
             || metadata.GeneratorVersion != _generatorVersion
-            || metadata.FeatureSchemaVersion != WorldFeatureGenerator.FeatureSchemaVersion)
+            || metadata.FeatureSchemaVersion != UnifiedWorldGenerator.FeatureSchemaVersion)
             throw new ArgumentException("Metadata должна соответствовать seed, generator version и feature schema этого streamer.", nameof(metadata));
 
         TaskCompletionSource<bool> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -429,7 +435,7 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
 
                 if (loadedSnapshot.Metadata.Seed != _worldSeed
                     || loadedSnapshot.Metadata.GeneratorVersion != _generatorVersion
-                    || loadedSnapshot.Metadata.FeatureSchemaVersion != WorldFeatureGenerator.FeatureSchemaVersion)
+                    || loadedSnapshot.Metadata.FeatureSchemaVersion != UnifiedWorldGenerator.FeatureSchemaVersion)
                     throw new InvalidDataException($"Delta чанка {key} относится к несовместимому seed/generator/feature schema.");
                 snapshot = loadedSnapshot;
             }
@@ -441,9 +447,8 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
                 return;
             }
 
-            // Генератор синхронный: используем MapGenerator.RegionAPI для единого террейна
-            // вместо старого Value-noise WorldChunkGenerator (§24-§33).
-            var chunk = LoadChunkViaRegionApi(key);
+            // Единый генератор чанков (UnifiedWorldGenerator)
+            var chunk = UnifiedWorldGenerator.GenerateChunk(_worldSeed, _generatorVersion, key);
             requestToken.ThrowIfCancellationRequested();
             CompleteChunk(key, chunk, snapshot);
         }
@@ -458,65 +463,6 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
             else
                 CompleteChunkFailure(key, ex);
         }
-    }
-
-    /// <summary>
-    /// Загружает базовый чанк через MapGenerator.RegionAPI — единый генератор террейна
-    /// вместо двух разрозненных (MapGenerator + WorldChunkGenerator).
-    /// Загружает ±1 чанков border чтобы реки/леса на границе выглядели плавно.
-    /// </summary>
-    private WorldChunk LoadChunkViaRegionApi(ChunkKey key)
-    {
-        // Загружаем bbox с border-chunks для seamless terrain/reivers/lakes
-        int borderChunks = 1;
-        int minX = (int)(key.X * WorldChunk.Side - borderChunks * WorldChunk.Side);
-        int maxX = (int)((key.X + 1) * WorldChunk.Side + borderChunks * WorldChunk.Side);
-        int minY = (int)(key.Y * WorldChunk.Side - borderChunks * WorldChunk.Side);
-        int maxY = (int)((key.Y + 1) * WorldChunk.Side + borderChunks * WorldChunk.Side);
-
-        // Генерируем весь region через единый MapGenerator (без falloff'а, без геймплейных проверок)
-        var mapData = MapGenerator.GenerateRegion(
-            minX, maxX, minY, maxY,
-            (uint)_worldSeed, isPlayableMap: false,
-            spawnCenterX: -1, spawnCenterY: -1);
-
-        // Извлекаем только целевые клетки чанка
-        var cells = new GeneratedCell[WorldChunk.CellCount];
-        int offsetTileX = (int)(key.X * WorldChunk.Side) - minX;
-        int offsetTileY = (int)(key.Y * WorldChunk.Side) - minY;
-
-        for (int localY = 0; localY < WorldChunk.Side; localY++)
-        {
-            for (int localX = 0; localX < WorldChunk.Side; localX++)
-            {
-                int globalX = (int)(key.X * WorldChunk.Side) + localX;
-                int globalY = (int)(key.Y * WorldChunk.Side) + localY;
-                int mapX = globalX - minX;
-                int mapY = globalY - minY;
-
-                BaseTerrainKind terrain;
-                switch (mapData.Ground[mapX, mapY])
-                {
-                    case TileType.Water: terrain = BaseTerrainKind.Water; break;
-                    case TileType.Mountain: terrain = BaseTerrainKind.Mountain; break;
-                    default: terrain = BaseTerrainKind.Grass; break;
-                }
-
-                int moisture = mapData.Humidity.Get(mapX, mapY);
-                ushort forestVal = (ushort)(mapData.TreeOnGrass[mapX, mapY] ? 50000 : 10000);
-                ushort stoneVal = (ushort)(mapData.StoneOnGrass[mapX, mapY] ? 40000 : 5000);
-
-                cells[localY * WorldChunk.Side + localX] = new GeneratedCell(
-                    terrain,
-                    (ushort)32768,
-                    (ushort)Math.Clamp(moisture, 0, ushort.MaxValue),
-                    forestVal,
-                    stoneVal,
-                    (ushort)32768);
-            }
-        }
-
-        return new WorldChunk(key, cells);
     }
 
     private void ProcessUnload(UnloadWork work)
@@ -673,12 +619,12 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
     {
         if (_ready.Count == 0)
             return;
-        var retained = new Queue<ChunkStreamResult>(_ready.Count);
+        _readyStaleBuffer.Clear();
         while (_ready.TryDequeue(out ChunkStreamResult result))
         {
             if (_desired.Contains(result.Key))
             {
-                retained.Enqueue(result);
+                _readyStaleBuffer.Enqueue(result);
             }
             else
             {
@@ -686,7 +632,7 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
                 _reserved.Remove(result.Key);
             }
         }
-        while (retained.TryDequeue(out ChunkStreamResult result))
+        while (_readyStaleBuffer.TryDequeue(out ChunkStreamResult result))
             _ready.Enqueue(result);
     }
 
@@ -694,12 +640,12 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
     {
         if (_failures.Count == 0)
             return;
-        var retained = new Queue<ChunkStreamFailure>(_failures.Count);
+        _failureStaleBuffer.Clear();
         while (_failures.TryDequeue(out ChunkStreamFailure failure))
         {
             if (_desired.Contains(failure.Key))
             {
-                retained.Enqueue(failure);
+                _failureStaleBuffer.Enqueue(failure);
             }
             else
             {
@@ -707,7 +653,7 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
                 _reserved.Remove(failure.Key);
             }
         }
-        while (retained.TryDequeue(out ChunkStreamFailure failure))
+        while (_failureStaleBuffer.TryDequeue(out ChunkStreamFailure failure))
             _failures.Enqueue(failure);
     }
 
@@ -715,12 +661,13 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
     {
         _lastVisibleBounds = visibleBounds;
         _hasVisibleBounds = true;
-        ChunkKey[] oldPending = new ChunkKey[_pending.Count];
-        _pending.CopyTo(oldPending);
+        _pendingRebuildBuffer.Clear();
+        foreach (ChunkKey k in _pending)
+            _pendingRebuildBuffer.Add(k);
         _pending.Clear();
         _workQueue.Clear();
 
-        foreach (ChunkKey key in oldPending)
+        foreach (ChunkKey key in _pendingRebuildBuffer)
         {
             if (_desired.Contains(key) && _reserved.Contains(key))
             {
@@ -744,10 +691,16 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
         // Called after drain/failure/unload. The most recent Update already established priorities.
         if (_desired.Count == 0 || _disposeRequested)
             return;
-        foreach (ChunkKey key in OrderedDesiredByDistance_NoLock(_lastVisibleBounds))
+        _orderedDesiredBuffer.Clear();
+        foreach (ChunkKey key in _desired)
+            _orderedDesiredBuffer.Add((key, PriorityFor(key, _lastVisibleBounds)));
+        _orderedDesiredBuffer.Sort(static (a, b) => a.Priority.CompareTo(b.Priority));
+
+        for (int i = 0; i < _orderedDesiredBuffer.Count; i++)
         {
             if (_reserved.Count >= MaxBufferedChunks)
                 break;
+            ChunkKey key = _orderedDesiredBuffer[i].Key;
             if (IsAlreadyTracked_NoLock(key))
                 continue;
             _reserved.Add(key);
@@ -767,16 +720,6 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
             || _failureKeys.Contains(key)
             || _failed.Contains(key)
             || _unloading.Contains(key);
-
-    private IEnumerable<ChunkKey> OrderedDesiredByDistance_NoLock(WorldRect visibleBounds)
-    {
-        var ordered = new List<(ChunkKey Key, WorkPriority Priority)>(_desired.Count);
-        foreach (ChunkKey key in _desired)
-            ordered.Add((key, PriorityFor(key, visibleBounds)));
-        ordered.Sort(static (a, b) => a.Priority.CompareTo(b.Priority));
-        foreach (var item in ordered)
-            yield return item.Key;
-    }
 
     private static WorkPriority PriorityFor(ChunkKey key, WorldRect visibleBounds)
     {

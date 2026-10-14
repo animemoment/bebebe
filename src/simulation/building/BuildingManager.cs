@@ -58,4 +58,17 @@ public class BuildingManager
             return new Dictionary<(int X, int Y), BuildingType>(_buildings);
         }
     }
+
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            var keys = new List<(int X, int Y)>(_buildings.Keys);
+            _buildings.Clear();
+            foreach (var pos in keys)
+            {
+                Callable.From(() => OnBuildingRemoved?.Invoke(pos)).CallDeferred();
+            }
+        }
+    }
 }

@@ -1,5 +1,6 @@
 using Godot;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 namespace Game.Core;
 
@@ -36,6 +37,7 @@ public static class MountainTileHelper
         new(0, 0), // 15 : одиночка (открыт везде)
     };
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector2I GetTile((int X, int Y) pos, HashSet<(int X, int Y)> mountains)
     {
         int open = 0;
@@ -51,6 +53,7 @@ public static class MountainTileHelper
     }
 
     /// <summary>Перегрузка для MapRenderer: соседи читаются прямо из Ground, без HashSet.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector2I GetTile(int x, int y, TileType[,] ground)
     {
         int open = 0;
@@ -66,6 +69,7 @@ public static class MountainTileHelper
     /// края с 2 вариантами (верх/низ/лево/право) — по чётности перпендикулярной оси;
     /// углы и одиночка — детерминированы.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector2I Resolve(int open, int x, int y)
     {
         switch (open)
@@ -86,6 +90,7 @@ public static class MountainTileHelper
     }
 
     /// <summary>Bounds-safe проверка горы.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsMountain(int x, int y, TileType[,] ground)
     {
         if (ground == null) return false;

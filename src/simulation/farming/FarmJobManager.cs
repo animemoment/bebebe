@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Godot;
 
@@ -170,6 +170,22 @@ public class FarmJobManager
         return mask;
     }
 
+    /// <summary>
+    /// Заполнение переиспользуемого буфера маски (bool[w*h], индекс y*w+x) без аллокаций.
+    /// </summary>
+    public void FillGardenBedFlatMask(bool[] mask, int w, int h)
+    {
+        Array.Clear(mask, 0, mask.Length);
+        lock (_lock)
+        {
+            foreach (var (x, y) in _completedBeds)
+            {
+                if ((uint)x < (uint)w && (uint)y < (uint)h)
+                    mask[y * w + x] = true;
+            }
+        }
+    }
+
     public HashSet<(int X, int Y)> GetAllMarkedPlots()
     {
         lock (_lock)
@@ -194,6 +210,21 @@ public class FarmJobManager
             _completedBeds.Add((x, y));
             JobBroker.Instance.UnregisterFarmPlot(x, y);
             Callable.From(() => OnPlotCompleted?.Invoke((x, y))).CallDeferred();
+        }
+    }
+
+    /// <summary>Очистить все грядки и разметку при смене региона / перезапуске карты.</summary>
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            var oldPlots = new List<(int X, int Y)>(_markedPlots);
+            _markedPlots.Clear();
+            _completedBeds.Clear();
+            if (oldPlots.Count > 0)
+            {
+                Callable.From(() => OnPlotsBatchUnmarked?.Invoke(oldPlots)).CallDeferred();
+            }
         }
     }
 }

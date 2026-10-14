@@ -39,6 +39,14 @@ public static class DynamicWorkBalancer
 	}
 
 	/// <summary>
+	/// Range-вариант со слотом воркера [0, dop) для lock-free структур без False Sharing.
+	/// </summary>
+	public static int ForEachRange(int count, Action<int, int, int> body, string profilerScope = null)
+	{
+		return DynamicWorkScheduler.Shared.ForEachRange(count, body, WorkKind.Fast, profilerScope);
+	}
+
+	/// <summary>
 	/// Сброс EMA-состояния (например, при смене скорости симуляции).
 	/// Finding 3: оставлен для явного полного сброса; смена скорости в
 	/// AgentSimulationThread идёт через ResetForSpeedChange (EMA хранится).

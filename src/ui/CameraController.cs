@@ -11,7 +11,16 @@ public partial class CameraController : Camera2D
     [Export] public Vector2 MinZoom = new Vector2(0.12f, 0.12f);
     [Export] public Vector2 MaxZoom = new Vector2(4f, 4f);
     [Export] public Vector2 MapSizeTiles = new Vector2(MapRenderer.MapWidth, MapRenderer.MapHeight);
+    [Export] public Vector2 MinPositionTiles = new Vector2(-1_000_000f, -1_000_000f);
+    [Export] public Vector2 MaxPositionTiles = new Vector2(1_000_000f, 1_000_000f);
     [Export] public int TileSize = MapRenderer.TileSizePx;
+
+    public void SetWorldBoundsTiles(long minX, long minY, long maxX, long maxY)
+    {
+        MinPositionTiles = new Vector2(minX, minY);
+        MaxPositionTiles = new Vector2(maxX, maxY);
+        ClampPosition();
+    }
 
     private bool _isMiddleDragging;
 
@@ -46,30 +55,37 @@ public partial class CameraController : Camera2D
             im.AddAction(actionName);
             foreach (var key in defaultKeys)
             {
-                var ev = new InputEventKey { Keycode = key };
+                var ev = new InputEventKey { Keycode = key, PhysicalKeycode = key };
                 im.ActionAddEvent(actionName, ev);
             }
         }
+    }
+
+    private static bool IsPressed(string action, Key physicalKey, Key arrowKey)
+    {
+        return Input.IsPhysicalKeyPressed(physicalKey)
+            || Input.IsPhysicalKeyPressed(arrowKey)
+            || (Input.IsActionPressed(action) && (Input.IsKeyPressed(physicalKey) || Input.IsKeyPressed(arrowKey)));
     }
 
     public override void _Process(double delta)
     {
         Vector2 direction = Vector2.Zero;
 
-        if (Input.IsActionPressed(ActionUp))
+        if (IsPressed(ActionUp, Key.W, Key.Up))
             direction.Y -= 1;
-        if (Input.IsActionPressed(ActionDown))
+        if (IsPressed(ActionDown, Key.S, Key.Down))
             direction.Y += 1;
-        if (Input.IsActionPressed(ActionLeft))
+        if (IsPressed(ActionLeft, Key.A, Key.Left))
             direction.X -= 1;
-        if (Input.IsActionPressed(ActionRight))
+        if (IsPressed(ActionRight, Key.D, Key.Right))
             direction.X += 1;
 
         if (direction != Vector2.Zero)
             direction = direction.Normalized();
 
         float speed = MoveSpeed * (float)delta;
-        if (Input.IsKeyPressed(Key.Shift))
+        if (Input.IsKeyPressed(Key.Shift) || Input.IsPhysicalKeyPressed(Key.Shift))
             speed *= ShiftMultiplier;
 
         Position += direction * speed;
@@ -125,35 +141,40 @@ public partial class CameraController : Camera2D
 
     private void ClampPosition()
     {
-        Vector2 mapSizePixels = MapSizeTiles * TileSize;
+        if (!IsInsideTree())
+            return;
+
+        Vector2 minPixels = MinPositionTiles * TileSize;
+        Vector2 maxPixels = MaxPositionTiles * TileSize;
+        Vector2 worldSpan = maxPixels - minPixels;
         Vector2 viewportSize = GetViewportRect().Size;
 
         float visibleWorldX = viewportSize.X / Zoom.X;
         float visibleWorldY = viewportSize.Y / Zoom.Y;
 
-        if (visibleWorldX >= mapSizePixels.X)
+        if (visibleWorldX >= worldSpan.X)
         {
-            Position = new Vector2(mapSizePixels.X / 2f, Position.Y);
+            Position = new Vector2((minPixels.X + maxPixels.X) / 2f, Position.Y);
         }
         else
         {
             float halfViewWorld = visibleWorldX / 2f;
             Position = new Vector2(
-                Mathf.Clamp(Position.X, halfViewWorld, mapSizePixels.X - halfViewWorld),
+                Mathf.Clamp(Position.X, minPixels.X + halfViewWorld, maxPixels.X - halfViewWorld),
                 Position.Y
             );
         }
 
-        if (visibleWorldY >= mapSizePixels.Y)
+        if (visibleWorldY >= worldSpan.Y)
         {
-            Position = new Vector2(Position.X, mapSizePixels.Y / 2f);
+            Position = new Vector2(Position.X, (minPixels.Y + maxPixels.Y) / 2f);
         }
         else
         {
             float halfViewWorld = visibleWorldY / 2f;
             Position = new Vector2(
                 Position.X,
-                Mathf.Clamp(Position.Y, halfViewWorld, mapSizePixels.Y - halfViewWorld)
+                Mathf.Clamp(Position.Y, minPixels.Y + halfViewWorld, maxPixels.Y - halfViewWorld)
             );
         }
     }

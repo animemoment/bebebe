@@ -37,9 +37,9 @@ public sealed class HierarchicalPathfinder
 	// #13: CostWater=6 — это ФЛАГ типа клетки («вода»), а НЕ множитель пути.
 	// Реальный штраф воды — ×3 к шагу (step *= 3 ниже: 10→30 / 14→42).
 	// _cost[] как вес напрямую использовать нельзя (дало бы ×6 вместо ×3).
-	private const byte CostBlocked = 0;
-	private const byte CostGrass = 1;
-	private const byte CostWater = 6;
+	public const byte CostBlocked = 0;
+	public const byte CostGrass = 1;
+	public const byte CostWater = 6;
 	// Сколько водных тайлов подряд LOS прощает напрямик (мелкая лужа/брод).
 	// Длиннее — строим иерархический путь с водным штрафом (обход).
 	private const int MaxDirectWaterTiles = 3;
@@ -57,6 +57,10 @@ public sealed class HierarchicalPathfinder
 	private int _regionDimY;
 
 	private byte[] _cost;              // [mapWidth*mapHeight]
+	public byte[] Cost => _cost;
+	public int MapWidth => _mapWidth;
+	public int MapHeight => _mapHeight;
+
 	private int[] _edgeStart;          // [regions*4] стартовый индекс в _portals
 	private int[] _edgeCount;          // [regions*4] число порталов у (регион, направление)
 	private int[] _portals;            // плоский массив якорей порталов (packed cell)
@@ -258,14 +262,100 @@ public sealed class HierarchicalPathfinder
 			return false;
 
 		// Единственная аллокация на УСПЕШНЫЙ немгновенный путь: точный sized-массив
-		// результата. Scratch не отдаём наружу — его перезапишет следующий
-		// запрос этого потока. Сегменты GetSegmentCached уже закэшированы
-		// (int[] в ConcurrentDictionary), их аллокации амортизированы.
+		// результата. Для горячего пути симуляции используйте TryFindPathScratch.
 		var result = new int[smoothed];
 		scratch.SmoothScratch.AsSpan(0, smoothed).CopyTo(result);
 
 		outPath = result;
 		count = result.Length;
+		return true;
+	}
+
+	/// <summary>
+	/// ZERO-ALLOC версия для горячего пути симуляции: возвращает ссылку на per-thread
+	/// scratch.SmoothScratch без создания нового массива. Вызывающий поток обязан
+	/// прочитать первые <paramref name="count"/> элементов немедленно, не сохраняя ссылку.
+	/// </summary>
+	public bool TryFindPathScratch(int sx, int sy, int tx, int ty, out int[] scratchBuf, out int count)
+	{
+		scratchBuf = null;
+		count = 0;
+
+		if (sx == tx && sy == ty)
+			return true;
+
+		if (_cost == null)
+		{
+			EnsureOverlay();
+			if (_cost == null)
+				return false;
+		}
+
+		if (LineOfSightWithWater(sx, sy, tx, ty, out int directWater)
+			&& directWater <= MaxDirectWaterTiles)
+			return true;
+
+		int sr = RegionOfCell(sx, sy);
+		int tr = RegionOfCell(tx, ty);
+
+		int[] regionPath = GetRegionPathCached(sr, tr);
+		if (regionPath == null || regionPath.Length < 2)
+			return false;
+
+		int regionCount = regionPath.Length;
+		var scratch = _buffers.Value;
+		int anchorPairs = regionCount - 1;
+		if (anchorPairs <= 0 || anchorPairs * 2 > scratch.Anchor.Length)
+			return false;
+
+		Span<int> anchors = scratch.Anchor.AsSpan(0, anchorPairs * 2);
+		Span<int> anchorX = anchors.Slice(0, anchorPairs);
+		Span<int> anchorY = anchors.Slice(anchorPairs, anchorPairs);
+
+		for (int t = 0; t < regionCount - 1; t++)
+		{
+			if (!PickBestPortal(regionPath[t], regionPath[t + 1], sx, sy, tx, ty,
+				out anchorX[t], out anchorY[t]))
+			{
+				return false;
+			}
+		}
+
+		Span<int> path = scratch.PathScratch;
+		int pathLen = 0;
+
+		for (int i = 0; i < regionCount; i++)
+		{
+			int fromX = i == 0 ? sx : anchorX[i - 1];
+			int fromY = i == 0 ? sy : anchorY[i - 1];
+			int toX = i == regionCount - 1 ? tx : anchorX[i];
+			int toY = i == regionCount - 1 ? ty : anchorY[i];
+
+			if (fromX == toX && fromY == toY)
+				continue;
+
+			int[] seg = GetSegmentCached(fromX, fromY, toX, toY);
+			if (seg == null || seg.Length < 2)
+				return false;
+
+			if (pathLen + seg.Length - 1 > path.Length)
+				return false;
+			for (int k = 1; k < seg.Length; k++)
+			{
+				path[pathLen++] = seg[k];
+			}
+		}
+
+		if (pathLen == 0)
+			return true;
+
+		int smoothed = SmoothPath(sx, sy, tx, ty, path.Slice(0, pathLen), scratch.SmoothScratch);
+		if (smoothed <= 0)
+			return false;
+
+		// Ноль аллокаций: отдаём ThreadLocal буфер напрямую
+		scratchBuf = scratch.SmoothScratch;
+		count = smoothed;
 		return true;
 	}
 
@@ -296,11 +386,9 @@ public sealed class HierarchicalPathfinder
 				for (int x = 0; x < w; x++)
 				{
 					byte c;
-					// Камень проходим (как трава): россыпь не блокирует путь.
-					if (_ctx.SolidWalls[x, y] || _ctx.Ground[x, y] == TileType.Mountain)
+					// Камень проходим (как трава): россыпь не блокирует путь. Вода и горы блокируют путь.
+					if (_ctx.SolidWalls[x, y] || _ctx.Ground[x, y] == TileType.Mountain || _ctx.Ground[x, y] == TileType.Water)
 						c = CostBlocked;
-					else if (_ctx.Ground[x, y] == TileType.Water)
-						c = CostWater;
 					else
 						c = CostGrass;
 					cost[rowBase + x] = c;
@@ -585,9 +673,9 @@ public sealed class HierarchicalPathfinder
 		if (cap > g.Length)
 			return null;
 
-		Array.Fill(g, int.MaxValue);
-		Array.Fill(parent, -1);
-		Array.Fill(closed, false);
+		Array.Fill(g, int.MaxValue, 0, cap);
+		Array.Fill(parent, -1, 0, cap);
+		Array.Fill(closed, false, 0, cap);
 
 		int openCount = 0;
 		open[0] = sr;
@@ -832,9 +920,9 @@ public sealed class HierarchicalPathfinder
 		int[] open = b.Open;
 		bool[] closed = b.Closed;
 
-		Array.Fill(g, int.MaxValue);
-		Array.Fill(parent, -1);
-		Array.Fill(closed, false);
+		Array.Fill(g, int.MaxValue, 0, cap);
+		Array.Fill(parent, -1, 0, cap);
+		Array.Fill(closed, false, 0, cap);
 
 		int sidx = (fy - minY) * ww + (fx - minX);
 		int tidx = (ty - minY) * ww + (tx - minX);

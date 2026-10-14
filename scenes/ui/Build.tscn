@@ -29,44 +29,13 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="HBoxContainer3" type="HBoxContainer" parent="." unique_id=1941492016]
-layout_mode = 0
-offset_top = -280.0
-offset_right = 544.0
-offset_bottom = -230.0
-theme_override_constants/separation = 63
-
-[node name="Button" type="Button" parent="HBoxContainer3" unique_id=1302253801]
-custom_minimum_size = Vector2(50, 50)
-layout_mode = 2
-
-[node name="Button2" type="Button" parent="HBoxContainer3" unique_id=1087056401]
-custom_minimum_size = Vector2(50, 50)
-layout_mode = 2
-
-[node name="Button3" type="Button" parent="HBoxContainer3" unique_id=574349315]
-custom_minimum_size = Vector2(50, 50)
-layout_mode = 2
-
-[node name="Button4" type="Button" parent="HBoxContainer3" unique_id=934158816]
-custom_minimum_size = Vector2(50, 50)
-layout_mode = 2
-
-[node name="Button5" type="Button" parent="HBoxContainer3" unique_id=326449213]
-custom_minimum_size = Vector2(50, 50)
-layout_mode = 2
-
-[node name="Panel2" type="Panel" parent="." unique_id=1796129257]
-layout_mode = 0
-offset_top = 73.0
-offset_bottom = 73.0
-theme_override_styles/panel = SubResource("StyleBoxFlat_4pfqy")
-
 [node name="ScrollContainer" type="ScrollContainer" parent="." unique_id=1239572011]
-layout_mode = 0
+layout_mode = 1
+anchors_preset = 9
+anchor_bottom = 1.0
 offset_top = 73.0
 offset_right = 542.0
-offset_bottom = 1077.0
+grow_vertical = 2
 
 [node name="PanelContainer" type="PanelContainer" parent="ScrollContainer" unique_id=735098447]
 layout_mode = 2

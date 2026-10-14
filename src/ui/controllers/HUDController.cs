@@ -136,6 +136,11 @@ public partial class HUDController : Control
         // рядом с рубкой. Иконки = те же спрайты, что в мире (100x100, expand_icon).
         SetupFurnitureButtons();
         SetupStoneMiningButton();
+        ApplyResponsiveLayout();
+        if (GetTree()?.Root != null)
+        {
+            GetTree().Root.SizeChanged += ApplyResponsiveLayout;
+        }
         SetMouseFilterRecursive(this);
 
         if (_buttonConstruct != null)
@@ -485,12 +490,14 @@ public partial class HUDController : Control
         {
             CloseAllMenus();
             ClearActiveToolButton();
-            SetMainHUDVisible(false);
         };
 
         _buildMenuController.OnClosed += () =>
         {
             SetMainHUDVisible(true);
+            ShowContainer(_selectionContainer);
+            ShowContainer(_buildContainer);
+            ShowContainer(_zoneContainer);
         };
     }
 
@@ -1201,12 +1208,15 @@ public partial class HUDController : Control
     }
 
     private Button _buttonMap; // Сохраняем ссылку для защиты от дубликатов
+    private Action _worldMapCallback;
 
     /// <summary>Привязать кнопку ButtonMap (глобальная карта §23/§24) к переключению оверлея.</summary>
     public void BindWorldMapButton(Action onPressed)
     {
         if (onPressed == null)
             return;
+
+        _worldMapCallback = onPressed;
 
         if (_buttonMap != null && GodotObject.IsInstanceValid(_buttonMap))
             return;
@@ -1219,46 +1229,144 @@ public partial class HUDController : Control
             GD.PrintErr("[HUD] ButtonMap NOT found — checking scene tree:");
             foreach (var child in GetChildren())
                 GD.Print($"  [HUD] direct child: '{child.Name}' ({child.GetType().Name})");
-            
-            // Also search recursively for troubleshooting
-            var recurse = FindChild("Button*", false, false);
-            GD.Print($"  [HUD] recursive partial match: {(recurse != null ? recurse.Name : "NONE")}");
             return;
         }
 
         _buttonMap = button;
         _buttonMap.MouseFilter = Control.MouseFilterEnum.Stop;
-        
-        // Ensure visible and styled — guarantee clickable even if theme overrides fail
+        _buttonMap.FocusMode = Control.FocusModeEnum.None;
         _buttonMap.Visible = true;
         _buttonMap.SetProcessInput(true);
-        
-        // Move to end so it draws above all sibling panels
-        if (_buttonMap.GetParent() == this)
-        {
-            RemoveChild(_buttonMap);
-            AddChild(_buttonMap);
-        }
+        _buttonMap.ZIndex = 50;
 
-        // Force a StyleBoxFlat with semi-transparent bg for reliable interaction
-        var style = new StyleBoxFlat
+        // Полноценная стилизация с четким откликом при наведении и клике
+        var styleNormal = new StyleBoxFlat
         {
-            BgColor = new Color(0f, 0f, 0f, 0.01f),
-            DrawCenter = true,
-            BorderWidthLeft = 0,
-            BorderWidthTop = 0,
-            BorderWidthRight = 0,
-            BorderWidthBottom = 0
+            BgColor = new Color(0.10f, 0.10f, 0.12f, 0.90f),
+            CornerRadiusBottomLeft = 4,
+            CornerRadiusBottomRight = 4,
+            CornerRadiusTopLeft = 4,
+            CornerRadiusTopRight = 4,
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            BorderColor = new Color(0.35f, 0.35f, 0.40f, 0.85f)
         };
-        _buttonMap.AddThemeStyleboxOverride("normal", style);
+        var styleHover = new StyleBoxFlat
+        {
+            BgColor = new Color(0.20f, 0.24f, 0.32f, 0.95f),
+            CornerRadiusBottomLeft = 4,
+            CornerRadiusBottomRight = 4,
+            CornerRadiusTopLeft = 4,
+            CornerRadiusTopRight = 4,
+            BorderWidthLeft = 2,
+            BorderWidthTop = 2,
+            BorderWidthRight = 2,
+            BorderWidthBottom = 2,
+            BorderColor = new Color(0.45f, 0.70f, 0.95f, 1.0f)
+        };
+        var stylePressed = new StyleBoxFlat
+        {
+            BgColor = new Color(0.06f, 0.08f, 0.12f, 1.0f),
+            CornerRadiusBottomLeft = 4,
+            CornerRadiusBottomRight = 4,
+            CornerRadiusTopLeft = 4,
+            CornerRadiusTopRight = 4,
+            BorderWidthLeft = 2,
+            BorderWidthTop = 2,
+            BorderWidthRight = 2,
+            BorderWidthBottom = 2,
+            BorderColor = new Color(0.95f, 0.80f, 0.25f, 1.0f)
+        };
+        _buttonMap.AddThemeStyleboxOverride("normal", styleNormal);
+        _buttonMap.AddThemeStyleboxOverride("hover", styleHover);
+        _buttonMap.AddThemeStyleboxOverride("pressed", stylePressed);
+
+        _buttonMap.MoveToFront();
 
         _buttonMap.Pressed += () =>
         {
             GD.Print("[HUD BUTTONMAP] CLICKED → invoking ToggleWorldMap");
-            onPressed.Invoke();
+            _worldMapCallback?.Invoke();
         };
 
         GD.Print($"[HUD] ButtonMap bound OK (pos={_buttonMap.Position}, size={_buttonMap.Size}, icon={(_buttonMap.Icon != null ? _buttonMap.Icon.ResourcePath : "none")})");
+    }
+
+    private static void AnchorToRight(Control ctrl, float rightOffset, float width, float top, float height)
+    {
+        if (ctrl == null) return;
+        ctrl.AnchorLeft = 1.0f;
+        ctrl.AnchorRight = 1.0f;
+        ctrl.OffsetLeft = -rightOffset;
+        ctrl.OffsetRight = -rightOffset + width;
+        ctrl.OffsetTop = top;
+        ctrl.OffsetBottom = top + height;
+    }
+
+    private static void AnchorToBottom(Control ctrl, float bottomOffset, float height)
+    {
+        if (ctrl == null) return;
+        ctrl.AnchorTop = 1.0f;
+        ctrl.AnchorBottom = 1.0f;
+        ctrl.OffsetTop = -bottomOffset;
+        ctrl.OffsetBottom = -bottomOffset + height;
+    }
+
+    private static void AnchorToTopCenter(Control ctrl, float distFromCenter, float width, float top, float height)
+    {
+        if (ctrl == null) return;
+        ctrl.AnchorLeft = 0.5f;
+        ctrl.AnchorRight = 0.5f;
+        ctrl.OffsetLeft = distFromCenter;
+        ctrl.OffsetRight = distFromCenter + width;
+        ctrl.OffsetTop = top;
+        ctrl.OffsetBottom = top + height;
+    }
+
+    private void ApplyResponsiveLayout()
+    {
+        SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+
+        // Правые кнопки и панели (выравнивание по правому краю, отсчёт от 1920)
+        AnchorToRight(_buttonMap ?? (FindChild("BtnOpenWorldMap", true, false) as Control), 76f, 75f, 0f, 75f);
+        AnchorToRight(_otherButton, 76f, 25f, 76f, 25f);
+        AnchorToRight(_additionallyBox, 132f, 54f, 76f, 54f);
+        AnchorToRight(FindChild("Politic", true, false) as Control, 75f, 75f, 223f, 75f);
+        AnchorToRight(_buttonConstruct, 75f, 75f, 301f, 75f);
+        AnchorToRight(FindChild("ButtonVillagers", true, false) as Control, 75f, 75f, 378f, 75f);
+        AnchorToRight(_prioritetButton, 349f, 75f, 454f, 75f);
+
+        if (_amountOfResourcesPanel != null)
+        {
+            _amountOfResourcesPanel.AnchorLeft = 1.0f;
+            _amountOfResourcesPanel.AnchorRight = 1.0f;
+            _amountOfResourcesPanel.AnchorTop = 0.0f;
+            _amountOfResourcesPanel.AnchorBottom = 1.0f;
+            _amountOfResourcesPanel.OffsetLeft = -274f;
+            _amountOfResourcesPanel.OffsetRight = 0f;
+            _amountOfResourcesPanel.OffsetTop = 454f;
+            _amountOfResourcesPanel.OffsetBottom = 0f;
+        }
+
+        // Нижние контейнеры строительства и приказов (привязка к низу экрана)
+        AnchorToBottom(_selectionContainer, 101f, 100f);
+        AnchorToBottom(_buildContainer, 202f, 100f);
+        AnchorToBottom(_orderContainer, 202f, 100f);
+        AnchorToBottom(_wallContainer, 304f, 100f);
+        AnchorToBottom(_zoneContainer, 304f, 100f);
+        AnchorToBottom(_industrialContainer, 305f, 100f);
+
+        // Верхний центр: индикаторы населения, времени, кнопки скорости (от центра 960)
+        AnchorToTopCenter(_populationLabel, -415f, 81f, 1f, 39f);
+        AnchorToTopCenter(_employmentLabel, -333f, 81f, 1f, 39f);
+        AnchorToTopCenter(_stopButton, -127f, 48f, 1f, 45f);
+        AnchorToTopCenter(_speed1xButton, -78f, 48f, 1f, 45f);
+        AnchorToTopCenter(_speed5xButton, -29f, 48f, 1f, 45f);
+        AnchorToTopCenter(_speed25xButton, 20f, 48f, 1f, 45f);
+        AnchorToTopCenter(_speed100xButton, 69f, 51f, 1f, 45f);
+        AnchorToTopCenter(_worldTimeLabel, 124f, 135f, 1f, 34f);
     }
 
     private static void SetMouseFilterRecursive(Control control)
@@ -1287,6 +1395,10 @@ public partial class HUDController : Control
     {
         if (Instance == this)
             Instance = null;
+        if (GetTree()?.Root != null)
+        {
+            GetTree().Root.SizeChanged -= ApplyResponsiveLayout;
+        }
         StockpileManager.Instance.OnItemCountChanged -= OnStockpileItemCountChanged;
         if (PlayerInteractionManager.Instance != null)
         {
