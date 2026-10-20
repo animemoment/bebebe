@@ -31,3 +31,9 @@ powershell.exe
 *.zip
 *.log
 *.tmp
+
+# --- генерируемые артефакты инструментов ---
+build_status.json
+build_history.jsonl
+.viz_cache.json
+dependency_graph_visualizer/__pycache__/

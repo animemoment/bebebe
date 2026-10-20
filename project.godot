@@ -20,6 +20,7 @@ run/max_fps=1000
 _mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 McpInteractionServer="*res://autoload/mcp_interaction_server.gd"
 AgentTools="*res://autoload/agent_tools.gd"
+PerfProbe="*res://autoload/perf_probe.gd"
 
 [display]
 

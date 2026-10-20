@@ -131,6 +131,8 @@ func _handle_command(json_str: String) -> void:
 			await _cmd_key_press(params)
 		"eval":
 			await _cmd_eval(params)
+		"run_gdscript":
+			await _cmd_run_gdscript(params)
 		"wait":
 			await _cmd_wait(params)
 		# Sync commands
@@ -565,11 +567,58 @@ func _string_to_keycode(key_str: String) -> int:
 	return KEY_NONE
 
 
-# --- Eval: Execute arbitrary GDScript at runtime ---
+# --- Eval guard: single expressions only ---
+# eval() is for ONE expression. Multi-line code, statements (var/for/while/if/
+# func/...) or ';' separators used to be handed to the GDScript compiler here,
+# and a parse failure inside a debug (`-d`) run can leave the game process
+# stuck in the debugger, killing the whole session. Anything that is not a
+# single expression is therefore rejected up front and pointed at
+# run_gdscript, which compiles and executes multi-line code in a temp script.
+# Returns "" when the code is safe to eval, otherwise the reason for rejecting
+# it. The check is deliberately crude (comments/string literals are not parsed):
+# rejecting a little too much is far cheaper than a hung instance.
+func _validate_eval_code(code: String) -> String:
+	var trimmed: String = code.strip_edges()
+	if trimmed.is_empty():
+		return "code is empty"
+	if trimmed.contains("\n") or trimmed.contains("\r"):
+		return "code spans multiple lines (eval executes a single expression only)"
+	if trimmed.contains(";"):
+		return "code contains a ';' statement separator"
+	# A single-line `return <expr>` is the legacy idiom ("return Engine.get_
+	# frames_per_second()") and stays supported: it is wrapped into _run() and
+	# returns the expression value unchanged.
+	if trimmed.begins_with("return "):
+		var expr: String = trimmed.substr(7).strip_edges()
+		if expr.is_empty():
+			return "'return' without an expression"
+		if expr.begins_with("return "):
+			return "nested 'return' statement"
+		return ""
+	for keyword in ["var ", "const ", "static ", "for ", "while ", "if ", "elif ", "else", "match ", "func ", "class ", "class_name ", "extends ", "enum ", "signal ", "pass", "break", "continue"]:
+		if trimmed.begins_with(keyword):
+			return "code starts with the statement keyword '%s' (eval runs expressions, not statements)" % keyword.strip_edges()
+	if trimmed.ends_with(":"):
+		return "code ends with ':' (a block header is a statement)"
+	return ""
+
+
+# --- Eval: Execute one GDScript expression at runtime ---
 func _cmd_eval(params: Dictionary) -> void:
 	var code: String = params.get("code", "")
-	if code.is_empty():
-		_send_response({"error": "No code provided"})
+	if code.strip_edges().is_empty():
+		_send_response({"ok": false, "success": false, "error": "no_code", "detail": "params.code is required"})
+		return
+
+	var invalid_reason: String = _validate_eval_code(code)
+	if invalid_reason != "":
+		_send_response({
+			"ok": false,
+			"success": false,
+			"error": "not_single_expression",
+			"hint": "use run_gdscript",
+			"detail": invalid_reason,
+		})
 		return
 
 	# Wrap user code in a function so we can capture the return value
@@ -602,7 +651,7 @@ func _run():
 		result = await temp_node.execute()
 
 	temp_node.queue_free()
-	_send_response({"success": true, "result": _variant_to_json(result)})
+	_send_response({"ok": true, "success": true, "result": _variant_to_json(result)})
 
 
 func _indent_code(code: String) -> String:
@@ -611,6 +660,182 @@ func _indent_code(code: String) -> String:
 	for line in lines:
 		indented += "\t" + line + "\n"
 	return indented
+
+
+# --- Run GDScript: Execute multi-line GDScript in a throwaway script ---
+# Safe counterpart of eval: the code is compiled as a real GDScript (so parse
+# errors are reported as {"ok":false,"error":"parse_error"}), then executed.
+# Nothing is left behind in the tree: a temp node is added, used and freed.
+func _cmd_run_gdscript(params: Dictionary) -> void:
+	var code: String = str(params.get("code", ""))
+	if code.strip_edges().is_empty():
+		_send_response({"ok": false, "error": "no_code", "detail": "params.code is required"})
+		return
+	var timeout_ms: int = int(params.get("timeout_ms", 5000))
+	if timeout_ms <= 0:
+		timeout_ms = 5000
+
+	# IMPORTANT: GDScript.reload() on broken source makes the engine halt in the
+	# debugger ("Debugger Break, Reason: 'Parser Error: ...'") when the game was
+	# started with -d, freezing the whole instance. So broken code must be
+	# rejected BEFORE the compiler ever sees it.
+	var lex_error: String = _gdscript_sanity_check(code)
+	if lex_error != "":
+		_send_response({
+			"ok": false,
+			"error": "parse_error",
+			"detail": lex_error,
+			"timeout_ms": timeout_ms,
+			"logs": [],
+		})
+		return
+
+	var script: GDScript = GDScript.new()
+	script.source_code = _build_run_script(code)
+	var err: int = script.reload()
+	if err != OK:
+		_send_response({
+			"ok": false,
+			"error": "parse_error",
+			"detail": "GDScript.reload() failed with error code %d; parser messages are in the game output (godot_get_debug_output)" % err,
+			"timeout_ms": timeout_ms,
+			"logs": _drain_script_logs(),
+		})
+		return
+	if not script.can_instantiate():
+		_send_response({
+			"ok": false,
+			"error": "parse_error",
+			"detail": "compiled script cannot be instantiated (script has no valid class body)",
+			"timeout_ms": timeout_ms,
+			"logs": _drain_script_logs(),
+		})
+		return
+
+	var instance: Object = script.new()
+	if instance == null:
+		_send_response({"ok": false, "error": "instantiate_failed", "detail": "script.new() returned null", "timeout_ms": timeout_ms, "logs": _drain_script_logs()})
+		return
+
+	var is_node: bool = instance is Node
+	if is_node:
+		var node: Node = instance as Node
+		# Run even when the game is paused, like eval does.
+		node.process_mode = Node.PROCESS_MODE_ALWAYS
+		add_child(node)
+
+	var result: Variant = null
+	if instance.has_method("run"):
+		result = instance.call("run")
+
+	# Never leave scaffolding in the scene.
+	if is_node:
+		var temp: Node = instance as Node
+		if temp.get_parent() == self:
+			remove_child(temp)
+		temp.free()
+
+	_send_response({"ok": true, "result": _variant_to_json(result), "logs": _drain_script_logs()})
+
+
+# Wrap a plain block of statements into a run() method so "return <x>" yields
+# the result. Code that already declares a script body (extends/class_name or
+# a top-level func) is used verbatim.
+func _build_run_script(code: String) -> String:
+	var trimmed: String = code.strip_edges()
+	for line in trimmed.split("\n"):
+		var bare: String = line.strip_edges()
+		if bare.begins_with("extends ") or bare.begins_with("class_name "):
+			return trimmed + "\n"
+		if not line.begins_with("\t") and not line.begins_with(" ") and bare.begins_with("func "):
+			return trimmed + "\n"
+	return "extends Node\n\n\nfunc run():\n%s" % _indent_gdscript(trimmed)
+
+
+# Indent helper that keeps blank lines empty (a tab-only line upsets the parser).
+func _indent_gdscript(code: String) -> String:
+	var indented: String = ""
+	for line in code.split("\n"):
+		if line.strip_edges().is_empty():
+			indented += "\n"
+		else:
+			indented += "\t" + line + "\n"
+	return indented
+
+
+# This project has no print()/push_error() sink to hook into, so script output
+# still goes to stdout (read it with godot_get_debug_output). Kept as a hook so
+# run_gdscript always answers with the documented "logs" array.
+func _drain_script_logs() -> Array:
+	return []
+
+
+# Cheap lexical pre-check for run_gdscript. It cannot prove the code parses
+# (that is what GDScript.reload() is for), but it rejects the blatant breakage
+# that would otherwise trap the engine in the debugger when compiled.
+# Returns "" when the code looks plausible, otherwise the problem found.
+func _gdscript_sanity_check(code: String) -> String:
+	var parens: int = 0
+	var square: int = 0
+	var curly: int = 0
+	var lines: PackedStringArray = code.split("\n")
+	for i in range(lines.size()):
+		var line: String = lines[i].strip_edges()
+		if line.is_empty() or line.begins_with("#"):
+			continue
+		var comment_at: int = line.find(" #")
+		if comment_at >= 0:
+			line = line.substr(0, comment_at).strip_edges()
+		if line.is_empty():
+			continue
+		var scan: Array = _strip_gdscript_strings(line)
+		if not bool(scan[0]):
+			return "unterminated string literal on line %d" % (i + 1)
+		var bare: String = str(scan[1])
+		parens += bare.count("(") - bare.count(")")
+		square += bare.count("[") - bare.count("]")
+		curly += bare.count("{") - bare.count("}")
+		# `var =` / `const =`: no name, the parser dies on it.
+		if line.contains("=") and not line.begins_with("=="):
+			var assign_head: String = line.split("=")[0].strip_edges()
+			if assign_head == "var" or assign_head == "const":
+				return "missing name after '%s' on line %d" % [assign_head, i + 1]
+		if line.begins_with("func "):
+			if not line.contains("("):
+				return "'func' without a parameter list on line %d" % (i + 1)
+		for block_kw in ["for ", "while ", "if ", "elif ", "else", "func ", "match ", "class ", "static func "]:
+			if line.begins_with(block_kw):
+				if not line.contains(":"):
+					return "block header '%s...' is missing ':' on line %d" % [block_kw.strip_edges(), i + 1]
+				break
+	if parens != 0 or square != 0 or curly != 0:
+		return "unbalanced brackets (parentheses %d, square %d, curly %d left open)" % [parens, square, curly]
+	return ""
+
+
+# Remove double-quoted literals so brackets inside strings are not counted.
+# Returns [closed: bool, text_without_strings: String].
+func _strip_gdscript_strings(line: String) -> Array:
+	var out: String = ""
+	var in_string: bool = false
+	var i: int = 0
+	while i < line.length():
+		var ch: String = line[i]
+		if in_string:
+			if ch == "\\":
+				i += 2
+				continue
+			if ch == "\"":
+				in_string = false
+			i += 1
+			continue
+		if ch == "\"":
+			in_string = true
+			i += 1
+			continue
+		out += ch
+		i += 1
+	return [not in_string, out]
 
 
 # --- Get Property ---
