@@ -248,8 +248,9 @@ func _cmd_ui() -> Dictionary:
 					"path": str(c.get_path()),
 					"type": c.get_class(),
 					"text": txt.substr(0, 80),
-					"rect": [int(c.global_position.x), int(c.global_position.y),
-							 int(c.size.x), int(c.size.y)],
+					"rect": _canvas_rect_to_window(c),
+					"rect_canvas": [int(c.global_position.x), int(c.global_position.y),
+									int(c.size.x), int(c.size.y)],
 				})
 		for ch in n.get_children():
 			stack.append(ch)
@@ -276,7 +277,7 @@ func _cmd_eval(args: Dictionary) -> Dictionary:
 	var err := expr.parse(code, ["node", "self_node"])
 	if err != OK:
 		return {"ok": false, "error": "parse_error: " + expr.get_error_text()}
-	var val = expr.execute([self, self], null, false)
+	var val = expr.execute([self, self], self, false)
 	if expr.has_execute_failed():
 		return {"ok": false, "error": "exec_failed: " + expr.get_error_text()}
 	return {"ok": true, "result": val, "type": type_string(typeof(val))}
@@ -295,14 +296,21 @@ func _cmd_run(args: Dictionary) -> Dictionary:
 	var inst = script.new()
 	if inst == null:
 		return {"ok": false, "error": "instantiate_failed"}
-	var result = inst.call("run")
+	var added := false
 	if inst is Node:
+		get_tree().root.add_child(inst)
+		added = true
+	var result = inst.call("run")
+	if added:
+		get_tree().root.remove_child(inst)
 		inst.free()
 	return {"ok": true, "result": result}
 
 
 func _cmd_click(args: Dictionary) -> Dictionary:
 	var pos := Vector2(float(args.get("x", 0)), float(args.get("y", 0)))
+	if not bool(args.get("raw", false)):
+		pos = _window_to_canvas(pos)  # клиент даёт координаты как на скриншоте (окно)
 	var button := int(args.get("button", MOUSE_BUTTON_LEFT))
 	var motion := InputEventMouseMotion.new()
 	motion.position = pos
@@ -328,6 +336,8 @@ func _cmd_click(args: Dictionary) -> Dictionary:
 
 func _cmd_move(args: Dictionary) -> Dictionary:
 	var pos := Vector2(float(args.get("x", 0)), float(args.get("y", 0)))
+	if not bool(args.get("raw", false)):
+		pos = _window_to_canvas(pos)
 	var motion := InputEventMouseMotion.new()
 	motion.position = pos
 	motion.global_position = pos
@@ -399,7 +409,9 @@ func _cmd_tile_to_screen(args: Dictionary) -> Dictionary:
 	var p = _tile_to_screen(int(args.get("x", 0)), int(args.get("y", 0)))
 	if p == null:
 		return {"ok": false, "error": "no_camera"}
-	return {"ok": true, "screen": [int(p.x), int(p.y)]}
+	var w = _canvas_to_window(p)
+	return {"ok": true, "screen": [int(w.x), int(w.y)],
+			"canvas": [int(p.x), int(p.y)]}
 
 
 func _cmd_perf() -> Dictionary:
@@ -441,6 +453,35 @@ func _tile_to_screen(tx: int, ty: int):
 		return null
 	var world := Vector2(tx * 32.0 + 16.0, ty * 32.0 + 16.0)  # сетка 32 px
 	return get_viewport().get_canvas_transform() * world
+
+
+## Отношение канваса к окну: игра рисует в 1920x1080, окно может быть 1280x720.
+func _canvas_scale() -> float:
+	var vp := get_viewport().get_visible_rect().size
+	var win := Vector2(DisplayServer.window_get_size())
+	if vp.x <= 0.0 or win.x <= 0.0:
+		return 1.0
+	return vp.x / win.x
+
+
+func _window_to_canvas(p: Vector2) -> Vector2:
+	return p * _canvas_scale()
+
+
+func _canvas_to_window(p: Vector2) -> Vector2:
+	var s := _canvas_scale()
+	if s <= 0.0:
+		return p
+	return p / s
+
+
+func _canvas_rect_to_window(c: Control) -> Array:
+	var s := _canvas_scale()
+	if s <= 0.0:
+		s = 1.0
+	var pos := c.global_position / s
+	var size := c.size / s
+	return [int(pos.x), int(pos.y), int(size.x), int(size.y)]
 
 
 func _find_button(matchers: Array) -> Button:
