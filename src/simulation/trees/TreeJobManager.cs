@@ -11,6 +11,13 @@ public class TreeJobManager
     private readonly object _lock = new();
     private readonly HashSet<(int X, int Y)> _markedTrees = new(4096);
 
+    /// <summary>
+    /// P7б §119: per-cell прогресс рубки 0..1 — переживает прерывание агента
+    /// (нужды/stuck/отмена). Пишет OnCancel хендлера, читает OnStart,
+    /// чистят Unmark*/CompleteTree/ClearAll.
+    /// </summary>
+    public CellProgressStore ChopProgress { get; } = new();
+
     public event Action<(int X, int Y)> OnTreeMarked;
     public event Action<List<(int X, int Y)>> OnTreesBatchMarked;
     public event Action<(int X, int Y)> OnTreeUnmarked;
@@ -58,6 +65,7 @@ public class TreeJobManager
         {
             if (_markedTrees.Remove((x, y)))
             {
+                ChopProgress.Clear(x, y);
                 JobBroker.Instance.UnregisterTreeChop(x, y);
                 Callable.From(() => OnTreeUnmarked?.Invoke((x, y))).CallDeferred();
             }
@@ -75,6 +83,7 @@ public class TreeJobManager
             {
                 if (_markedTrees.Remove(pos))
                 {
+                    ChopProgress.Clear(pos.X, pos.Y);
                     removedList.Add(pos);
                 }
             }
@@ -109,6 +118,7 @@ public class TreeJobManager
         lock (_lock)
         {
             _markedTrees.Remove((x, y));
+            ChopProgress.Clear(x, y);
             JobBroker.Instance.UnregisterTreeChop(x, y);
             Callable.From(() => OnTreeChopped?.Invoke((x, y))).CallDeferred();
         }
@@ -121,6 +131,7 @@ public class TreeJobManager
         {
             var oldTrees = new List<(int X, int Y)>(_markedTrees);
             _markedTrees.Clear();
+            ChopProgress.ClearAll();
             if (oldTrees.Count > 0)
             {
                 JobBroker.Instance.UnregisterTreeChopBatch(oldTrees);

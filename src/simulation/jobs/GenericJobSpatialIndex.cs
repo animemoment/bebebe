@@ -11,6 +11,7 @@ namespace Game.Simulation;
 /// Регистрация/удаление — под lock (producer, редко). 
 /// Claim — lock-free через Interlocked.Increment (consumer, каждый тик).
 /// </summary>
+[Obsolete("GenericJobSpatialIndex устарел и не используется в активном пайплайне диспетчеризации. Используйте JobSpatialPyramid.")]
 public sealed class GenericJobSpatialIndex
 {
     private const int ChunkShift = 4;
@@ -765,6 +766,23 @@ public sealed class GenericJobSpatialIndex
         // P0-1: без SimEvents — кулдаун случается из горячего пути, интерполяция
         // строки + два lock на каждый stuck-релиз.
         _jobFailCd[jobId] = unchecked((int)System.Environment.TickCount + Math.Max(0, cooldownMs));
+    }
+
+    public void ClearJobCooldown(int jobId)
+    {
+        if (jobId >= 0 && jobId < _capacity)
+            _jobFailCd[jobId] = 0;
+    }
+
+    public void ClearJobCooldownAt(int x, int y, JobTypeId type)
+    {
+        lock (_registerLock)
+        {
+            if (_posMap.TryGetValue((x, y, type), out int id) && id >= 0 && id < _capacity)
+            {
+                _jobFailCd[id] = 0;
+            }
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

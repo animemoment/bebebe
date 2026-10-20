@@ -25,10 +25,44 @@ public static class ContinentShaper
     /// <summary>Верхняя граница числа плит (PlateId в байте).</summary>
     public const int MaxPlates = 64;
 
+    private struct ShaperCacheEntry
+    {
+        public ulong Seed;
+        public uint Ver;
+        public long Rx;
+        public long Ry;
+        public ContinentSample Sample;
+        public bool Valid;
+    }
+
+    [ThreadStatic]
+    private static ShaperCacheEntry[] _shaperCache;
+
     /// <summary>
-    /// Считает рельеф/плиты в одной точке (единица — РЕГИОН).
+    /// Считает рельеф/плиты в одной точке (единица — РЕГИОН) с L1 ThreadStatic кэшированием.
     /// </summary>
-    public static ContinentSample Shape(in WorldClimateParams p, ulong seed, uint ver,
+    public static ContinentSample Shape(in WorldMacroClimateParams p, ulong seed, uint ver,
+        long regionX, long regionY)
+    {
+        _shaperCache ??= new ShaperCacheEntry[1024];
+        int cacheIdx = (int)(((regionX * 73856093L) ^ (regionY * 19349663L) ^ (long)seed) & 1023);
+        ref var entry = ref _shaperCache[cacheIdx];
+        if (entry.Valid && entry.Seed == seed && entry.Ver == ver && entry.Rx == regionX && entry.Ry == regionY)
+        {
+            return entry.Sample;
+        }
+
+        ContinentSample sample = ComputeShape(in p, seed, ver, regionX, regionY);
+        entry.Seed = seed;
+        entry.Ver = ver;
+        entry.Rx = regionX;
+        entry.Ry = regionY;
+        entry.Sample = sample;
+        entry.Valid = true;
+        return sample;
+    }
+
+    private static ContinentSample ComputeShape(in WorldMacroClimateParams p, ulong seed, uint ver,
         long regionX, long regionY)
     {
         // --- 1. Органический вихревой Domain-Warp (плавные заливы и берега без самопересекающихся петель) ---
@@ -210,6 +244,52 @@ public static class ContinentShaper
     /// Ближайший и второй ближайший сид плиты (Voronoi).
     /// Вычисляет узкую границу шва (1.5..3 региона) и кинематическое сжатие.
     /// </summary>
+    private struct LatticeSeedCache
+    {
+        public ulong Seed;
+        public uint Ver;
+        public long Cx;
+        public long Cy;
+        public long Px;
+        public long Py;
+        public int PlateId;
+        public bool Valid;
+    }
+
+    [ThreadStatic]
+    private static LatticeSeedCache[] _latticeCache;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static (long Px, long Py, int PlateId) GetLatticePoint(ulong seed, uint ver, long cx, long cy, int lattice)
+    {
+        _latticeCache ??= new LatticeSeedCache[64];
+        int idx = (int)(((cx * 73856093L) ^ (cy * 19349663L) ^ (long)seed) & 63);
+        ref var entry = ref _latticeCache[idx];
+        if (entry.Valid && entry.Seed == seed && entry.Ver == ver && entry.Cx == cx && entry.Cy == cy)
+        {
+            return (entry.Px, entry.Py, entry.PlateId);
+        }
+
+        ulong h = CoordinateHash.Hash(seed, ver, GenerationDomain.ContinentPlate, cx, cy);
+        long px = cx * lattice + (long)(h % (ulong)lattice);
+        long py = cy * lattice + (long)((h >> 24) % (ulong)lattice);
+        int plateId = (int)((h >> 40) % (ulong)MaxPlates);
+
+        entry.Seed = seed;
+        entry.Ver = ver;
+        entry.Cx = cx;
+        entry.Cy = cy;
+        entry.Px = px;
+        entry.Py = py;
+        entry.PlateId = plateId;
+        entry.Valid = true;
+        return (px, py, plateId);
+    }
+
+    /// <summary>
+    /// Ближайший и второй ближайший сид плиты (Voronoi).
+    /// Вычисляет узкую границу шва (1.5..3 региона) и кинематическое сжатие.
+    /// </summary>
     private static (int PlateId, ushort Boundary, float Compression, long D1, long D2) Voronoi(
         ulong seed, uint ver, long x, long y, int lattice)
     {
@@ -228,9 +308,7 @@ public static class ContinentShaper
             {
                 long cx = lx + ox;
                 long cy = ly + oy;
-                ulong h = CoordinateHash.Hash(seed, ver, GenerationDomain.ContinentPlate, cx, cy);
-                long px = cx * lattice + (long)(h % (ulong)lattice);
-                long py = cy * lattice + (long)((h >> 24) % (ulong)lattice);
+                var (px, py, plateId) = GetLatticePoint(seed, ver, cx, cy, lattice);
                 long dx = px - x;
                 long dy = py - y;
                 long d = dx * dx + dy * dy;
@@ -243,14 +321,14 @@ public static class ContinentShaper
                     py2 = py1;
 
                     best = d;
-                    bestId = (int)((h >> 40) % (ulong)MaxPlates);
+                    bestId = plateId;
                     px1 = px;
                     py1 = py;
                 }
                 else if (d < second)
                 {
                     second = d;
-                    secondId = (int)((h >> 40) % (ulong)MaxPlates);
+                    secondId = plateId;
                     px2 = px;
                     py2 = py;
                 }
@@ -280,12 +358,9 @@ public static class ContinentShaper
         float compression = 0f;
         if (boundary > 0)
         {
-            ulong hA = CoordinateHash.Hash(seed, ver, GenerationDomain.ContinentPlate, (long)bestId, 0x1111L);
-            ulong hB = CoordinateHash.Hash(seed, ver, GenerationDomain.ContinentPlate, (long)secondId, 0x2222L);
-            float aA = (float)((hA % 360) * Math.PI / 180.0);
-            float aB = (float)((hB % 360) * Math.PI / 180.0);
-            float vxA = MathF.Cos(aA), vyA = MathF.Sin(aA);
-            float vxB = MathF.Cos(aB), vyB = MathF.Sin(aB);
+            EnsurePlateVelocities(seed, ver);
+            float vxA = _plateVelCache.VxA[bestId], vyA = _plateVelCache.VyA[bestId];
+            float vxB = _plateVelCache.VxB[secondId], vyB = _plateVelCache.VyB[secondId];
             float rvx = vxA - vxB, rvy = vyA - vyB;
             float nx = (float)(px2 - px1), ny = (float)(py2 - py1);
             float len = MathF.Sqrt(nx * nx + ny * ny);
@@ -293,6 +368,45 @@ public static class ContinentShaper
         }
 
         return (bestId, boundary, compression, best, second);
+    }
+
+    private struct PlateVelCache
+    {
+        public ulong Seed;
+        public uint Ver;
+        public float[] VxA;
+        public float[] VyA;
+        public float[] VxB;
+        public float[] VyB;
+    }
+
+    [ThreadStatic]
+    private static PlateVelCache _plateVelCache;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static void EnsurePlateVelocities(ulong seed, uint ver)
+    {
+        if (_plateVelCache.VxA != null && _plateVelCache.Seed == seed && _plateVelCache.Ver == ver)
+            return;
+
+        _plateVelCache.Seed = seed;
+        _plateVelCache.Ver = ver;
+        _plateVelCache.VxA = new float[MaxPlates];
+        _plateVelCache.VyA = new float[MaxPlates];
+        _plateVelCache.VxB = new float[MaxPlates];
+        _plateVelCache.VyB = new float[MaxPlates];
+
+        for (int i = 0; i < MaxPlates; i++)
+        {
+            ulong hA = CoordinateHash.Hash(seed, ver, GenerationDomain.ContinentPlate, (long)i, 0x1111L);
+            ulong hB = CoordinateHash.Hash(seed, ver, GenerationDomain.ContinentPlate, (long)i, 0x2222L);
+            float aA = (float)((hA % 360) * Math.PI / 180.0);
+            float aB = (float)((hB % 360) * Math.PI / 180.0);
+            _plateVelCache.VxA[i] = MathF.Cos(aA);
+            _plateVelCache.VyA[i] = MathF.Sin(aA);
+            _plateVelCache.VxB[i] = MathF.Cos(aB);
+            _plateVelCache.VyB[i] = MathF.Sin(aB);
+        }
     }
 
     /// <summary>Фрактальный шум: октавы с удвоением частоты и спадающей амплитудой (1/f persistence).</summary>

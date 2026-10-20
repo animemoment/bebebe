@@ -35,7 +35,8 @@ public static class PlanetaryHydrology
         int totalCells = width * height;
         var riverMask = new bool[totalCells];
         var pathCells = new List<int>(512);
-        var pathVisited = new HashSet<int>();
+        var visitedStamp = new int[totalCells];
+        int currentStamp = 0;
 
         int gridXCount = width / SpringGridStride;
         int gridYCount = height / SpringGridStride;
@@ -68,8 +69,8 @@ public static class PlanetaryHydrology
                 if (riverMask[sIdx])
                     continue;
 
+                currentStamp++;
                 pathCells.Clear();
-                pathVisited.Clear();
 
                 int curX = sx;
                 int curY = sy;
@@ -77,7 +78,7 @@ public static class PlanetaryHydrology
                 bool reachedSeaOrRiver = false;
 
                 pathCells.Add(curIdx);
-                pathVisited.Add(curIdx);
+                visitedStamp[curIdx] = currentStamp;
 
                 for (int step = 0; step < MaxRiverSteps; step++)
                 {
@@ -97,7 +98,7 @@ public static class PlanetaryHydrology
                             continue;
 
                         int nIdx = ny * width + nx;
-                        if (pathVisited.Contains(nIdx))
+                        if (visitedStamp[nIdx] == currentStamp)
                             continue; // Исключает циклы и самопересечения!
 
                         int nElev = elevations[nIdx];
@@ -125,7 +126,7 @@ public static class PlanetaryHydrology
                                 continue;
 
                             int nIdx = ny * width + nx;
-                            if (pathVisited.Contains(nIdx))
+                            if (visitedStamp[nIdx] == currentStamp)
                                 continue;
 
                             int nElev = elevations[nIdx];
@@ -147,7 +148,7 @@ public static class PlanetaryHydrology
                     curIdx = bestNextIdx;
 
                     pathCells.Add(curIdx);
-                    pathVisited.Add(curIdx);
+                    visitedStamp[curIdx] = currentStamp;
 
                     // Река достигла океана или слилась с другой рекой
                     if (elevations[curIdx] < WorldClimateGenerator.SeaLevelQ16)

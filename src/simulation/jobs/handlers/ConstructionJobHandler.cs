@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using Game.Core;
 
@@ -16,22 +17,31 @@ public sealed class ConstructionJobHandler : IJobHandler
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
         if (GroundItemManager.Instance.HasItemsAt(job.TargetX, job.TargetY))
+        {
+            if (ctx != null)
+                GroundItemManager.Instance.TrySpillItemsAdjacent(job.TargetX, job.TargetY, ctx.MapWidth, ctx.MapHeight, ctx.SolidWalls);
+            if (GroundItemManager.Instance.HasItemsAt(job.TargetX, job.TargetY))
+                return false;
+        }
+
+        // Разрешено только если площадка в стадии Assembling
+        if (ConstructionManager.Instance.TryGetSite(job.TargetX, job.TargetY, out var site))
+        {
+            if (site.Stage != ConstructionStage.Assembling)
+                return false;
+        }
+        else if (!ConstructionManager.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.Construction))
+        {
             return false;
-        // ЖЁСТКИЙ ЭТАП 3: стройка — только клетки в стадии Building
-        // (чертёж полностью снабжён). Вне стройки IsStageAllowed=true.
-        if (!ConstructionPipeline.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.Construction))
-            return false;
-        // ������� ������� �������: ������� ����� ������ �� ������ ������.
-        // ������/������ ��� ����� � ������� �����/������, ������� ���.
-        if (ctx != null
-            && (uint)job.TargetX < (uint)ctx.MapWidth && (uint)job.TargetY < (uint)ctx.MapHeight)
+        }
+
+        if (ctx != null && (uint)job.TargetX < (uint)ctx.MapWidth && (uint)job.TargetY < (uint)ctx.MapHeight)
         {
             if (ctx.TreeOnGrass[job.TargetX, job.TargetY])
                 return false;
             if (ctx.StoneOnGrass != null && ctx.StoneOnGrass[job.TargetX, job.TargetY])
                 return false;
-            // �������� �� ��������� � ������� ��� � ���������, ������� ������.
-            if (!BlueprintManager.Instance.IsBlueprintAt(job.TargetX, job.TargetY))
+            if (!ConstructionManager.Instance.IsSiteAt(job.TargetX, job.TargetY) && !BlueprintManager.Instance.IsBlueprintAt(job.TargetX, job.TargetY))
                 return false;
         }
         return true;
@@ -39,6 +49,9 @@ public sealed class ConstructionJobHandler : IJobHandler
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        pool.WaypointCount[agentIndex] = 0;
+        pool.WaypointIndex[agentIndex] = 0;
+
         (int X, int Y) stand = (job.TargetX, job.TargetY);
         Game.Simulation.JobBroker.FindStandPosition(job.TargetX, job.TargetY, ctx, out stand);
 
@@ -47,7 +60,13 @@ public sealed class ConstructionJobHandler : IJobHandler
         pool.TargetCellY[agentIndex] = job.TargetY;
         pool.TargetPositionX[agentIndex] = stand.X * ctx.TileSize + 32f;
         pool.TargetPositionY[agentIndex] = stand.Y * ctx.TileSize + 32f;
-        pool.WorkProgress[agentIndex] = 0f;
+        // P7б §119: стройка продолжается с доли, уже накопленной ПЛОЩАДКОЙ
+        // (site.WorkProgress — per-cell store), а не с нуля: прерванный
+        // строитель не сбрасывает прогресс стен.
+        float startFraction = 0f;
+        if (ConstructionManager.Instance.TryGetSite(job.TargetX, job.TargetY, out var startSite))
+            startFraction = Math.Clamp(startSite.WorkProgress, 0f, 1f);
+        pool.WorkProgress[agentIndex] = startFraction * BuildDuration;
         pool.StuckTimer[agentIndex] = 0f;
     }
 
@@ -62,10 +81,9 @@ public sealed class ConstructionJobHandler : IJobHandler
         else if (state == AgentState.Working)
         {
             pool.WorkProgress[agentIndex] += deltaTime;
-            // Визуал стройки: 6 стадий ProcessOfWork по доле стройки.
-            // Единый финиш — через WorkProgressTracker.Finish (гасит спрайт везде).
-            WorkProgressTracker.Instance.ReportFraction(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex],
-                pool.WorkProgress[agentIndex] / BuildDuration);
+            float frac = pool.WorkProgress[agentIndex] / BuildDuration;
+            WorkProgressTracker.Instance.ReportFraction(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex], frac);
+            ConstructionManager.Instance.ReportWorkProgress(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex], frac);
         }
     }
 
@@ -85,47 +103,44 @@ public sealed class ConstructionJobHandler : IJobHandler
             }
             else if (pool.StuckTimer[agentIndex] >= 3.0f)
             {
-                // ������� �� ����� ��������� �� ������������� (������������ ������/������)
-                // � ����������� ���, ����� �� �� ����� ����� � �����.
                 JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
                 pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
             }
         }
         else if (state == AgentState.Working && pool.WorkProgress[agentIndex] >= BuildDuration)
         {
-            // #3: тип постройки НЕ выбрасываем — стены ставят SolidWalls и
-            // выкидывают клетку из сайта, мебель/верстак идут в BuildingManager.
-            // Раньше всё (включая WorkTable/Bed) становилось невидимой
-            // непроходимой стеной + NotifyWallBuilt портил сайт.
-            if (BlueprintManager.Instance.CompleteConstruction(sx, sy, out var builtType))
+            // Единое завершение через ConstructionManager + StructureManager (с передачей pool для выталкивания)
+            if (ConstructionManager.Instance.CompleteConstruction(sx, sy, ctx, pool, out var completedDef))
             {
-                if (builtType == Game.Core.BuildingType.WoodWall)
+                ConstructionManager.Instance.NotifyWallBuilt(sx, sy);
+                WorkProgressTracker.Instance.Finish(sx, sy);
+            }
+            else if (BlueprintManager.Instance.CompleteConstruction(sx, sy, out var builtType))
+            {
+                var def = StructureRegistry.Get(builtType);
+                StructureManager.Instance.AddStructure(sx, sy, def, ctx, pool);
+                if (builtType == BuildingType.WoodWall)
                 {
-                    ctx.SolidWalls[sx, sy] = true;
-                    FlowFieldManager.Instance.ClearCache();
-                    HierarchicalPathfinder.Instance.Invalidate();
-                    // Этап 3 закрыт: NotifyWallBuilt сам гасит прогресс-спрайт.
-                    ConstructionPipeline.Instance.NotifyWallBuilt(sx, sy);
-                    // GPU-���� �����. Node API ������� (TileSet/MarkDirty/AddCaster)
-                    // ��������� ������ �� �������� ������ ����� CallDeferred.
-
-                    int insideAgent = ctx.SpatialGrid.GetFirstAgent(sx, sy);
-                    while (insideAgent != -1)
-                    {
-                        ctx.Movement.EjectFromWall(insideAgent, sx, sy, pool, ctx);
-                        insideAgent = ctx.SpatialGrid.GetNextAgent(insideAgent, pool);
-                    }
+                    ConstructionManager.Instance.NotifyWallBuilt(sx, sy);
                 }
                 else
                 {
-                    // Мебель/верстак — проходимый объект, а не стена.
-                    BuildingManager.Instance.AddBuilding(sx, sy, builtType);
                     WorkProgressTracker.Instance.Finish(sx, sy);
                 }
             }
 
+            // Выталкиваем строителя, если он остался стоять на месте стены
+            if (ctx?.Movement != null)
+            {
+                int curAx = (int)(pool.PositionX[agentIndex] / ctx.TileSize);
+                int curAy = (int)(pool.PositionY[agentIndex] / ctx.TileSize);
+                if (curAx == sx && curAy == sy)
+                {
+                    ctx.Movement.EjectFromWall(agentIndex, sx, sy, pool, ctx);
+                }
+            }
+
             JobDispatcher.Instance.TryUnregisterJob(pool.CurrentJobId[agentIndex]);
-            // Claim �� ����������� ��������: RemoveJob ��� �������� _unclaimedCount.
             pool.CurrentJobId[agentIndex] = -1;
             pool.CurrentJobType[agentIndex] = JobTypeId.None;
             pool.States[agentIndex] = AgentState.Idle;
@@ -135,7 +150,9 @@ public sealed class ConstructionJobHandler : IJobHandler
 
     public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx)
     {
-        // Единый финиш прогресса: агент ушёл — спрайт гаснет, залипаний нет.
+        // P7б §119: НЕ обнуляем site.WorkProgress — прерванный строитель оставляет
+        // накопленную долю на площадке, следующий продолжит с неё (visual-спрайт
+        // гасится, при возобновлении ReportFraction вернёт актуальную стадию).
         WorkProgressTracker.Instance.Finish(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex]);
     }
 }

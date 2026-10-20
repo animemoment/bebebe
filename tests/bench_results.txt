@@ -1,0 +1,27 @@
+[BENCH] env cores=4 serverGC=False seed=987654321 ver=3 mode=windows
+[BENCH] warmup ok (acc=7162124)
+[BENCH] colony_window size=512x512 rep=1 ms=1153,2 fingerprint=19085878
+[BENCH] colony_window size=1024x1024 rep=1 ms=4548,9 fingerprint=88690602
+[BENCH] DONE mode=windows
+[BENCH] env cores=4 serverGC=False seed=987654321 ver=3 mode=chunks
+[BENCH] warmup ok (acc=7162124)
+[BENCH] chunks_100 rep=1 total_ms=3824,8 mean_ms=38,25 fingerprint=58783273117
+[BENCH] DONE mode=chunks
+[BENCH] env cores=4 serverGC=False seed=987654321 ver=3 mode=cellat
+[BENCH] warmup ok (acc=7162124)
+[BENCH] cellat_10000 rep=1 total_ms=99,6 us_per_call=9,96 fingerprint=1478450257
+[BENCH] cellat_10000 rep=2 total_ms=99,1 us_per_call=9,91 fingerprint=1478450257
+[BENCH] cellat_10000 rep=3 total_ms=107,4 us_per_call=10,74 fingerprint=1478450257
+[BENCH] DONE mode=cellat
+[BENCH] env cores=4 serverGC=False seed=987654321 ver=3 mode=micro
+[BENCH] warmup ok (acc=7162124)
+[BENCH] micro_sampleblended rep total_ms=21,0 us_per_call=2,10 fingerprint=265491967
+[BENCH] micro_samplecell_override rep total_ms=83,3 us_per_call=8,33 fingerprint=712247654
+[BENCH] micro_lerp3 total_ms=16,5 us_per_call=1,65 fingerprint=571792664
+[BENCH] micro_soil_512 humidity_ms=105 fertility_ms=38 (последовательно, входит в GenerateColonyWindow)
+[BENCH] DONE mode=micro
+[BENCH] env cores=4 serverGC=False seed=987654321 ver=3 mode=windows
+[BENCH] warmup ok (acc=7162124)
+[BENCH] colony_window size=512x512 rep=1 ms=1135,3 fingerprint=19085878
+[BENCH] colony_window size=1024x1024 rep=1 ms=4615,4 fingerprint=88690602
+[BENCH] DONE mode=windows

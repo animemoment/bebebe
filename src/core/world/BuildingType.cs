@@ -9,5 +9,7 @@ public enum BuildingType : byte
     /// <summary>Скамья (bench.png 64x64).</summary>
     Bench = 3,
     /// <summary>Тумбочка (nightstand.png 64x64).</summary>
-    Nightstand = 4
+    Nightstand = 4,
+    /// <summary>Центральный блок (central.png 64x64) — якорь центра рабочей зоны (§119).</summary>
+    CentralBlock = 5
 }

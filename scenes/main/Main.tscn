@@ -712,14 +712,17 @@ sources/0 = SubResource("TileSetAtlasSource_1rhdn")
 texture = ExtResource("6_1rhdn")
 texture_region_size = Vector2i(64, 64)
 0:0/0 = 0
+0:0/0/terrain_set = 0
+0:0/0/terrain = 0
 1:0/0 = 0
+1:0/0/terrain_set = 0
+1:0/0/terrain = 0
 2:0/0 = 0
+2:0/0/terrain_set = 0
+2:0/0/terrain = 0
 3:0/0 = 0
-0:1/0 = 0
-1:1/0 = 0
-2:1/0 = 0
-3:1/0 = 0
-0:2/0 = 0
+3:0/0/terrain_set = 0
+3:0/0/terrain = 0
 
 [sub_resource type="TileSet" id="TileSet_1l4ih"]
 tile_size = Vector2i(64, 64)
@@ -730,6 +733,7 @@ sources/2 = SubResource("TileSetAtlasSource_sjxhf")
 
 [node name="Node2D" type="Node2D" unique_id=739145351]
 script = ExtResource("1_u1xfj")
+HUD = NodePath("CanvasLayer/hud_tscn")
 
 [node name="CanvasLayer" type="CanvasLayer" parent="." unique_id=991509194]
 

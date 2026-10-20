@@ -163,15 +163,41 @@ public static class CoordinateHash
         long worldX, long worldY, ulong lane = 0)
         => (ushort)(Hash(worldSeed, generatorVersion, domain, worldX, worldY, lane) >> 48);
 
-    /// <summary>Предвычисленный префикс хеша для домена (устраняет 8 Mix операций на каждый семпл шума).</summary>
+    private struct PrefixCacheEntry
+    {
+        public ulong Seed;
+        public uint Version;
+        public GenerationDomain Domain;
+        public ulong Prefix;
+        public bool Valid;
+    }
+
+    [ThreadStatic]
+    private static PrefixCacheEntry[] _prefixCache;
+
+    /// <summary>Предвычисленный префикс хеша для домена (кэшируется в ThreadStatic L1 буфере).</summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public static ulong GetDomainPrefix(ulong worldSeed, uint generatorVersion, GenerationDomain domain)
     {
+        _prefixCache ??= new PrefixCacheEntry[64];
+        int idx = (int)((worldSeed ^ (ulong)domain ^ ((ulong)generatorVersion << 8)) & 63);
+        ref var entry = ref _prefixCache[idx];
+        if (entry.Valid && entry.Seed == worldSeed && entry.Version == generatorVersion && entry.Domain == domain)
+        {
+            return entry.Prefix;
+        }
+
         unchecked
         {
             ulong h = Mix(worldSeed ^ GoldenRatio);
             h = Mix(h ^ ((ulong)generatorVersion * GoldenRatio));
-            return Mix(h ^ (ulong)domain);
+            ulong p = Mix(h ^ (ulong)domain);
+            entry.Seed = worldSeed;
+            entry.Version = generatorVersion;
+            entry.Domain = domain;
+            entry.Prefix = p;
+            entry.Valid = true;
+            return p;
         }
     }
 
@@ -198,6 +224,16 @@ public static class CoordinateHash
         if (latticeScale <= 0)
             throw new ArgumentOutOfRangeException(nameof(latticeScale), "Масштаб решётки должен быть положительным.");
 
+        ulong prefix = GetDomainPrefix(worldSeed, generatorVersion, domain);
+        return ValueNoiseQ16WithPrefix(prefix, worldX, worldY, latticeScale);
+    }
+
+    /// <summary>
+    /// Высокопроизводительный ValueNoise с уже готовым domainPrefix (0 Mix операций на семпл).
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static ushort ValueNoiseQ16WithPrefix(ulong domainPrefix, long worldX, long worldY, int latticeScale)
+    {
         long latticeX = WorldCoordinates.FloorDiv(worldX, latticeScale);
         long latticeY = WorldCoordinates.FloorDiv(worldY, latticeScale);
         uint tx = (uint)((long)WorldCoordinates.FloorMod(worldX, latticeScale) * Q16One / latticeScale);
@@ -205,11 +241,10 @@ public static class CoordinateHash
         uint sx = SmoothStepQ16(tx);
         uint sy = SmoothStepQ16(ty);
 
-        ulong prefix = GetDomainPrefix(worldSeed, generatorVersion, domain);
-        uint v00 = SampleQ16WithPrefix(prefix, latticeX, latticeY);
-        uint v10 = SampleQ16WithPrefix(prefix, latticeX + 1, latticeY);
-        uint v01 = SampleQ16WithPrefix(prefix, latticeX, latticeY + 1);
-        uint v11 = SampleQ16WithPrefix(prefix, latticeX + 1, latticeY + 1);
+        uint v00 = SampleQ16WithPrefix(domainPrefix, latticeX, latticeY);
+        uint v10 = SampleQ16WithPrefix(domainPrefix, latticeX + 1, latticeY);
+        uint v01 = SampleQ16WithPrefix(domainPrefix, latticeX, latticeY + 1);
+        uint v11 = SampleQ16WithPrefix(domainPrefix, latticeX + 1, latticeY + 1);
 
         uint top = LerpQ16(v00, v10, sx);
         uint bottom = LerpQ16(v01, v11, sx);
@@ -235,12 +270,16 @@ public static class CoordinateHash
         => (value << count) | (value >> (64 - count));
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static uint Div65535(ulong value)
+        => (uint)((value * 0x80018002ul) >> 47);
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static uint SmoothStepQ16(uint value)
     {
         ulong t = value;
-        ulong t2 = (t * t + Q16One / 2u) / Q16One;
+        ulong t2 = Div65535(t * t + Q16One / 2u);
         ulong shaped = t2 * (3ul * Q16One - 2ul * t) + Q16One / 2u;
-        return (uint)Math.Min(Q16One, shaped / Q16One);
+        return (uint)Math.Min(Q16One, Div65535(shaped));
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

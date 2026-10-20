@@ -18,7 +18,7 @@ public class GroundItemManager
     private const int MaxChunkRadius = 32;
 
     private const int MaxItemTypes = 8;
-    private const int MaxSnapshotItemsPerType = 4096;
+    private const int MaxSnapshotItemsPerType = 16384;
 
     private readonly object _lock = new();
     // Finding 4 (вариант 2, безопасный компромисс): вес предметов кэшируется
@@ -47,6 +47,18 @@ public class GroundItemManager
     }
 
     private bool _isDirty = true;
+
+    // Мост A (PLAN.md §112.2): ссылка на данные карты инъекцируется снаружи
+    // (Main.OnMapApplied) — TrySpillItemsAdjacent больше не читает
+    // Game.UI.MapRenderer напрямую; сам тип MapData живёт в Game.Core.
+    private MapData _mapData;
+
+    /// <summary>
+    /// Инъекция данных карты (вызывает Main.OnMapApplied на каждое применение
+    /// карты). Null допустим — проверка воды/гор при спилле просто пропускается
+    /// (раньше null-MapRenderer означал то же самое).
+    /// </summary>
+    public void SetMapData(MapData mapData) => _mapData = mapData;
 
     // Finding 6: ring из 3 снапшот-буферов вместо fresh-аллокации каждые 33 мс
     // (~256 КБ × 3 менеджера × 30 Гц ≈ 23 МБ/с мусора). Рендерер drain'ит очередь
@@ -199,7 +211,11 @@ public class GroundItemManager
         // Sweep регистрируем по ФАКТИЧЕСКОЙ клетке размещения (placedX/Y).
         isOutsideStockpile = !StockpileManager.Instance.IsZoneTile(placedX, placedY);
 
-        if (isOutsideStockpile && StockpileManager.Instance.HasFreeSpace)
+        // 1. Реактивное Push-уведомление через ResourceBroker: если ресурса ждут чертежи/потребители
+        bool matchedDemand = ResourceBroker.Instance.NotifyResourceAvailable(id, placedX, placedY, count);
+
+        // 2. Если заказ не забрал этот ресурс, и он вне склада — регистрируем на склад
+        if (!matchedDemand && isOutsideStockpile && StockpileManager.Instance.HasFreeSpace)
         {
             JobBroker.Instance.RegisterStockpileHaul(placedX, placedY);
         }
@@ -211,6 +227,67 @@ public class GroundItemManager
         {
             return _groundItems.TryGetValue((x, y), out var entry) && entry.Count > 0;
         }
+    }
+
+    /// <summary>
+    /// Сдвинуть предметы из клетки (x, y) на соседнюю свободную проходимую клетку (чтобы освободить стройку/грядку).
+    /// </summary>
+    public bool TrySpillItemsAdjacent(int x, int y, int mapWidth, int mapHeight, bool[,] solidWalls = null)
+    {
+        bool spilled = false;
+        lock (_lock)
+        {
+            if (!_groundItems.TryGetValue((x, y), out var entry) || entry.Count <= 0)
+                return false;
+
+            for (int oy = -1; oy <= 1; oy++)
+            {
+                for (int ox = -1; ox <= 1; ox++)
+                {
+                    if (ox == 0 && oy == 0) continue;
+                    int nx = x + ox, ny = y + oy;
+                    if (nx >= 0 && ny >= 0 && nx < mapWidth && ny < mapHeight)
+                    {
+                        if (solidWalls != null && solidWalls[nx, ny]) continue;
+                        if (_mapData != null)
+                        {
+                            var g = _mapData.Ground[nx, ny];
+                            if (g == TileType.Water || g == TileType.Mountain) continue;
+                        }
+                        var nkey = (nx, ny);
+                        if (!_groundItems.ContainsKey(nkey) || _groundItems[nkey].Item == entry.Item)
+                        {
+                            _groundItems.Remove((x, y));
+                            var (ocx, ocy) = GetChunkCoord(x, y);
+                            _itemChunks[ocx, ocy].Remove((x, y));
+
+                            if (_groundItems.TryGetValue(nkey, out var nentry))
+                            {
+                                _groundItems[nkey] = (entry.Item, nentry.Count + entry.Count, nentry.Reserved + entry.Reserved);
+                            }
+                            else
+                            {
+                                _groundItems[nkey] = (entry.Item, entry.Count, entry.Reserved);
+                                var (ncx, ncy) = GetChunkCoord(nx, ny);
+                                _itemChunks[ncx, ncy].Add(nkey);
+                            }
+                            _isDirty = true;
+                            spilled = true;
+                            break;
+                        }
+                    }
+                }
+                if (spilled) break;
+            }
+        }
+
+        if (spilled)
+        {
+            FarmJobManager.Instance.NotifyItemCleared(x, y);
+            ConstructionManager.Instance.NotifyHaulCleared(x, y);
+            return true;
+        }
+        return false;
     }
 
     /// <summary>Тип предмета в клетке без резерва (для корректного CarriedItemId).</summary>
@@ -232,7 +309,6 @@ public class GroundItemManager
     /// </summary>
     public (ItemId Item, int Taken) TakeItemsWithType(int x, int y, int count)
     {
-        bool wasZoneTile;
         ItemId item;
         int toTake;
         lock (_lock)
@@ -256,15 +332,34 @@ public class GroundItemManager
             }
 
             _isDirty = true;
-            // IsZoneTile — быстрый lock в Stockpile; читаем флаг, но Withdraw делаем ниже.
-            wasZoneTile = StockpileManager.Instance.IsZoneTile(x, y);
         }
 
-        if (wasZoneTile)
+        if (toTake > 0 && !HasItemsAt(x, y))
         {
-            StockpileManager.Instance.WithdrawItems(x, y, toTake);
+            FarmJobManager.Instance.NotifyItemCleared(x, y);
+            ConstructionManager.Instance.NotifyHaulCleared(x, y);
         }
+
         return (item, toTake);
+    }
+
+    /// <summary>
+    /// §119 P7б (task-17 п.3-5): снимок куч на земле для сейва (payload'ы
+    /// GroundItems-меток). Копия под коротким lock; Reserved НЕ пишем.
+    /// </summary>
+    public List<(int X, int Y, ItemId Item, int Count)> GetItemsSnapshot()
+    {
+        var result = new List<(int, int, ItemId, int)>(64);
+        lock (_lock)
+        {
+            foreach (var kvp in _groundItems)
+            {
+                var entry = kvp.Value;
+                if (entry.Item != ItemId.None && entry.Count > 0)
+                    result.Add((kvp.Key.X, kvp.Key.Y, entry.Item, entry.Count));
+            }
+        }
+        return result;
     }
 
     /// <summary>Очистить все предметы на земле при смене региона / перезапуске карты.</summary>
@@ -410,6 +505,9 @@ public class GroundItemManager
                             int maxCanTake = (int)(maxWeightCapacity / weight);
                             if (maxCanTake <= 0) continue;
 
+                            if (!allowFromStockpile && StockpileManager.Instance.IsZoneTile(pos.X, pos.Y))
+                                continue;
+
                             float dx = pos.X - agentTileX;
                             float dy = pos.Y - agentTileY;
                             float distSq = dx * dx + dy * dy;
@@ -432,41 +530,23 @@ public class GroundItemManager
             if (bestCell.X == -1 || bestReserve <= 0)
                 return false;
 
-            // Фильтр склада проверяем ВНЕ lock (второй lock Stockpile): если клетка не подошла —
-            // просто выходим без резерва, агент попробует снова в следующем тике.
-            // Это убирает вложенный lock G->S из горячего Parallel-пути.
-            cell = bestCell;
-            id = bestId;
-            reservedCount = bestReserve;
-            // Запоминаем претендента, проверку склада сделаем после выхода из lock.
-        }
-
-        bool isStock = StockpileManager.Instance.IsZoneTile(cell.X, cell.Y);
-        if (!allowFromStockpile && isStock)
-        {
-            cell = (-1, -1);
-            id = ItemId.None;
-            reservedCount = 0;
-            return false;
-        }
-
-        // Финальный CAS резерва под коротким lock с перепроверкой доступности.
-        lock (_lock)
-        {
-            // P0-1: без счётчика stale (горячий путь).
-            if (!_groundItems.TryGetValue(cell, out var e2) || e2.Item != id)
-            {
+            if (!_groundItems.TryGetValue(bestCell, out var e2) || e2.Item != bestId)
                 return false;
-            }
+
             int avail2 = e2.Count - e2.Reserved;
             if (avail2 <= 0) return false;
-            int take = Math.Min(avail2, reservedCount);
-            _groundItems[cell] = (e2.Item, e2.Count, e2.Reserved + take);
+
+            int take = Math.Min(avail2, bestReserve);
+            _groundItems[bestCell] = (e2.Item, e2.Count, e2.Reserved + take);
+
+            cell = bestCell;
+            id = bestId;
             reservedCount = take;
+
             int resIdx = (int)e2.Item;
             if (resIdx > 0 && resIdx < MaxItemTypes)
                 Interlocked.Add(ref _totalAvailableByType[resIdx], -take);
-            // P0-1: без счётчика успеха (ToString+lock на каждый резерв).
+
             return true;
         }
     }

@@ -48,7 +48,7 @@ public static class LatitudeBands
     /// Температура по широте: тёплое плато у экватора, быстрый спад к полюсам.
     /// Возвращает Q16 (1 = жарко). TropicsWidth расширяет тёплую зону.
     /// </summary>
-    public static ushort TemperatureAtLatitude(ushort latitudeQ16, in WorldClimateParams p)
+    public static ushort TemperatureAtLatitude(ushort latitudeQ16, in WorldMacroClimateParams p)
     {
         // Отображаем широту так, чтобы тропики были «плоскими»: t = lat^(1 + k).
         int widen = (int)p.TropicsWidth - 12000;                 // -4000..+6000
@@ -62,10 +62,10 @@ public static class LatitudeBands
 
     /// <summary>
     /// Сухость от широты (0 = влажно, 1 = сухо). Максимум — субтропический пояс
-    /// высокого давления (<see cref="WorldClimateParams.DesertBeltLatitude"/>),
+    /// высокого давления (<see cref="WorldMacroClimateParams.DesertBeltLatitude"/>),
     /// у экватора влажно, к полюсам снова сухо (холодная пустыня).
     /// </summary>
-    public static ushort AridityAtLatitude(ushort latitudeQ16, in WorldClimateParams p)
+    public static ushort AridityAtLatitude(ushort latitudeQ16, in WorldMacroClimateParams p)
     {
         int lat = latitudeQ16;
 

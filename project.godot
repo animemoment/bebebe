@@ -19,6 +19,7 @@ run/max_fps=1000
 
 _mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 McpInteractionServer="*res://autoload/mcp_interaction_server.gd"
+AgentTools="*res://autoload/agent_tools.gd"
 
 [display]
 
@@ -34,7 +35,7 @@ project/assembly_name="Game"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg")
+enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg", "res://addons/godot-mcp/plugin.cfg")
 
 [game]
 

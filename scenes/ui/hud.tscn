@@ -16,7 +16,7 @@
 [ext_resource type="Texture2D" uid="uid://0yf5li4bs2me" path="res://ui/assets/textures/icons/logistic_zone.png" id="13_65nxt"]
 [ext_resource type="Texture2D" uid="uid://bmmmyvj838eje" path="res://ui/assets/textures/icons/work_table.png" id="13_cwdlq"]
 [ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="14_erw67"]
-[ext_resource type="Texture2D" uid="uid://yvw1b2pmcsfr" path="res://ui/assets/textures/icons/farming.png" id="14_we3sy"]
+[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="14_we3sy"]
 [ext_resource type="Texture2D" uid="uid://cmj0eedloosxw" path="res://ui/assets/textures/icons/Bread_icon.png" id="15_gonto"]
 [ext_resource type="Texture2D" uid="uid://cnmxgbn8j1mfp" path="res://ui/assets/textures/icons/PrioritetIcons/PriorityBoardIcon.png" id="18_we3sy"]
 [ext_resource type="Texture2D" uid="uid://bnn5ajbjtibpt" path="res://ui/assets/textures/icons/humidity.png" id="20_el1dq"]
@@ -89,6 +89,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 2
 script = ExtResource("1_hqnrr")
 
 [node name="BtnOpenWorldMap" type="Button" parent="." unique_id=1801891714]
@@ -227,10 +228,14 @@ horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="BuildContainer" type="HBoxContainer" parent="." unique_id=1240273963]
-layout_mode = 0
-offset_top = 878.0
-offset_right = 1646.0
-offset_bottom = 978.0
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_top = -209.0
+offset_right = 600.0
+offset_bottom = -109.0
+grow_vertical = 0
 
 [node name="WallVariant" type="Button" parent="BuildContainer" unique_id=1571784696]
 custom_minimum_size = Vector2(100, 100)
@@ -254,10 +259,14 @@ icon = ExtResource("8_gonto")
 expand_icon = true
 
 [node name="SelectionContainer" type="HBoxContainer" parent="." unique_id=1474878378]
-layout_mode = 0
-offset_top = 979.0
-offset_right = 1646.0
-offset_bottom = 1079.0
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_top = -101.0
+offset_right = 300.0
+offset_bottom = -1.0
+grow_vertical = 0
 
 [node name="BuildVariant" type="Button" parent="SelectionContainer" unique_id=1024502518]
 custom_minimum_size = Vector2(100, 100)
@@ -274,10 +283,14 @@ icon = ExtResource("7_h022r")
 expand_icon = true
 
 [node name="OrderContainer" type="HBoxContainer" parent="." unique_id=1274488850]
-layout_mode = 0
-offset_top = 878.0
-offset_right = 1645.0
-offset_bottom = 978.0
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_top = -209.0
+offset_right = 600.0
+offset_bottom = -109.0
+grow_vertical = 0
 
 [node name="TreeFelingButton" type="Button" parent="OrderContainer" unique_id=1703017043]
 custom_minimum_size = Vector2(100, 100)
@@ -287,11 +300,14 @@ icon = ExtResource("8_h022r")
 expand_icon = true
 
 [node name="WallContainer" type="HBoxContainer" parent="." unique_id=1879077944]
-layout_mode = 0
-offset_left = 1.0
-offset_top = 776.0
-offset_right = 1646.0
-offset_bottom = 876.0
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_top = -317.0
+offset_right = 600.0
+offset_bottom = -217.0
+grow_vertical = 0
 
 [node name="WoodWallButton" type="Button" parent="WallContainer" unique_id=1934489861]
 custom_minimum_size = Vector2(100, 100)
@@ -302,10 +318,15 @@ expand_icon = true
 
 [node name="ZoneContainer" type="HBoxContainer" parent="." unique_id=644096561]
 visible = false
-layout_mode = 0
-offset_top = 776.0
-offset_right = 1646.0
-offset_bottom = 876.0
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = -340.0
+offset_right = 620.0
+offset_bottom = -240.0
+grow_vertical = 0
 
 [node name="WarehouseArea" type="Button" parent="ZoneContainer" unique_id=1289747389]
 custom_minimum_size = Vector2(100, 100)
@@ -324,11 +345,15 @@ expand_icon = true
 [node name="IndustrialContainer" type="HBoxContainer" parent="." unique_id=668805200]
 visible = false
 custom_minimum_size = Vector2(75, 75)
-layout_mode = 0
-offset_left = 1.0
-offset_top = 775.0
-offset_right = 1648.0
-offset_bottom = 875.0
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = -340.0
+offset_right = 620.0
+offset_bottom = -240.0
+grow_vertical = 0
 
 [node name="WorkTableButton" type="Button" parent="IndustrialContainer" unique_id=1166162958]
 custom_minimum_size = Vector2(100, 100)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Game.Core;
 
@@ -50,16 +51,6 @@ public sealed class FlowFieldManager
 		int startTileY = (int)(worldY / ctx.TileSize);
 
 		if (startTileX == targetTileX && startTileY == targetTileY)
-		{
-			Vector2 targetWorld = new(targetTileX * ctx.TileSize + 32f, targetTileY * ctx.TileSize + 32f);
-			Vector2 toTarget = targetWorld - new Vector2(worldX, worldY);
-			return toTarget.LengthSquared() > 0.001f ? Vector2.Normalize(toTarget) : Vector2.Zero;
-		}
-
-		// P0.2: ранний выход без BFS для близких целей (<=5 тайлов)
-		int ddx = targetTileX - startTileX;
-		int ddy = targetTileY - startTileY;
-		if (ddx * ddx + ddy * ddy <= 25)
 		{
 			Vector2 targetWorld = new(targetTileX * ctx.TileSize + 32f, targetTileY * ctx.TileSize + 32f);
 			Vector2 toTarget = targetWorld - new Vector2(worldX, worldY);
@@ -166,7 +157,7 @@ public sealed class FlowFieldManager
 				if (nx >= 0 && ny >= 0 && nx < ctx.MapWidth && ny < ctx.MapHeight &&
 					nx >= minX && nx < minX + WindowSize && ny >= minY && ny < minY + WindowSize)
 				{
-					if (ctx.Ground[nx, ny] == TileType.Grass && !ctx.SolidWalls[nx, ny])
+					if (IsWalkableCell(nx, ny, ctx))
 					{
 						int localNy = ny - minY;
 						int localNx = nx - minX;
@@ -195,7 +186,7 @@ public sealed class FlowFieldManager
 			if (nx >= 0 && ny >= 0 && nx < ctx.MapWidth && ny < ctx.MapHeight &&
 				nx >= minX && nx < minX + WindowSize && ny >= minY && ny < minY + WindowSize)
 			{
-				if (ctx.Ground[nx, ny] == TileType.Grass && !ctx.SolidWalls[nx, ny])
+				if (IsWalkableCell(nx, ny, ctx))
 				{
 					int nIdx = (ny - minY) * WindowSize + (nx - minX);
 					// Непосещённая клетка (старый штамп) = +inf, не кандидат.
@@ -214,5 +205,19 @@ public sealed class FlowFieldManager
 		}
 
 		return bestDir;
+	}
+
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	private static bool IsWalkableCell(int x, int y, SimulationContext ctx)
+	{
+		if (ctx.Ground[x, y] == TileType.Water || ctx.Ground[x, y] == TileType.Mountain || ctx.SolidWalls[x, y])
+			return false;
+		byte[] cost = HierarchicalPathfinder.Instance.Cost;
+		if (cost != null && cost.Length >= ctx.MapWidth * ctx.MapHeight)
+		{
+			if (cost[y * ctx.MapWidth + x] == HierarchicalPathfinder.CostBlocked)
+				return false;
+		}
+		return true;
 	}
 }

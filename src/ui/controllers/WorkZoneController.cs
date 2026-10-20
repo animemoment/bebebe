@@ -6,13 +6,14 @@ using System.Collections.Generic;
 
 namespace Game.UI;
 
-public partial class WorkZoneController : Control
+public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayHost
 {
     public static WorkZoneController Instance { get; private set; }
 
     private Control _rootPanel;
     private Label _titleLabel;
     private Label _infoLabel;
+    private BaseButton _infoButton;
     private BaseButton _escapeButton;
 
     private HSlider _tilesSlider;
@@ -22,6 +23,15 @@ public partial class WorkZoneController : Control
     private HSlider _prioritySlider;
     private Label _priorityNumber;
     private BaseButton _farmBackButton;
+    private BaseButton _enabledToggle;
+    private BaseButton _removeZoneButton;
+
+    /// <summary>
+    /// §119/P6: тумблер «вкл/выкл» зоны. Поле Enabled в WorkZone появится в P0 —
+    /// до слияния флаг держим локально: «выкл» запрещает этому окну толкать
+    /// изменения слайдеров в зону (и так показывает состояние в Information).
+    /// </summary>
+    private bool _zoneEnabled = true;
 
     /// <summary>
     /// Id фермы, с которой перешли в JobDisplay. −1 = пришли не с фермы,
@@ -48,6 +58,8 @@ public partial class WorkZoneController : Control
     public override void _Ready()
     {
         Instance = this;
+        ZoneWindowRegistry.WorkWindow = this;
+        ZoneWindowRegistry.FarmJobDisplay = this;
         ZIndex = 20;
         SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         MouseFilter = MouseFilterEnum.Ignore;
@@ -91,7 +103,10 @@ public partial class WorkZoneController : Control
                     ConfigureInputBlocking(_rootPanel);
 
                     _titleLabel = _rootPanel.FindChild("NameWork", true, false) as Label;
-                    _infoLabel = _rootPanel.FindChild("Information", true, false) as Label;
+                    _infoLabel = _rootPanel.FindChild("Information", true, false) as Label
+                              ?? _rootPanel.FindChild("Infoormation", true, false) as Label;
+                    _infoButton = _rootPanel.FindChild("Information", true, false) as BaseButton
+                               ?? _rootPanel.FindChild("Infoormation", true, false) as BaseButton;
 
                     var tilesRow = _rootPanel.FindChild("Tiles", true, false) as Control;
                     var workerRow = _rootPanel.FindChild("Worker", true, false) as Control;
@@ -103,9 +118,10 @@ public partial class WorkZoneController : Control
                         _tilesNumber = tilesRow.FindChild("Number", true, false) as Label;
                         if (_tilesSlider != null)
                         {
-                            _tilesSlider.MinValue = 128;
-                            _tilesSlider.MaxValue = 2048;
-                            _tilesSlider.Step = 128;
+                            // §119/P6: Tiles — это РАДИУС зоны (64..512), не площадь.
+                            _tilesSlider.MinValue = 64;
+                            _tilesSlider.MaxValue = 512;
+                            _tilesSlider.Step = 1;
                             _tilesSlider.ValueChanged += OnTilesSliderChanged;
                         }
                     }
@@ -115,8 +131,9 @@ public partial class WorkZoneController : Control
                         _workerNumber = workerRow.FindChild("Number", true, false) as Label;
                         if (_workerSlider != null)
                         {
+                            // §119/P6: Worker — желаемое число рабочих 0..999 (потолка нет).
                             _workerSlider.MinValue = 0;
-                            _workerSlider.MaxValue = 64;
+                            _workerSlider.MaxValue = 999;
                             _workerSlider.Step = 1;
                             _workerSlider.ValueChanged += OnWorkerSliderChanged;
                         }
@@ -134,7 +151,11 @@ public partial class WorkZoneController : Control
                         }
                     }
 
-                    _escapeButton = _rootPanel.FindChild("Escape", true, false) as BaseButton
+                    // В JobDisplay.tscn крестик окна называется "esc" (как в Farm.tscn) —
+                    // без этой ветки FindChild не находил кнопку и окно Work-зоны
+                    // нельзя было закрыть её крестиком.
+                    _escapeButton = _rootPanel.FindChild("esc", true, false) as BaseButton
+                                    ?? _rootPanel.FindChild("Escape", true, false) as BaseButton
                                     ?? _rootPanel.FindChild("Close", true, false) as BaseButton
                                     ?? _rootPanel.FindChild("Exit", true, false) as BaseButton
                                     ?? _rootPanel.FindChild("Back", true, false) as BaseButton;
@@ -150,6 +171,16 @@ public partial class WorkZoneController : Control
                         _farmBackButton.Visible = false;
                         _farmBackButton.Pressed += OnFarmBackPressed;
                     }
+
+                    // §119/P6: тумблер «вкл/выкл» зоны + кнопка «Снести зону».
+                    // Поле Enabled у зоны появится в P0 — тумблер пока локальный.
+                    _enabledToggle = _rootPanel.FindChild("EnabledToggle", true, false) as BaseButton;
+                    if (_enabledToggle != null)
+                        _enabledToggle.Toggled += OnEnabledToggled;
+
+                    _removeZoneButton = _rootPanel.FindChild("RemoveZone", true, false) as BaseButton;
+                    if (_removeZoneButton != null)
+                        _removeZoneButton.Pressed += OnRemoveZonePressed;
                     break;
                 }
             }
@@ -174,9 +205,19 @@ public partial class WorkZoneController : Control
         }
     }
 
+    /// <summary>
+    /// §119/P6: провести радиус в зону. P0 слился — фасад отдаёт SetRadius
+    /// (ZoneManager.SetWorkRadius, кламп 64..512 внутри). ПЛОЩАДЬ больше не
+    /// проводим: слайдер теперь радиус.
+    /// </summary>
+    private void ApplyRadiusToZone(int zoneId, int radiusTiles)
+    {
+        WorkZoneManager.Instance.SetRadius(zoneId, radiusTiles);
+    }
+
     private void OnTilesSliderChanged(double value)
     {
-        if (_updating) return;
+        if (_updating || !_zoneEnabled) return;
         var zone = WorkZoneManager.Instance.SelectedZone;
         if (zone == null) return;
         int v = (int)value;
@@ -189,17 +230,19 @@ public partial class WorkZoneController : Control
         }
         _lastTilesMs = now;
         _pendingTiles = -1;
-        WorkZoneManager.Instance.SetTiles(zone.Id, v);
+        ApplyRadiusToZone(zone.Id, v);
     }
 
     private void OnWorkerSliderChanged(double value)
     {
-        if (_updating) return;
+        if (_updating || !_zoneEnabled) return;
         var zone = WorkZoneManager.Instance.SelectedZone;
         if (zone == null) return;
         int v = (int)value;
-        if (_workerNumber != null) _workerNumber.Text = v.ToString();
-        WorkZoneManager.Instance.SetWorkers(zone.Id, v);
+        // §119/P6: подпись Worker = «назначено/желаемое».
+        int assigned = System.Threading.Volatile.Read(ref zone.AssignedCount);
+        if (_workerNumber != null) _workerNumber.Text = $"{assigned}/{v}";
+        WorkZoneManager.Instance.SetDesiredWorkers(zone.Id, v);
     }
 
     private void OnPrioritySliderChanged(double value)
@@ -218,6 +261,30 @@ public partial class WorkZoneController : Control
         WorkZoneManager.Instance.SetPriorityOverride(zone.Id, v);
     }
 
+    /// <summary>§119/P6: тумблер «вкл/выкл». Поле Enabled у зоны есть (P0), но
+    /// сеттера через фасад ещё нет (SetWorkEnabled появится позже) — пока «выкл»
+    /// блокирует pushes слайдеров из этого окна; TODO: push Enabled через фасад.</summary>
+    private void OnEnabledToggled(bool pressed)
+    {
+        _zoneEnabled = pressed;
+        if (!pressed)
+            _pendingTiles = -1; // отставший троттлинг-пуш сбрасываем
+        GD.Print($"[JobDisplay] зона {(pressed ? "включена" : "выключена")} (push Enabled ждёт SetEnabled в фасаде).");
+        RefreshInfo();
+    }
+
+    /// <summary>§119/P6: кнопка «Снести зону» → WorkZoneManagerFacade.RemoveZone(id).</summary>
+    private void OnRemoveZonePressed()
+    {
+        var zone = WorkZoneManager.Instance.SelectedZone;
+        if (zone == null) return;
+        int id = zone.Id;
+        bool removed = WorkZoneManager.Instance.RemoveZone(id);
+        GD.Print($"[JobDisplay] Снести зону {id}: {(removed ? "удалена" : "менеджер отказал")}");
+        // DeselectZone идемпотентен: если RemoveZone уже сняла выбор — ничего не сделает.
+        WorkZoneManager.Instance.DeselectZone();
+    }
+
     /// <summary>
     /// Открыть JobDisplay для Farm-зоны (§20.6): название + число клеток
     /// (только чтение), рабочих «∞», приоритет Farming — рабочий.
@@ -230,7 +297,7 @@ public partial class WorkZoneController : Control
             return;
 
         // Закрываем окно фермы — окна взаимоисключающие (как Farm/Work).
-        var farmCtrl = FarmController.Instance;
+        var farmCtrl = ZoneWindowRegistry.FarmWindow;
         if (farmCtrl != null && farmCtrl.IsOpen)
             farmCtrl.Close();
 
@@ -261,6 +328,9 @@ public partial class WorkZoneController : Control
 
         if (_farmBackButton != null)
             _farmBackButton.Visible = true;
+        // §119/P6: в режиме фермы тумблер/снос Work-зоны не по делу — прячем.
+        if (_enabledToggle != null) _enabledToggle.Visible = false;
+        if (_removeZoneButton != null) _removeZoneButton.Visible = false;
 
         _rootPanel.Visible = true;
         OnOpened?.Invoke();
@@ -278,6 +348,9 @@ public partial class WorkZoneController : Control
         // Разблокировать слайдеры для обычных Work-зон.
         if (_tilesSlider != null) _tilesSlider.Editable = true;
         if (_workerSlider != null) _workerSlider.Editable = true;
+        // §119/P6: вернуть тумблер/снос для Work-зон (прятались в режиме фермы).
+        if (_enabledToggle != null) _enabledToggle.Visible = true;
+        if (_removeZoneButton != null) _removeZoneButton.Visible = true;
         Close();
         if (farmId < 0)
             return;
@@ -303,10 +376,21 @@ public partial class WorkZoneController : Control
             _farmBackButton.Visible = false;
         if (_tilesSlider != null) _tilesSlider.Editable = true;
         if (_workerSlider != null) _workerSlider.Editable = true;
+        // §119/P6: Work-зона — тумблер/снос видимы, тумблер синхронизируем с зоной
+        // (Enabled пришёл с P0; push его менять пока не может — сеттера в фасаде нет).
+        if (_enabledToggle != null)
+        {
+            _enabledToggle.Visible = true;
+            _updating = true;
+            _enabledToggle.SetPressedNoSignal(zone.Enabled);
+            _updating = false;
+        }
+        if (_removeZoneButton != null) _removeZoneButton.Visible = true;
+        _zoneEnabled = zone.Enabled;
 
         // Единый выбор уже в ZoneManager: чужой выбор (Farm) сюда не приходит
         // (фасад отдаёт только Work). Закрываем окно фермы если открыто.
-        var garden = FarmController.Instance;
+        var garden = ZoneWindowRegistry.FarmWindow;
         if (garden != null && garden.IsOpen)
             garden.Close();
 
@@ -315,10 +399,13 @@ public partial class WorkZoneController : Control
         {
             if (_titleLabel != null)
                 _titleLabel.Text = zone.Name;
-            if (_tilesSlider != null) _tilesSlider.Value = zone.TilesTarget;
-            if (_tilesNumber != null) _tilesNumber.Text = zone.TilesTarget.ToString();
-            if (_workerSlider != null) _workerSlider.Value = zone.MaxWorkers;
-            if (_workerNumber != null) _workerNumber.Text = zone.MaxWorkers.ToString();
+            // §119/P6: слайдер Tiles = РАДИУС (TilesTarget — легаси-алиас радиуса с P0).
+            if (_tilesSlider != null) _tilesSlider.Value = zone.RadiusTiles;
+            if (_tilesNumber != null) _tilesNumber.Text = zone.RadiusTiles.ToString();
+            // §119/P6: подпись Worker = «назначено/желаемое» (MaxWorkers — легаси DesiredWorkers).
+            int assignedNow = System.Threading.Volatile.Read(ref zone.AssignedCount);
+            if (_workerSlider != null) _workerSlider.Value = zone.DesiredWorkers;
+            if (_workerNumber != null) _workerNumber.Text = $"{assignedNow}/{zone.DesiredWorkers}";
             // T4: override ?? живой глобальный (мин по покрытым категориям).
             int prio = zone.PriorityOverride ?? GetLiveMinPriority(zone);
             if (_prioritySlider != null) _prioritySlider.Value = prio;
@@ -365,7 +452,7 @@ public partial class WorkZoneController : Control
 
     private void RefreshInfo()
     {
-        if (_infoLabel == null) return;
+        if (_infoLabel == null && _infoButton == null) return;
         // Режим фермы: показываем данные фермы (клетки + приоритет Farming).
         if (_farmMode && CameFromFarmZoneId >= 0)
         {
@@ -376,12 +463,16 @@ public partial class WorkZoneController : Control
             if (farmText != _lastInfo)
             {
                 _lastInfo = farmText;
-                _infoLabel.Text = farmText;
+                if (_infoLabel != null) _infoLabel.Text = farmText;
+                if (_infoButton != null) _infoButton.TooltipText = farmText;
             }
             return;
         }
         var zone = WorkZoneManager.Instance.SelectedZone;
         if (zone == null) return;
+        // §119/P6: состав Information — очередь зоны, покрытие, назначено/желаемо,
+        // работы «вне зон». Очередь и «вне зон» через фасад ещё не отдаются —
+        // прочерки с пометкой; очередь показываем прокси «работы в чанках зоны».
         int total = 0;
         var chunks = zone.ChunkIndices;
         if (chunks != null)
@@ -391,18 +482,24 @@ public partial class WorkZoneController : Control
         }
         // T8: "Назначено {perPass} · Работ в чанках {total} · лимит {N/∞}".
         int perPass = System.Threading.Volatile.Read(ref zone.AssignedCount);
-        string limit = zone.MaxWorkers > 0 ? zone.MaxWorkers.ToString() : "∞";
+        int desired = zone.DesiredWorkers;
+        // §119 P0: покрытие зоны — вычисляемая площадь πr² (клетки не материализуются).
+        long coverage = zone.CellCount;
         // T4/T5: строка конфликта — покрытые категории + их текущие глобальные значения.
         var globals = CollectCategoryGlobals(zone);
         var parts = new List<string>();
         foreach (var kv in globals)
             parts.Add($"{kv.Key}={kv.Value}");
         string conflict = parts.Count > 0 ? string.Join(", ", parts) : "—";
-        string text = $"Назначено {perPass} · Работ в чанках {total} · лимит {limit} (лимит {zone.MaxWorkers} / ∞)\nглобально: {conflict}";
+        string state = _zoneEnabled ? "вкл" : "выкл";
+        string text =
+            $"Очередь зоны (чанки): {total} · Покрытие: {coverage} кл. (r={zone.RadiusTiles}) · Назначено {perPass}/{desired} · " +
+            $"Вне зон: — (нет данных, ждёт P1) · Состояние: {state}\nглобально: {conflict}";
         if (text != _lastInfo)
         {
             _lastInfo = text;
-            _infoLabel.Text = text;
+            if (_infoLabel != null) _infoLabel.Text = text;
+            if (_infoButton != null) _infoButton.TooltipText = text;
         }
     }
 
@@ -422,12 +519,12 @@ public partial class WorkZoneController : Control
         }
         var zone = WorkZoneManager.Instance.SelectedZone;
         if (zone == null) return;
-        if (_pendingTiles >= 0 && System.Environment.TickCount64 - _lastTilesMs >= TilesThrottleMs)
+        if (_zoneEnabled && _pendingTiles >= 0 && System.Environment.TickCount64 - _lastTilesMs >= TilesThrottleMs)
         {
             _lastTilesMs = System.Environment.TickCount64;
             int v = _pendingTiles;
             _pendingTiles = -1;
-            WorkZoneManager.Instance.SetTiles(zone.Id, v);
+            ApplyRadiusToZone(zone.Id, v);
         }
         _infoTimer += delta;
         if (_infoTimer >= 1.0)
@@ -451,6 +548,14 @@ public partial class WorkZoneController : Control
         WorkZoneManager.Instance.OnZoneSelected -= OnZoneSelectedFacade;
         WorkZoneManager.Instance.OnZoneDeselected -= Close;
         WorkZoneManager.Instance.OnZonesUpdated -= RefreshInfo;
+        // Симметрично BuildMenuController/HUDController: статика не должна удерживать
+        // освобождённый Godot-объект, иначе Instance отдаёт disposed-ноду после выгрузки UI.
+        if (ReferenceEquals(ZoneWindowRegistry.WorkWindow, this))
+            ZoneWindowRegistry.WorkWindow = null;
+        if (ReferenceEquals(ZoneWindowRegistry.FarmJobDisplay, this))
+            ZoneWindowRegistry.FarmJobDisplay = null;
+        if (ReferenceEquals(Instance, this))
+            Instance = null;
         base._ExitTree();
     }
 }

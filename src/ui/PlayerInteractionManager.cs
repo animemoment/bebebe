@@ -15,7 +15,21 @@ public partial class PlayerInteractionManager : Node2D
     [Export] public TileMapLayer WallLayer { get; set; }
 
     private ITool _currentTool;
-    private ITool _defaultTool;
+    private SelectTool _defaultTool;
+    private ICellProbeOverlay _cellProbe;
+    public ITool DefaultTool => _defaultTool;
+
+    /// <summary>
+    /// Прокинуть источник подсказок клетки в дефолтный инструмент. Принимает узкий интерфейс:
+    /// PlayerInteractionManager не должен ссылаться на HUDController, иначе цикл
+    /// SelectTool → HUDController → PIM → SelectTool снова сомкнётся.
+    /// Вызов до создания инструмента безопасен — проба применится в _Ready/Initialize.
+    /// </summary>
+    public void SetCellProbe(ICellProbeOverlay probe)
+    {
+        _cellProbe = probe;
+        _defaultTool?.BindCellProbe(probe);
+    }
     private bool _isMouseDown = false;
     private Vector2I _startTile;
 
@@ -25,6 +39,7 @@ public partial class PlayerInteractionManager : Node2D
     {
         Instance = this;
         _defaultTool = new SelectTool(Selection);
+        _defaultTool.BindCellProbe(_cellProbe);
         _currentTool ??= _defaultTool;
     }
 
@@ -36,6 +51,7 @@ public partial class PlayerInteractionManager : Node2D
         Camera = camera;
 
         _defaultTool = new SelectTool(Selection);
+        _defaultTool.BindCellProbe(_cellProbe);
         SetTool(_defaultTool);
     }
 
@@ -43,8 +59,9 @@ public partial class PlayerInteractionManager : Node2D
     {
         // F69: момент «нажали инструмент» — видно на графике.
         var next = tool ?? _defaultTool;
-        Game.Core.SimEvents.Mark("TOOL", next.GetType().Name);
-        Game.Core.SimEvents.Count("tool." + next.GetType().Name);
+        var toolName = next?.GetType().Name ?? "None";
+        Game.Core.SimEvents.Mark("TOOL", toolName);
+        Game.Core.SimEvents.Count("tool." + toolName);
         _currentTool?.Cancel();
         _currentTool = next;
     }
@@ -72,8 +89,17 @@ public partial class PlayerInteractionManager : Node2D
             }
         }
 
-        Vector2 worldPos = GetGlobalMousePosition();
-        Vector2I tilePos = WallLayer.LocalToMap(WallLayer.GetLocalMousePosition());
+        // §118: позиция из события, а не из GetGlobalMousePosition(): текущее
+        // положение мыши могло уже уехать (отстающие/синтетические клики летели мимо).
+        Vector2 worldPos;
+        if (@event is InputEventMouseMotion motionEv)
+            worldPos = (Vector2)(GetViewport().GetCanvasTransform().AffineInverse() * motionEv.Position);
+        else if (@event is InputEventMouseButton btnEv)
+            worldPos = (Vector2)(GetViewport().GetCanvasTransform().AffineInverse() * btnEv.Position);
+        else
+            worldPos = GetGlobalMousePosition();
+
+        Vector2I tilePos = WallLayer.LocalToMap(WallLayer.ToLocal(worldPos));
 
         if (@event is InputEventMouseMotion)
         {
@@ -86,6 +112,8 @@ public partial class PlayerInteractionManager : Node2D
         {
             if (mouseBtn.ButtonIndex == MouseButton.Middle)
                 return;
+
+            GD.Print($"[PIM] btn={mouseBtn.ButtonIndex} pressed={mouseBtn.Pressed} tile=({tilePos.X},{tilePos.Y}) world=({worldPos.X:F0},{worldPos.Y:F0}) tool={_currentTool?.GetType().Name ?? "null"}");
 
             bool isLeft = mouseBtn.ButtonIndex == MouseButton.Left;
             bool isRight = mouseBtn.ButtonIndex == MouseButton.Right;

@@ -132,7 +132,7 @@ public static class GameProfiler
     /// </summary>
     private static void RefreshBalance(double windowSec, int frames)
     {
-        int effDop = Game.Simulation.Scheduling.DynamicWorkScheduler.ComputeEffectiveDop(Environment.ProcessorCount);
+        int effDop = CpuTopology.ComputeEffectiveDop(Environment.ProcessorCount);
         double perFrameDivisor = frames > 0
             ? frames
             : Math.Max(1.0, windowSec * 60.0); // панель не считала кадры — оценка по 60 FPS
@@ -343,5 +343,13 @@ public static class GameProfiler
         // Сортировка: самые «дорогие» для кадра методы — в самом верху
         Array.Sort(list, static (a, b) => b.MsPerFrame.CompareTo(a.MsPerFrame));
         results = list;
+    }
+
+    public static void Reset()
+    {
+        _metrics.Clear();
+        _nameCache.Clear();
+        _balance.Clear();
+        _balanceCache = Array.Empty<BalanceSnapshot>();
     }
 }

@@ -14,7 +14,7 @@ namespace Game.UI;
 /// </summary>
 public partial class StockpileItemRenderer : Node2D
 {
-    private const int MaxRenderedInstances = 4096;
+    private const int MaxRenderedInstances = 16384;
     private const float DefaultItemSize = 28f;
 
     private readonly Dictionary<ItemId, (MultiMesh Mesh, MultiMeshInstance2D Instance, float[] Buffer)> _renderers = new();
@@ -91,6 +91,8 @@ public partial class StockpileItemRenderer : Node2D
         if (latestSnapshot.PositionsByItem == null || latestSnapshot.Counts == null)
             return;
 
+        ItemShadows?.ClearSourceSpots(ItemShadowRenderer.ShadowSource.Stockpile);
+
         foreach (var (id, (mesh, _, buffer)) in _renderers)
         {
             int itemIdx = (int)id;
@@ -121,10 +123,8 @@ public partial class StockpileItemRenderer : Node2D
 
                 mesh.Buffer = buffer;
 
-                ItemShadows?.PushSpots(positions, count, DefaultItemSize);
+                ItemShadows?.AddSourceSpots(ItemShadowRenderer.ShadowSource.Stockpile, positions, count, DefaultItemSize);
             }
         }
-        // Flush аккумулятора теней (земля+урожай+склад одним upload).
-        ItemShadows?.Flush();
     }
 }

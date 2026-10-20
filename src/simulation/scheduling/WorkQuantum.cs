@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace Game.Simulation.Scheduling;
 
@@ -73,11 +74,20 @@ public readonly struct WorkQuantum
     /// но сравнение с дедлайном — при КАЖДОМ вызове. Ловит 1 тяжёлого агента:
     /// после него следующий i сразу yield'ит, а не через 7.
     /// </summary>
-    /// <param name="cachedTicks">Кэш timestamp (инициализировать 0; 0 = «ещё не брали»).</param>
-    /// <param name="processedSinceRefresh">Счётчик с последнего refresh; обнуляется внутри.</param>
     public bool ShouldYieldCached(ref long cachedTicks, ref int processedSinceRefresh)
     {
-        if (processedSinceRefresh >= YieldEveryN || cachedTicks == 0)
+        return ShouldYieldCached(ref cachedTicks, ref processedSinceRefresh, YieldEveryN);
+    }
+
+    /// <summary>
+    /// Cached-проверка дедлайна с пользовательским шагом выборки времени:
+    /// Stopwatch.GetTimestamp вызывается не чаще чем каждые <paramref name="yieldEvery"/> элементов.
+    /// Позволяет снизить накладные расходы таймера в цикле легковесных агентов (напр. Phase 2).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool ShouldYieldCached(ref long cachedTicks, ref int processedSinceRefresh, int yieldEvery)
+    {
+        if (processedSinceRefresh >= yieldEvery || cachedTicks == 0)
         {
             cachedTicks = Stopwatch.GetTimestamp();
             processedSinceRefresh = 0;
@@ -85,3 +95,4 @@ public readonly struct WorkQuantum
         return cachedTicks >= DeadlineTicks;
     }
 }
+

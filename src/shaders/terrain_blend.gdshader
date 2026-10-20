@@ -11,6 +11,9 @@ uniform sampler2D tex_water : repeat_enable, filter_nearest;
 // Размер карты в тайлах (512x512)
 uniform vec2 map_size = vec2(512.0, 512.0);
 
+// Смещение окна в тайлах (для привязки к глобальным мировым координатам)
+uniform vec2 map_origin = vec2(0.0, 0.0);
+
 // Размер виртуального арт-пикселя для квантования границ (2.0 = классический пиксель-арт)
 uniform float pixel_size : hint_range(1.0, 8.0, 1.0) = 2.0;
 
@@ -53,8 +56,9 @@ float noise(vec2 p) {
 
 // Безопасная выборка клетки из terrain_map
 int sample_cell(ivec2 cell) {
-	cell = clamp(cell, ivec2(0), ivec2(map_size) - ivec2(1));
-	return int(round(texelFetch(terrain_map, cell, 0).r * 255.0));
+	ivec2 local_cell = cell - ivec2(map_origin);
+	local_cell = clamp(local_cell, ivec2(0), ivec2(map_size) - ivec2(1));
+	return int(round(texelFetch(terrain_map, local_cell, 0).r * 255.0));
 }
 
 // Плавный FBM шум для извилистых берегов

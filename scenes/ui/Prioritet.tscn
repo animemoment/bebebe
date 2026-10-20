@@ -3,7 +3,7 @@
 [ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="1_581w3"]
 [ext_resource type="Texture2D" uid="uid://dlwnf30f3d30l" path="res://ui/assets/textures/icons/PrioritetIcons/Logistic_icon.png" id="2_581w3"]
 [ext_resource type="Texture2D" uid="uid://44rxtlo4n47u" path="res://ui/assets/textures/icons/PrioritetIcons/lumberjack.png" id="3_dxflp"]
-[ext_resource type="Texture2D" uid="uid://yvw1b2pmcsfr" path="res://ui/assets/textures/icons/farming.png" id="4_fjwvm"]
+[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="4_fjwvm"]
 [ext_resource type="Texture2D" uid="uid://c2h36jt7fhipf" path="res://ui/assets/textures/icons/PrioritetIcons/BuildIconPriotitet.png" id="5_8p48s"]
 
 [sub_resource type="Theme" id="Theme_8p48s"]

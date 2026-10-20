@@ -11,7 +11,7 @@ namespace Game.UI;
 /// кнопка Infoormation — тумблер подсказки про клетку (§20.5).
 /// Замена старому GardenController — Garden.tscn удалён.
 /// </summary>
-public partial class FarmController : Control
+public partial class FarmController : Control, IZoneWindow
 {
     public static FarmController Instance { get; private set; }
 
@@ -42,6 +42,7 @@ public partial class FarmController : Control
     public override void _Ready()
     {
         Instance = this;
+        ZoneWindowRegistry.FarmWindow = this;
         ZIndex = 20;
         SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         MouseFilter = MouseFilterEnum.Ignore;
@@ -219,10 +220,10 @@ public partial class FarmController : Control
     {
         var zone = FarmZoneManager.Instance.SelectedZone;
         if (zone == null) return;
-        var work = WorkZoneController.Instance;
-        if (work == null) return;
+        var host = ZoneWindowRegistry.FarmJobDisplay;
+        if (host == null) return;
         Close();
-        work.ShowForFarmZone(zone.Id);
+        host.ShowForFarmZone(zone.Id);
     }
 
     private void OnZoneSelected(FarmZone zone)
@@ -230,7 +231,7 @@ public partial class FarmController : Control
         if (_rootPanel == null || zone == null) return;
 
         // Единый выбор уже в ZoneManager: закрываем окно Work-зоны если открыто.
-        var work = WorkZoneController.Instance;
+        var work = ZoneWindowRegistry.WorkWindow;
         if (work != null && work.IsOpen)
             work.Close();
 
@@ -346,9 +347,20 @@ public partial class FarmController : Control
             _cellTooltip.Visible = false;
             return;
         }
-        Vector2 mouse = GetGlobalMousePosition();
-        int tx = (int)(mouse.X / MapRenderer.TileSizePx);
-        int ty = (int)(mouse.Y / MapRenderer.TileSizePx);
+        var camera = GetViewport()?.GetCamera2D();
+        Vector2 world;
+        if (camera != null)
+        {
+            world = camera.GetScreenCenterPosition()
+                + (GetViewport().GetMousePosition() - GetViewport().GetVisibleRect().Size * 0.5f)
+                    / (camera.Zoom.X > 0f ? camera.Zoom.X : 1f);
+        }
+        else
+        {
+            world = GetGlobalMousePosition();
+        }
+        int tx = (int)MathF.Floor(world.X / MapRenderer.TileSizePx);
+        int ty = (int)MathF.Floor(world.Y / MapRenderer.TileSizePx);
         var ground = map.MapData.Ground;
         if ((uint)tx >= (uint)ground.GetLength(0) || (uint)ty >= (uint)ground.GetLength(1))
         {
@@ -401,6 +413,12 @@ public partial class FarmController : Control
     {
         FarmZoneManager.Instance.OnZoneSelected -= OnZoneSelected;
         FarmZoneManager.Instance.OnZoneDeselected -= Close;
+        // Симметрично BuildMenuController/HUDController: статика не должна удерживать
+        // освобождённый Godot-объект, иначе Instance отдаёт disposed-ноду после выгрузки UI.
+        if (ReferenceEquals(ZoneWindowRegistry.FarmWindow, this))
+            ZoneWindowRegistry.FarmWindow = null;
+        if (ReferenceEquals(Instance, this))
+            Instance = null;
         base._ExitTree();
     }
 }

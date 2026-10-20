@@ -80,11 +80,16 @@ public class BuildTool : ITool
         if (!IsValidCoord(tilePos.X, tilePos.Y) && WorldPlacement == null) return;
         _isDragging = true;
         _isLeftClick = isLeftClick;
+        _lastDragTile = new(-1, -1);
     }
+
+    private Vector2I _lastDragTile = new(-1, -1);
 
     public void OnDrag(Vector2I startTile, Vector2I currentTile, Vector2 currentWorldPos)
     {
         if (!_isDragging || _ghostLayer == null) return;
+        if (_lastDragTile == currentTile) return;
+        _lastDragTile = currentTile;
         ClearGhost();
 
         int minX = Mathf.Min(startTile.X, currentTile.X);
@@ -93,12 +98,12 @@ public class BuildTool : ITool
         int maxY = Mathf.Max(startTile.Y, currentTile.Y);
 
         long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
-        if (cellCount > 10000)
+        if (cellCount > 100_000)
             return;
 
         if (_buildingType == BuildingType.WoodWall)
         {
-            var cells = new List<Vector2I>((int)Math.Min(cellCount, 4096));
+            var cells = new List<Vector2I>((int)Math.Min(cellCount, 10_000));
             for (int x = minX; x <= maxX; x++)
                 for (int y = minY; y <= maxY; y++)
                     if (CanPlaceBlueprintAt(x, y))
@@ -126,25 +131,16 @@ public class BuildTool : ITool
     public void OnRelease(Vector2I startTile, Vector2I endTile, Vector2 worldPos, bool isLeftClick)
     {
         _isDragging = false;
+        _lastDragTile = new(-1, -1);
         ClearGhost();
 
-        // §28: сначала мир за кромкой — выделение НЕ клампится к острову.
-        if (WorldPlacement != null)
-        {
-            bool wall = _buildingType == BuildingType.WoodWall;
-            Func<long, long, bool> apply = isLeftClick
-                ? (wall ? WorldPlacement.TryPlaceWall : WorldPlacement.TryPlaceBuilding)
-                : (wall ? WorldPlacement.TryRemoveWall : WorldPlacement.TryRemoveBuilding);
-            WorldPlacementPass.Run(startTile.X, startTile.Y, endTile.X, endTile.Y, WorldPlacement, apply);
-        }
+        int minX = Mathf.Min(startTile.X, endTile.X);
+        int maxX = Mathf.Max(startTile.X, endTile.X);
+        int minY = Mathf.Min(startTile.Y, endTile.Y);
+        int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        // Пересечение с островом (а не кламп): иначе драг целиком за кромкой рисовал
-        // фантомные клетки по краю острова.
-        int minX = Mathf.Max(Mathf.Min(startTile.X, endTile.X), 0);
-        int maxX = Mathf.Min(Mathf.Max(startTile.X, endTile.X), MapRenderer.MapWidth - 1);
-        int minY = Mathf.Max(Mathf.Min(startTile.Y, endTile.Y), 0);
-        int maxY = Mathf.Min(Mathf.Max(startTile.Y, endTile.Y), MapRenderer.MapHeight - 1);
-        if (minX > maxX || minY > maxY)
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 100_000)
             return;
 
         _cellBuffer.Clear();
@@ -158,33 +154,58 @@ public class BuildTool : ITool
 
         if (isLeftClick)
         {
-            var validCells = new List<(int X, int Y)>(_cellBuffer.Count);
+            var validIslandCells = new List<(int X, int Y)>(_cellBuffer.Count);
             foreach (var (x, y) in _cellBuffer)
             {
                 if (CanPlaceBlueprintAt(x, y))
                 {
-                    validCells.Add((x, y));
+                    if (IsValidCoord(x, y))
+                    {
+                        validIslandCells.Add((x, y));
+                    }
+                    else if (WorldPlacement != null)
+                    {
+                        if (_buildingType == BuildingType.WoodWall)
+                            WorldPlacement.TryPlaceWall(x, y);
+                        else
+                            WorldPlacement.TryPlaceBuilding(x, y);
+                    }
                 }
             }
 
-            if (validCells.Count > 0)
+            if (validIslandCells.Count > 0)
             {
-                // ВСЕ постройки идут через строгий пайплайн: расчистка →
-                // поднос → стройка. Мебель — тоже пайплайном (StartSite),
-                // напрямую AddBlueprintsBatch больше не зовём: иначе агенты
-                // везут/строят на нерасчищенные клетки мимо этапов.
-                ConstructionPipeline.Instance.StartSite(validCells, _buildingType, _mapData);
+                var def = StructureRegistry.Get(_buildingType);
+                ConstructionManager.Instance.StartSitesBatch(validIslandCells, def, _mapData);
             }
         }
         else
         {
-            BlueprintManager.Instance.RemoveBlueprintsBatch(_cellBuffer);
+            var islandCells = new List<(int X, int Y)>();
+            foreach (var (x, y) in _cellBuffer)
+            {
+                if (IsValidCoord(x, y))
+                    islandCells.Add((x, y));
+                else if (WorldPlacement != null)
+                {
+                    if (_buildingType == BuildingType.WoodWall)
+                        WorldPlacement.TryRemoveWall(x, y);
+                    else
+                        WorldPlacement.TryRemoveBuilding(x, y);
+                }
+            }
+            if (islandCells.Count > 0)
+            {
+                ConstructionManager.Instance.CancelSitesBatch(islandCells);
+                BlueprintManager.Instance.RemoveBlueprintsBatch(islandCells);
+            }
         }
     }
 
     public void Cancel()
     {
         _isDragging = false;
+        _lastDragTile = new(-1, -1);
         ClearGhost();
     }
 
@@ -197,6 +218,12 @@ public class BuildTool : ITool
 
             // На камень не строим: сначала добудь россыпь инструментом камня.
             if (_mapData != null && _mapData.HasStone(x, y))
+                return false;
+
+            if (StructureManager.Instance.HasStructureAt(x, y))
+                return false;
+
+            if (ConstructionManager.Instance.IsSiteAt(x, y))
                 return false;
 
             if (_wallBuildManager != null && _wallBuildManager.IsWallAt(x, y))
@@ -221,7 +248,7 @@ public class BuildTool : ITool
         {
             return _buildingType == BuildingType.WoodWall
                 ? WorldPlacement.CanPlaceWall(x, y)
-                : true;
+                : WorldPlacement.CanPlaceBuilding(x, y);
         }
 
         return false;

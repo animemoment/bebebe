@@ -173,4 +173,11 @@ public sealed class WorkProgressTracker
         }
         return destination;
     }
+
+    public void ClearAll()
+    {
+        _stages.Clear();
+        _queued.Clear();
+        while (_dirty.TryDequeue(out _)) { }
+    }
 }

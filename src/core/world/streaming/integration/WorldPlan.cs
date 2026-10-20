@@ -16,6 +16,8 @@ public readonly record struct WorldPlan(byte PlanKind, long CellX, long CellY)
         WorldDeltaKind.BuildingPlan => "стройка",
         WorldDeltaKind.CropPlan => "посев",
         WorldDeltaKind.StockpilePlan => "склад",
+        WorldDeltaKind.CutTreePlan => "рубка",
+        WorldDeltaKind.MinedStonePlan => "добыча",
         _ => "задача"
     };
 }

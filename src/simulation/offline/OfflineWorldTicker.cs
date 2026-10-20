@@ -63,27 +63,16 @@ public static class OfflineWorldTicker
         AgentNeedsSnapshot advanced = OfflineAgentNeeds.Advance(
             currentNeeds, from.Activity, elapsed, maximumElapsedGameSeconds: elapsed);
 
-        float sleep = advanced.Sleep;
-        if (from.Activity == OfflineAgentActivity.Resting)
-        {
-            // The active loop performs baseline sleep accrual then rest recovery per
-            // substep. Use its net rate here so bounded offline advances remain
-            // associative even when a large interval would otherwise clamp twice.
-            sleep = ClampNeed(from.Sleep + (float)(
-                (AgentNeedsConfig.SleepPerGameSec - AgentNeedsConfig.RestSleepRecoveryPerGameSec) * elapsed));
-        }
-
-        float mood = CalculateMood(advanced.Hunger, sleep, advanced.Fatigue, advanced.EnvironmentSatisfaction);
         return new OfflineAgentState(
             from.EntityId,
             from.WorldX,
             from.WorldY,
             from.Activity,
             advanced.Hunger,
-            sleep,
+            advanced.Sleep,
             advanced.Fatigue,
             advanced.EnvironmentSatisfaction,
-            mood,
+            advanced.Mood,
             from.LastUpdateGameTime + elapsed,
             previousApplied + elapsed);
     }

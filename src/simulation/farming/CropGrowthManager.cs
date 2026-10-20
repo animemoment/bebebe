@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Numerics;
@@ -11,7 +11,7 @@ public sealed class CropGrowthManager
     public static CropGrowthManager Instance { get; } = new();
 
     private const float StageDuration = 60.0f; // 1 минута на каждую фазу
-    private const int MaxCrops = 4096;
+    private const int MaxCrops = 16384;
 
     private readonly object _lock = new();
     private readonly Dictionary<(int X, int Y), CropData> _crops = new(MaxCrops);
@@ -174,9 +174,19 @@ public sealed class CropGrowthManager
         ctx?.Fertility?.DrainAfterHarvest(x, y);
 
         // Если автопосадка включена — ставим задачу на новую посадку
-        if (zoneId != -1 && FarmZoneManager.Instance.TryGetZoneById(zoneId, out var zone) && zone.AutoPlantEnabled)
+        FarmZone currentZone = null;
+        if (FarmZoneManager.Instance.TryGetZoneAt(x, y, out var zoneAtPos))
         {
-            JobBroker.Instance.RegisterPlanting(x, y, zoneId);
+            currentZone = zoneAtPos;
+        }
+        else if (zoneId != -1 && FarmZoneManager.Instance.TryGetZoneById(zoneId, out var zoneById))
+        {
+            currentZone = zoneById;
+        }
+
+        if (currentZone != null && currentZone.AutoPlantEnabled)
+        {
+            JobBroker.Instance.RegisterPlanting(x, y, currentZone.Id);
         }
     }
 
@@ -242,5 +252,61 @@ public sealed class CropGrowthManager
 
         while (SnapshotQueue.Count > 2)
             SnapshotQueue.TryDequeue(out _);
+    }
+
+    /// <summary>
+    /// §119 P7б (task-17 п.3-5): снимок культур для сейва (payload'ы Crop-меток):
+    /// клетка, стадия 1..4, таймер текущей фазы, zoneId.
+    /// </summary>
+    public List<CropData> GetCropsSnapshot()
+    {
+        var result = new List<CropData>(_crops.Count);
+        lock (_lock)
+        {
+            foreach (var kvp in _crops)
+                result.Add(kvp.Value);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// §119 P7б: восстановить культуру с СОСТОЯНИЕМ (стадия/таймер) — обратная
+    /// сторона GetCropsSnapshot. Идемпотентен: существующая культура не затирается.
+    /// Стадия 1..4; Stage 4 ставится с IsHarvestQueued (готова к сбору).
+    /// </summary>
+    public void RestoreCrop(int x, int y, int zoneId, int stage, float growthTimer)
+    {
+        if (stage < 1 || stage > 4)
+            return;
+        if (growthTimer < 0f || float.IsNaN(growthTimer) || float.IsInfinity(growthTimer))
+            growthTimer = 0f;
+        lock (_lock)
+        {
+            if (_crops.ContainsKey((x, y)))
+                return; // идемпотентно
+            _crops[(x, y)] = new CropData
+            {
+                X = x,
+                Y = y,
+                ZoneId = zoneId,
+                Stage = stage,
+                GrowthTimer = stage >= 4 ? 0f : Math.Min(growthTimer, 60f),
+                IsHarvestQueued = stage >= 4,
+                IsPlantingQueued = false
+            };
+            _isDirty = true;
+        }
+        if (stage >= 4)
+            JobBroker.Instance.RegisterHarvest(x, y);
+    }
+
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            _crops.Clear();
+            _isDirty = true;
+        }
+        while (SnapshotQueue.TryDequeue(out _)) { }
     }
 }

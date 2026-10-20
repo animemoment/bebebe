@@ -11,6 +11,13 @@ public class FarmJobManager
     private readonly object _lock = new();
     private readonly HashSet<(int X, int Y)> _markedPlots = new(1024);
     private readonly HashSet<(int X, int Y)> _completedBeds = new(1024);
+    private readonly Dictionary<(int X, int Y), (bool NeedTree, bool NeedStone, bool NeedItem)> _plotsNeedingClearance = new();
+
+    /// <summary>
+    /// P7б §119: per-cell прогресс вскопки 0..1 — переживает прерывание агента.
+    /// Пишет OnCancel хендлера, читает OnStart, чистят Unmark*/CompletePlot/ClearAll.
+    /// </summary>
+    public CellProgressStore TillProgress { get; } = new();
 
     public event Action<(int X, int Y)> OnPlotMarked;
     public event Action<List<(int X, int Y)>> OnPlotsBatchMarked;
@@ -18,23 +25,44 @@ public class FarmJobManager
     public event Action<List<(int X, int Y)>> OnPlotsBatchUnmarked;
     public event Action<(int X, int Y)> OnPlotCompleted;
 
-    public void MarkPlot(int x, int y, bool[,] treeOnGrass)
+    public void MarkPlot(int x, int y, bool[,] treeOnGrass, bool[,] stoneOnGrass = null)
     {
+        bool spillItems = false;
+        bool markTree = false;
+        bool markStone = false;
+        bool registerPlot = false;
+        bool fireEvent = false;
+
         lock (_lock)
         {
             if (_completedBeds.Contains((x, y))) return;
 
             if (_markedPlots.Add((x, y)))
             {
-                if (treeOnGrass != null && treeOnGrass[x, y])
-                {
-                    TreeJobManager.Instance.MarkTree(x, y);
-                }
+                bool hasTree = treeOnGrass != null && (uint)x < (uint)treeOnGrass.GetLength(0) && (uint)y < (uint)treeMaskHeight(treeOnGrass) && treeOnGrass[x, y];
+                bool hasStone = stoneOnGrass != null && (uint)x < (uint)stoneOnGrass.GetLength(0) && (uint)y < (uint)stoneMaskHeight(stoneOnGrass) && stoneOnGrass[x, y];
+                bool hasItems = GroundItemManager.Instance.HasItemsAt(x, y);
 
-                JobBroker.Instance.RegisterFarmPlot(x, y);
-                Callable.From(() => OnPlotMarked?.Invoke((x, y))).CallDeferred();
+                if (hasTree || hasStone || hasItems)
+                {
+                    _plotsNeedingClearance[(x, y)] = (hasTree, hasStone, hasItems);
+                    markTree = hasTree;
+                    markStone = hasStone;
+                    spillItems = hasItems;
+                }
+                else
+                {
+                    registerPlot = true;
+                }
+                fireEvent = true;
             }
         }
+
+        if (spillItems) GroundItemManager.Instance.TrySpillItemsAdjacent(x, y, 512, 512);
+        if (markTree) TreeJobManager.Instance.MarkTree(x, y);
+        if (markStone) StoneJobManager.Instance.MarkStone(x, y, stoneOnGrass);
+        if (registerPlot) JobBroker.Instance.RegisterFarmPlot(x, y);
+        if (fireEvent) Callable.From(() => OnPlotMarked?.Invoke((x, y))).CallDeferred();
     }
 
     public void MarkPlotsBatch(List<(int X, int Y)> plots, bool[,] treeOnGrass, bool[,] stoneOnGrass = null)
@@ -42,8 +70,10 @@ public class FarmJobManager
         if (plots == null || plots.Count == 0) return;
 
         var addedList = new List<(int X, int Y)>(plots.Count);
+        var readyToPlow = new List<(int X, int Y)>();
         var treesToChop = new List<(int X, int Y)>();
         var stonesToMine = new List<(int X, int Y)>();
+        var itemsToClear = new List<(int X, int Y)>();
 
         lock (_lock)
         {
@@ -52,17 +82,30 @@ public class FarmJobManager
                 if (!_completedBeds.Contains(pos) && _markedPlots.Add(pos))
                 {
                     addedList.Add(pos);
-                    if (treeOnGrass != null && treeOnGrass[pos.X, pos.Y])
+                    bool hasTree = treeOnGrass != null && (uint)pos.X < (uint)treeOnGrass.GetLength(0) && (uint)pos.Y < (uint)treeMaskHeight(treeOnGrass) && treeOnGrass[pos.X, pos.Y];
+                    bool hasStone = stoneOnGrass != null && (uint)pos.X < (uint)stoneOnGrass.GetLength(0) && (uint)pos.Y < (uint)stoneMaskHeight(stoneOnGrass) && stoneOnGrass[pos.X, pos.Y];
+                    bool hasItems = GroundItemManager.Instance.HasItemsAt(pos.X, pos.Y);
+
+                    if (hasTree || hasStone || hasItems)
                     {
-                        treesToChop.Add(pos);
+                        _plotsNeedingClearance[pos] = (hasTree, hasStone, hasItems);
+                        if (hasTree) treesToChop.Add(pos);
+                        if (hasStone) stonesToMine.Add(pos);
+                        if (hasItems) itemsToClear.Add(pos);
                     }
-                    // Камень под грядкой — автоматом в добычу (как деревья):
-                    // вскопка по камню запрещена гардом, без метки грядка встала бы.
-                    if (stoneOnGrass != null && (uint)pos.X < (uint)stoneOnGrass.GetLength(0) && (uint)pos.Y < (uint)stoneOnGrass.GetLength(1) && stoneOnGrass[pos.X, pos.Y])
+                    else
                     {
-                        stonesToMine.Add(pos);
+                        readyToPlow.Add(pos);
                     }
                 }
+            }
+        }
+
+        if (itemsToClear.Count > 0)
+        {
+            foreach (var (ix, iy) in itemsToClear)
+            {
+                GroundItemManager.Instance.TrySpillItemsAdjacent(ix, iy, 512, 512);
             }
         }
 
@@ -71,27 +114,120 @@ public class FarmJobManager
             StoneJobManager.Instance.MarkStonesBatch(stonesToMine, stoneOnGrass);
         }
 
+        if (treesToChop.Count > 0)
+        {
+            TreeJobManager.Instance.MarkTreesBatch(treesToChop);
+        }
+
+        if (readyToPlow.Count > 0)
+        {
+            JobBroker.Instance.RegisterFarmPlotBatch(readyToPlow);
+        }
+
         if (addedList.Count > 0)
         {
-            JobBroker.Instance.RegisterFarmPlotBatch(addedList);
-            if (treesToChop.Count > 0)
-            {
-                TreeJobManager.Instance.MarkTreesBatch(treesToChop);
-            }
             Callable.From(() => OnPlotsBatchMarked?.Invoke(addedList)).CallDeferred();
+        }
+    }
+
+    private static int treeMaskHeight(bool[,] mask) => mask != null ? mask.GetLength(1) : 0;
+    private static int stoneMaskHeight(bool[,] mask) => mask != null ? mask.GetLength(1) : 0;
+
+    public void NotifyTreeCleared(int x, int y)
+    {
+        bool becameReady = false;
+        lock (_lock)
+        {
+            if (_plotsNeedingClearance.TryGetValue((x, y), out var req))
+            {
+                req.NeedTree = false;
+                req.NeedItem = GroundItemManager.Instance.HasItemsAt(x, y);
+                if (!req.NeedStone && !req.NeedItem)
+                {
+                    _plotsNeedingClearance.Remove((x, y));
+                    becameReady = _markedPlots.Contains((x, y));
+                }
+                else
+                {
+                    _plotsNeedingClearance[(x, y)] = req;
+                }
+            }
+        }
+        if (becameReady)
+        {
+            JobBroker.Instance.RegisterFarmPlot(x, y);
+        }
+    }
+
+    public void NotifyStoneCleared(int x, int y)
+    {
+        bool becameReady = false;
+        lock (_lock)
+        {
+            if (_plotsNeedingClearance.TryGetValue((x, y), out var req))
+            {
+                req.NeedStone = false;
+                req.NeedItem = GroundItemManager.Instance.HasItemsAt(x, y);
+                if (!req.NeedTree && !req.NeedItem)
+                {
+                    _plotsNeedingClearance.Remove((x, y));
+                    becameReady = _markedPlots.Contains((x, y));
+                }
+                else
+                {
+                    _plotsNeedingClearance[(x, y)] = req;
+                }
+            }
+        }
+        if (becameReady)
+        {
+            JobBroker.Instance.RegisterFarmPlot(x, y);
+        }
+    }
+
+    public void NotifyItemCleared(int x, int y)
+    {
+        bool becameReady = false;
+        lock (_lock)
+        {
+            if (_plotsNeedingClearance.TryGetValue((x, y), out var req))
+            {
+                req.NeedItem = false;
+                if (!req.NeedTree && !req.NeedStone)
+                {
+                    _plotsNeedingClearance.Remove((x, y));
+                    becameReady = _markedPlots.Contains((x, y));
+                }
+                else
+                {
+                    _plotsNeedingClearance[(x, y)] = req;
+                }
+            }
+        }
+        if (becameReady)
+        {
+            JobBroker.Instance.RegisterFarmPlot(x, y);
         }
     }
 
     public void UnmarkPlot(int x, int y)
     {
+        bool unregister = false;
         lock (_lock)
         {
+            _plotsNeedingClearance.Remove((x, y));
+            _completedBeds.Remove((x, y));
+            TillProgress.Clear(x, y);
             if (_markedPlots.Remove((x, y)))
             {
-                JobBroker.Instance.UnregisterFarmPlot(x, y);
-                Callable.From(() => OnPlotUnmarked?.Invoke((x, y))).CallDeferred();
+                unregister = true;
             }
         }
+        if (unregister)
+        {
+            JobBroker.Instance.UnregisterFarmPlot(x, y);
+        }
+        Callable.From(() => OnPlotUnmarked?.Invoke((x, y))).CallDeferred();
     }
 
     public void UnmarkPlotsBatch(List<(int X, int Y)> plots)
@@ -103,10 +239,11 @@ public class FarmJobManager
         {
             foreach (var pos in plots)
             {
-                if (_markedPlots.Remove(pos))
-                {
-                    removedList.Add(pos);
-                }
+                _plotsNeedingClearance.Remove(pos);
+                _completedBeds.Remove(pos);
+                _markedPlots.Remove(pos);
+                TillProgress.Clear(pos.X, pos.Y);
+                removedList.Add(pos);
             }
         }
 
@@ -208,8 +345,14 @@ public class FarmJobManager
         {
             _markedPlots.Remove((x, y));
             _completedBeds.Add((x, y));
+            TillProgress.Clear(x, y);
             JobBroker.Instance.UnregisterFarmPlot(x, y);
             Callable.From(() => OnPlotCompleted?.Invoke((x, y))).CallDeferred();
+        }
+
+        if (FarmZoneManager.Instance.TryGetZoneAt(x, y, out var zone) && zone != null && zone.AutoPlantEnabled)
+        {
+            JobBroker.Instance.RegisterPlanting(x, y, zone.Id);
         }
     }
 
@@ -219,8 +362,15 @@ public class FarmJobManager
         lock (_lock)
         {
             var oldPlots = new List<(int X, int Y)>(_markedPlots);
+            foreach (var bed in _completedBeds)
+            {
+                if (!oldPlots.Contains(bed))
+                    oldPlots.Add(bed);
+            }
             _markedPlots.Clear();
+            _plotsNeedingClearance.Clear();
             _completedBeds.Clear();
+            TillProgress.ClearAll();
             if (oldPlots.Count > 0)
             {
                 Callable.From(() => OnPlotsBatchUnmarked?.Invoke(oldPlots)).CallDeferred();

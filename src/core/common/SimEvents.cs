@@ -228,6 +228,17 @@ public static class SimEvents
         sb.Append(']');
         return sb.ToString();
     }
+
+    public static void Reset()
+    {
+        lock (_cLock)
+        {
+            _counters.Clear();
+            _series.Clear();
+            Array.Clear(_ring, 0, _ring.Length);
+            Interlocked.Exchange(ref _ringHead, 0);
+        }
+    }
 }
 
 // A13: триггер записи — по умолчанию ВКЛ (как было), кнопка панели выключает.

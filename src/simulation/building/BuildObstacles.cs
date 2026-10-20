@@ -52,18 +52,8 @@ public static class BuildObstacles
     /// </summary>
     public static bool HasAny(int x, int y, MapData map)
     {
-        if (map == null) return false;
-        if ((uint)x >= (uint)map.Width || (uint)y >= (uint)map.Height)
-            return false;
-        if (map.Ground[x, y] != TileType.Grass)
-            return true; // вода/гора — тоже препятствие
-        if (map.TreeOnGrass[x, y])
-            return true;
-        if (map.HasStone(x, y))
-            return true;
-        if (GroundItemManager.Instance.HasItemsAt(x, y))
-            return true;
-        return false;
+        var mask = TileClearanceService.GetObstacles(x, y, map);
+        return (mask & (ObstacleMask.Tree | ObstacleMask.Stone | ObstacleMask.LooseItems | ObstacleMask.Debris | ObstacleMask.ImpassableTerrain)) != 0;
     }
 
     /// <summary>Клетка занята рукотворным (не чистим, стройку не ставим).</summary>
@@ -71,7 +61,9 @@ public static class BuildObstacles
     {
         return FarmJobManager.Instance.IsGardenBed(x, y)
             || FarmJobManager.Instance.IsPlotMarked(x, y)
+            || StructureManager.Instance.HasStructureAt(x, y)
             || BuildingManager.Instance.HasBuildingAt(x, y)
+            || ConstructionManager.Instance.IsSiteAt(x, y)
             || BlueprintManager.Instance.IsBlueprintAt(x, y);
     }
 

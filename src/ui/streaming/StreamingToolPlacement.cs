@@ -1,4 +1,5 @@
 using System;
+using Godot;
 using Game.Core.WorldStreaming.Integration;
 using Game.UI.Tools;
 
@@ -18,6 +19,11 @@ public sealed class StreamingToolPlacement : IToolWorldPlacement
     private readonly long _islandWidth;
     private readonly long _islandHeight;
 
+    /// <summary>
+    /// §117.2: размеры острова Main передаёт ЯВНО (Main.ColonySizeTiles, 1024×1024) —
+    /// это развязывает границы от флипа MapRenderer.MapWidth/Height. Дефолты
+    /// (MapWidth/Height) остаются только как fallback для тестов/других вызывающих.
+    /// </summary>
     public StreamingToolPlacement(
         StreamingWorldManager manager,
         WorldGameRules rules,
@@ -73,24 +79,36 @@ public sealed class StreamingToolPlacement : IToolWorldPlacement
         => Apply(cellX, cellY, _rules.CanBuildAt(cellX, cellY)
             && _manager.TryPlaceBlock(WorldDeltaKind.BuildingPlan, cellX, cellY));
 
+    public bool CanPlaceBuilding(long cellX, long cellY)
+        => _rules.CanBuildAt(cellX, cellY);
+
     public bool TryRemoveBuilding(long cellX, long cellY)
         => Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.BuildingPlan, cellX, cellY)
             || _manager.TryRemoveBlock(WorldDeltaKind.Building, cellX, cellY));
 
     public bool TryCutTree(long cellX, long cellY)
-        => Apply(cellX, cellY, _rules.TryCutTreeAt(cellX, cellY));
+    {
+        bool gate = _rules.CanCutTreeAt(cellX, cellY);
+        bool placed = gate && _manager.TryPlaceBlock(WorldDeltaKind.CutTreePlan, cellX, cellY);
+        GD.Print($"[CUT-TREE] ({cellX},{cellY}) gate={gate} placed={placed} rules={_rules != null} mgr={_manager != null}");
+        return Apply(cellX, cellY, placed);
+    }
 
     public bool TryCancelCutTree(long cellX, long cellY)
-        => Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.CutTree, cellX, cellY));
+        => Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.CutTreePlan, cellX, cellY)
+            || _manager.TryRemoveBlock(WorldDeltaKind.CutTree, cellX, cellY));
 
     public bool TryMineStone(long cellX, long cellY)
-        => Apply(cellX, cellY, _rules.TryMineStoneAt(cellX, cellY));
+        => Apply(cellX, cellY, _rules.CanMineStoneAt(cellX, cellY)
+            && _manager.TryPlaceBlock(WorldDeltaKind.MinedStonePlan, cellX, cellY));
 
     public bool TryCancelMineStone(long cellX, long cellY)
-        => Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.MinedStone, cellX, cellY));
+        => Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.MinedStonePlan, cellX, cellY)
+            || _manager.TryRemoveBlock(WorldDeltaKind.MinedStone, cellX, cellY));
 
-    /// <summary>Устаревшее разделение острова и мира ликвидировано.</summary>
-    public bool IsIslandCell(long cellX, long cellY) => false;
+    /// <summary>Клетка острова колонии: [0, _islandWidth)×[0, _islandHeight).</summary>
+    public bool IsIslandCell(long cellX, long cellY)
+        => cellX >= 0 && cellY >= 0 && cellX < _islandWidth && cellY < _islandHeight;
 
     private bool Apply(long cellX, long cellY, bool applied)
     {

@@ -1,5 +1,6 @@
 using Godot;
 using Game.Core;
+using Game.Core.WorldStreaming;
 using Game.Simulation;
 using Game.UI.Tools;
 using System;
@@ -7,7 +8,7 @@ using System.Globalization;
 
 namespace Game.UI;
 
-public partial class HUDController : Control
+public partial class HUDController : Control, ICellProbeOverlay, IDraftCoordinator
 {
     public static HUDController Instance { get; private set; }
 
@@ -70,6 +71,7 @@ public partial class HUDController : Control
     private PriorityBoardController _priorityBoard;
     private FarmController _gardenController;
     private BuildMenuController _buildMenuController;
+    private PlayerInteractionManager _interactionManager;
 
     public override void _Ready()
     {
@@ -137,6 +139,7 @@ public partial class HUDController : Control
         SetupFurnitureButtons();
         SetupStoneMiningButton();
         ApplyResponsiveLayout();
+        Callable.From(ApplyResponsiveLayout).CallDeferred();
         if (GetTree()?.Root != null)
         {
             GetTree().Root.SizeChanged += ApplyResponsiveLayout;
@@ -224,12 +227,26 @@ public partial class HUDController : Control
         StockpileManager.Instance.OnItemCountChanged += OnStockpileItemCountChanged;
         UpdateWoodDisplay(StockpileManager.Instance.GetTotalItemCount(ItemId.Log));
 
-        if (PlayerInteractionManager.Instance != null)
+        if (PlayerInteractionManager.Instance != null && _interactionManager == null)
         {
-            PlayerInteractionManager.Instance.OnToolReset += ClearActiveToolButton;
+            _interactionManager = PlayerInteractionManager.Instance;
+            // Узкий контракт ICellProbeOverlay вместо обратной ссылки SelectTool → HUDController.
+            _interactionManager.SetCellProbe(this);
+            _interactionManager.OnToolReset += ClearActiveToolButton;
+            // §113.5/B1: ESC-десинк — PlayerInteractionManager съедает Escape при
+            // активном инструменте (SetInputAsHandled), BuildMenuController его не
+            // видит и _draftTool оставался stale: повторное Open той же зоны
+            // упиралось в ранний return и инструмент не переактивировался.
+            _interactionManager.OnToolReset += ClearStaleDraftTool;
         }
 
         CloseAllMenus();
+    }
+
+    /// <summary>Внешний сброс инструмента (ESC/кнопка): черновик больше не активен.</summary>
+    private void ClearStaleDraftTool()
+    {
+        _draftTool = null;
     }
 
     /// <summary>
@@ -376,55 +393,90 @@ public partial class HUDController : Control
     {
         if (_humidityTooltip == null) return;
         var map = MapRenderer.Instance;
-        if (map?.Fertility == null || map?.MapData?.Ground == null
-            || map.CurrentMapMode != MapMode.Fertility)
+        if (map == null || map.CurrentMapMode != MapMode.Fertility)
         {
             _humidityTooltip.Visible = false;
             return;
         }
-        var ground = map.MapData.Ground;
-        if ((uint)x >= (uint)ground.GetLength(0) || (uint)y >= (uint)ground.GetLength(1)
-            || ground[x, y] != TileType.Grass)
+
+        int v = 0;
+        bool isGrass = false;
+        var ground = map.MapData?.Ground;
+        if (ground != null && (uint)x < (uint)ground.GetLength(0) && (uint)y < (uint)ground.GetLength(1))
+        {
+            isGrass = (ground[x, y] == TileType.Grass);
+            if (isGrass && map.Fertility != null)
+                v = map.Fertility.Get(x, y);
+        }
+        else
+        {
+            ulong seed = UnifiedWorldGenerator.ActiveWorldSeed;
+            if (seed != 0)
+            {
+                var cell = Game.Core.WorldStreaming.Integration.WorldCellQuery.CellAt(seed, 3, x, y);
+                isGrass = (cell.Terrain == Game.Core.WorldStreaming.BaseTerrainKind.Grass);
+                v = (int)((long)cell.ForestQ16 * 200 / 65535);
+            }
+        }
+
+        if (!isGrass)
         {
             _humidityTooltip.Visible = false;
             return;
         }
-        int v = map.Fertility.Get(x, y);
+
         string word = v < 60 ? "бедно" : v <= 140 ? "норма" : "богато";
         _humidityTooltip.Text = $"{v} {word}";
-        // TopLevel в CanvasLayer: позиция через GlobalPosition + мышь вьюпорта,
-        // иначе (GetGlobalMousePosition у Control) улетает за экран (§20.7).
         _humidityTooltip.GlobalPosition = GetViewport().GetMousePosition() + new Vector2(16, 16);
         _humidityTooltip.Visible = true;
     }
 
     /// <summary>
     /// Показать % влажности клетки всплывашкой у курсора.
-    /// Только в режиме Humidity и только грунт: на воде/мёртвой клетке —
-    /// прячем (это вода, и так видно что мокро).
+    /// Работает бесшовно как на острове колонии, так и в стриминговом мире.
     /// </summary>
     public void ShowHumidityAt(int x, int y)
     {
         if (_humidityTooltip == null) return;
         var map = MapRenderer.Instance;
-        if (map?.Humidity == null || map?.MapData?.Ground == null
-            || map.CurrentMapMode != MapMode.Humidity)
+        if (map == null || map.CurrentMapMode != MapMode.Humidity)
         {
             _humidityTooltip.Visible = false;
             return;
         }
-        var ground = map.MapData.Ground;
-        if ((uint)x >= (uint)ground.GetLength(0) || (uint)y >= (uint)ground.GetLength(1)
-            || ground[x, y] != TileType.Grass)
+
+        int m = 0;
+        bool isGrass = false;
+        var ground = map.MapData?.Ground;
+        if (ground != null && (uint)x < (uint)ground.GetLength(0) && (uint)y < (uint)ground.GetLength(1))
+        {
+            isGrass = (ground[x, y] == TileType.Grass);
+            if (isGrass && map.Humidity != null)
+                m = map.Humidity.Get(x, y);
+        }
+        else
+        {
+            ulong seed = UnifiedWorldGenerator.ActiveWorldSeed;
+            if (seed != 0)
+            {
+                var terrain = Game.Core.WorldStreaming.Integration.WorldCellQuery.TerrainAt(seed, 3, x, y);
+                isGrass = (terrain == Game.Core.WorldStreaming.BaseTerrainKind.Grass);
+                if (isGrass)
+                {
+                    ushort moistQ16 = Game.Core.WorldStreaming.Integration.WorldCellQuery.MoistureQ16At(seed, 3, x, y);
+                    m = (int)((long)moistQ16 * 200 / 65535);
+                }
+            }
+        }
+
+        if (!isGrass)
         {
             _humidityTooltip.Visible = false;
             return;
         }
-        int m = map.Humidity.Get(x, y);
+
         string word = m < 40 ? "сухо" : m <= 130 ? "норма" : "мокро";
         _humidityTooltip.Text = $"{m}% {word}";
-        // Позиция у курсора (+16px вправо-вниз, чтобы не закрывать клетку).
-        // TopLevel в CanvasLayer — через GlobalPosition (§20.7).
         _humidityTooltip.GlobalPosition = GetViewport().GetMousePosition() + new Vector2(16, 16);
         _humidityTooltip.Visible = true;
     }
@@ -484,6 +536,8 @@ public partial class HUDController : Control
         // Универсальное окно строительства (Build.tscn): открывается при выборе
         // варианта зоны в ZoneContainer. Bootstrap 1-в-1 как Garden/WorkZone.
         _buildMenuController = new BuildMenuController { Name = "BuildMenuController" };
+        // Узкий контракт IDraftCoordinator вместо обратной ссылки BuildMenu → HUDController.
+        _buildMenuController.BindDraftCoordinator(this);
         AddChild(_buildMenuController);
 
         _buildMenuController.OnOpened += () =>
@@ -595,8 +649,7 @@ public partial class HUDController : Control
         {
             ToggleToolButton(_prioritetButton, () =>
             {
-                FarmZoneManager.Instance.DeselectZone();
-                WorkZoneManager.Instance.DeselectZone();
+                ZoneManager.Instance.DeselectZone();
                 if (_amountOfResourcesPanel != null)
                     _amountOfResourcesPanel.Visible = false;
                 _priorityBoard.Open();
@@ -620,8 +673,7 @@ public partial class HUDController : Control
         }
 
         ClearActiveToolButton();
-        FarmZoneManager.Instance.DeselectZone();
-        WorkZoneManager.Instance.DeselectZone();
+        ZoneManager.Instance.DeselectZone();
         _activeToolButton = button;
 
         if (_activeToolButton != null && _activeHighlightPanel != null)
@@ -761,16 +813,10 @@ public partial class HUDController : Control
         {
             bool handled = false;
 
-            if (_gardenController != null && _gardenController.IsOpen)
+            if ((_gardenController != null && _gardenController.IsOpen) ||
+                (WorkZoneController.Instance != null && WorkZoneController.Instance.IsOpen))
             {
-                FarmZoneManager.Instance.DeselectZone();
-                handled = true;
-            }
-
-            // T7: 1-в-1 как garden — Escape закрывает рабочую зону.
-            if (WorkZoneController.Instance != null && WorkZoneController.Instance.IsOpen)
-            {
-                WorkZoneManager.Instance.DeselectZone();
+                ZoneManager.Instance.DeselectZone();
                 handled = true;
             }
 
@@ -1200,9 +1246,17 @@ public partial class HUDController : Control
     public void Setup(PlayerInteractionManager interactionManager, MapRenderer mapRenderer, int totalPopulation = 550)
     {
         _totalPopulation = totalPopulation;
-        if (interactionManager != null)
+        if (_interactionManager != null)
         {
-            interactionManager.OnToolReset += ClearActiveToolButton;
+            _interactionManager.OnToolReset -= ClearActiveToolButton;
+            _interactionManager.OnToolReset -= ClearStaleDraftTool;
+        }
+        _interactionManager = interactionManager;
+        if (_interactionManager != null)
+        {
+            _interactionManager.OnToolReset += ClearActiveToolButton;
+            // §113.5/B1: см. комментарий в _Ready — чистка stale-черновика.
+            _interactionManager.OnToolReset += ClearStaleDraftTool;
         }
         RefreshStats();
     }
@@ -1305,18 +1359,24 @@ public partial class HUDController : Control
         ctrl.OffsetBottom = top + height;
     }
 
-    private static void AnchorToBottom(Control ctrl, float bottomOffset, float height)
+    private static void AnchorToBottom(Control ctrl, float bottomDistance, float height, float leftOffset = 20f, float width = 600f)
     {
         if (ctrl == null) return;
+        ctrl.LayoutMode = 1;
+        ctrl.AnchorLeft = 0.0f;
+        ctrl.AnchorRight = 0.0f;
         ctrl.AnchorTop = 1.0f;
         ctrl.AnchorBottom = 1.0f;
-        ctrl.OffsetTop = -bottomOffset;
-        ctrl.OffsetBottom = -bottomOffset + height;
+        ctrl.OffsetLeft = leftOffset;
+        ctrl.OffsetRight = leftOffset + width;
+        ctrl.OffsetTop = -bottomDistance;
+        ctrl.OffsetBottom = -bottomDistance + height;
     }
 
     private static void AnchorToTopCenter(Control ctrl, float distFromCenter, float width, float top, float height)
     {
         if (ctrl == null) return;
+        ctrl.LayoutMode = 1;
         ctrl.AnchorLeft = 0.5f;
         ctrl.AnchorRight = 0.5f;
         ctrl.OffsetLeft = distFromCenter;
@@ -1350,13 +1410,22 @@ public partial class HUDController : Control
             _amountOfResourcesPanel.OffsetBottom = 0f;
         }
 
-        // Нижние контейнеры строительства и приказов (привязка к низу экрана)
-        AnchorToBottom(_selectionContainer, 101f, 100f);
-        AnchorToBottom(_buildContainer, 202f, 100f);
-        AnchorToBottom(_orderContainer, 202f, 100f);
-        AnchorToBottom(_wallContainer, 304f, 100f);
-        AnchorToBottom(_zoneContainer, 304f, 100f);
-        AnchorToBottom(_industrialContainer, 305f, 100f);
+        // Нижние контейнеры строительства и приказов:
+        // безопасный отступ снизу 24px от границы экрана, высота кнопок 100px
+        const float safeBottomMargin = 24f;
+        const float containerHeight = 100f;
+        const float tierSpacing = 8f;
+
+        float tier1Distance = safeBottomMargin + containerHeight; // 124px от дна
+        float tier2Distance = tier1Distance + tierSpacing + containerHeight; // 232px от дна
+        float tier3Distance = tier2Distance + tierSpacing + containerHeight; // 340px от дна
+
+        AnchorToBottom(_selectionContainer, tier1Distance, containerHeight, leftOffset: 20f, width: 300f);
+        AnchorToBottom(_buildContainer, tier2Distance, containerHeight, leftOffset: 20f, width: 600f);
+        AnchorToBottom(_orderContainer, tier2Distance, containerHeight, leftOffset: 20f, width: 600f);
+        AnchorToBottom(_wallContainer, tier3Distance, containerHeight, leftOffset: 20f, width: 600f);
+        AnchorToBottom(_zoneContainer, tier3Distance, containerHeight, leftOffset: 20f, width: 600f);
+        AnchorToBottom(_industrialContainer, tier3Distance, containerHeight, leftOffset: 20f, width: 600f);
 
         // Верхний центр: индикаторы населения, времени, кнопки скорости (от центра 960)
         AnchorToTopCenter(_populationLabel, -415f, 81f, 1f, 39f);
@@ -1371,7 +1440,23 @@ public partial class HUDController : Control
 
     private static void SetMouseFilterRecursive(Control control)
     {
-        if (control is not BaseButton)
+        if (control is FarmController ||
+            control is BuildMenuController ||
+            control is WorkZoneController ||
+            control is PriorityBoardController)
+        {
+            return;
+        }
+
+        if (control is BaseButton)
+        {
+            control.MouseFilter = MouseFilterEnum.Stop;
+        }
+        else if (control is Panel or PanelContainer)
+        {
+            control.MouseFilter = MouseFilterEnum.Stop;
+        }
+        else
         {
             control.MouseFilter = MouseFilterEnum.Ignore;
         }
@@ -1395,14 +1480,21 @@ public partial class HUDController : Control
     {
         if (Instance == this)
             Instance = null;
-        if (GetTree()?.Root != null)
+        if (IsInsideTree() && GetTree()?.Root != null)
         {
             GetTree().Root.SizeChanged -= ApplyResponsiveLayout;
         }
         StockpileManager.Instance.OnItemCountChanged -= OnStockpileItemCountChanged;
-        if (PlayerInteractionManager.Instance != null)
+        if (_interactionManager != null)
+        {
+            _interactionManager.OnToolReset -= ClearActiveToolButton;
+            _interactionManager.OnToolReset -= ClearStaleDraftTool;
+            _interactionManager = null;
+        }
+        else if (PlayerInteractionManager.Instance != null)
         {
             PlayerInteractionManager.Instance.OnToolReset -= ClearActiveToolButton;
+            PlayerInteractionManager.Instance.OnToolReset -= ClearStaleDraftTool;
         }
         base._ExitTree();
     }

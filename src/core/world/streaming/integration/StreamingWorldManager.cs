@@ -72,6 +72,21 @@ public sealed class StreamingWorldManager
     }
 
     /// <summary>
+    /// §118: террейн-гейт менеджера для placement-видов. Готовые объекты (стена/здание/
+    /// склад/посев) требуют травы; ПЛАНЫ (чертежи, 0x11..0x16) требуют лишь «не вода» —
+    /// их предметные гейты (лес/россыпь камня/готовая почва/трава) уже держит
+    /// <see cref="WorldGameRules"/> (CanCutTreeAt/CanMineStoneAt/CanPlantAt/IsReadyBase),
+    /// и менеджерный grass-only гейт молча отбрасывал законные планы на песке и в степи
+    /// (колония на песке = «планы не видны», §118 live-диагностика).
+    /// </summary>
+    private bool CanPlaceKind(byte kind, long cellX, long cellY)
+    {
+        if (WorldDeltaKind.IsPlan(kind))
+            return WorldCellQuery.TerrainAt(_seed, _generatorVersion, cellX, cellY) != BaseTerrainKind.Water;
+        return CanPlace(cellX, cellY);
+    }
+
+    /// <summary>
     /// Заблокирована ли клетка постоянными метками (стена, здание, склад, посев и их планы).
     /// Список видов — единый (WorldDeltaKind.BlockingKinds); для IWallWorld — только стены.
     /// </summary>
@@ -132,7 +147,7 @@ public sealed class StreamingWorldManager
             return false;
 
         bool placementKind = WorldDeltaKind.IsPlacementKind(kind);
-        if (placementKind && !CanPlace(cellX, cellY))
+        if (placementKind && !CanPlaceKind(kind, cellX, cellY))
             return false;
         if (blocks.HasBlock(kind, cellX, cellY))
             return false;
@@ -151,6 +166,45 @@ public sealed class StreamingWorldManager
         if (!blocks.HasBlock(kind, cellX, cellY))
             return false;
         return blocks.RemoveBlock(kind, cellX, cellY);
+    }
+
+    /// <summary>
+    /// Атомарная замена одной персистентной метки на другую (например, Plan -> Done).
+    /// Исключает гонку потери чертежа: если новый блок не встал, старый НЕ удаляется (F-009).
+    /// </summary>
+    public bool TryReplaceBlock(byte oldKind, byte newKind, long cellX, long cellY)
+    {
+        if (!_world.IsLoaded(WorldCoordinates.ChunkForTile(cellX, cellY)))
+            return false;
+        if (_world is not IBlockWorld blocks)
+            return false;
+        if (!blocks.HasBlock(oldKind, cellX, cellY))
+            return false;
+
+        bool placementKind = WorldDeltaKind.IsPlacementKind(newKind);
+        if (placementKind && !CanPlaceKind(newKind, cellX, cellY))
+            return false;
+
+        // Проверяем блокировку клетки ДРУГИМИ сущностями (исключая заменяемый oldKind)
+        byte[] blockingKinds = WorldDeltaKind.BlockingKinds;
+        for (int i = 0; i < blockingKinds.Length; i++)
+        {
+            byte bk = blockingKinds[i];
+            if (bk != oldKind && blocks.HasBlock(bk, cellX, cellY))
+                return false;
+        }
+
+        if (!blocks.RemoveBlock(oldKind, cellX, cellY))
+            return false;
+
+        if (!blocks.AddBlock(newKind, cellX, cellY))
+        {
+            // Откат старого блока при сбое
+            blocks.AddBlock(oldKind, cellX, cellY);
+            return false;
+        }
+
+        return true;
     }
 
     public bool IsChunkLoaded(ChunkKey key) => _world.IsLoaded(key);

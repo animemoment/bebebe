@@ -249,14 +249,10 @@ public sealed class HumidityMap
         // Сезон (п.19.5-П5): −1 = лето (суше), +1 = зима (мокрее). Карта «дышит».
         int seasonDelta = season > 0.33f ? 1 : season < -0.33f ? -1 : 0;
 
-        // Попытка выполнения через GPU Compute Shader (PLAN.md §38)
-        if (Game.Simulation.Gpu.GpuHumiditySimulator.Instance.TryTick(_cur, _nxt, Width, Height, ground, _waterFeed, highMask, forestMask, farmMask, downhillMask, season))
-        {
-            int[] tmp = _cur;
-            _cur = _nxt;
-            _nxt = tmp;
-            return;
-        }
+        // F-007: GPU Compute симуляция влажности отключена во избежание порчи буферов
+        // из-за таймаута CallOnRenderThread (200мс), когда запоздалый колбэк потока
+        // рендера перезаписывал уже пересчитанный на CPU массив после смены буферов.
+        // Расчет выполняется надежно и детерминированно на CPU через Parallel.For.
 
         Parallel.For(0, h, y =>
         {

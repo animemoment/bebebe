@@ -126,9 +126,7 @@ public partial class PerformanceOverlay : CanvasLayer
 
 		_simBackendButton = MakeTrackedButton(AgentSimulationThread.SimBackendLabel, "sim_backend", () =>
 		{
-			AgentSimulationThread.ActiveBackend = AgentSimulationThread.ActiveBackend == AgentSimulationThread.SimulationBackend.CpuSimd
-				? AgentSimulationThread.SimulationBackend.GpuCompute
-				: AgentSimulationThread.SimulationBackend.CpuSimd;
+			AgentSimulationThread.ActiveBackend = AgentSimulationThread.SimulationBackend.CpuSimd;
 			_simBackendButton.Text = AgentSimulationThread.SimBackendLabel;
 			ProfilerLogService.Instance.RecordFunction("Simulation Backend", AgentSimulationThread.SimBackendLabel);
 		});
@@ -368,7 +366,14 @@ public partial class PerformanceOverlay : CanvasLayer
 		}
 		else if (@event is InputEventMouseMotion mm && _isDragging)
 		{
-			_panel.Position = mm.Position - _dragOffset;
+			Vector2 targetPos = mm.Position - _dragOffset;
+			Vector2 vpSize = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1920, 1080);
+			float maxX = Math.Max(0f, vpSize.X - _panel.Size.X);
+			float maxY = Math.Max(0f, vpSize.Y - _panel.Size.Y);
+			_panel.Position = new Vector2(
+				Math.Clamp(targetPos.X, 0f, maxX),
+				Math.Clamp(targetPos.Y, 0f, maxY)
+			);
 			return;
 		}
 

@@ -210,13 +210,19 @@ public static class SimdMovementBatch
             int nextIdx = wpIndex[i] + 1;
             if (nextIdx >= cnt)
             {
-                nextIdx = 0; // Циклический обход или финиш цепочки
+                wpCount[i] = 0;
+                wpIndex[i] = 0;
+                stepX[i] = tarX[i];
+                stepY[i] = tarY[i];
             }
-            wpIndex[i] = (byte)nextIdx;
-            int wpPos = i * AgentPathConfig.MaxWaypoints + nextIdx;
-            float halfTile = tileSize * 0.5f;
-            stepX[i] = wpX[wpPos] * tileSize + halfTile;
-            stepY[i] = wpY[wpPos] * tileSize + halfTile;
+            else
+            {
+                wpIndex[i] = (byte)nextIdx;
+                int wpPos = i * AgentPathConfig.MaxWaypoints + nextIdx;
+                float halfTile = tileSize * 0.5f;
+                stepX[i] = wpX[wpPos] * tileSize + halfTile;
+                stepY[i] = wpY[wpPos] * tileSize + halfTile;
+            }
         }
         else
         {

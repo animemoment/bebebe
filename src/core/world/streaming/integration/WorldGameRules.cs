@@ -62,42 +62,58 @@ public sealed class WorldGameRules
         => IsReadyBase(cellX, cellY)
             && !_world.HasBlock(WorldDeltaKind.Wall, cellX, cellY);
 
-    /// <summary>Можно добывать камень: загружено, горы (скала), не занято объектом, ещё не добыто.</summary>
+    /// <summary>Можно добывать камень: загружено, гора или россыпь камня, не занято объектом, ещё не добыто и нет плана.</summary>
     public bool CanMineStoneAt(long cellX, long cellY)
-        => IsLoadedAt(cellX, cellY)
-            && WorldCellQuery.IsMountainAt(_seed, _generatorVersion, cellX, cellY)
-            && !HasEntityBlocking(cellX, cellY)
-            && !_world.HasBlock(WorldDeltaKind.MinedStone, cellX, cellY);
-
-    /// <summary>Можно вырубить дерево: загружено, лесной шум высокий, не вода, не занято, ещё не вырублено.</summary>
-    public bool CanCutTreeAt(long cellX, long cellY)
     {
-        GeneratedCell cell = WorldCellQuery.CellAt(_seed, _generatorVersion, cellX, cellY);
-        return IsLoadedAt(cellX, cellY)
-            && cell.ForestQ16 >= TreeForestMin
-            && cell.Terrain != BaseTerrainKind.Water
+        if (!IsLoadedAt(cellX, cellY))
+            return false;
+
+        GeneratedCell cell = GetCell(cellX, cellY);
+        bool hasStoneSource = cell.Terrain == BaseTerrainKind.Mountain || cell.StoneQ16 >= WorldDecor.StoneMinQ16;
+        return hasStoneSource
             && !HasEntityBlocking(cellX, cellY)
-            && !_world.HasBlock(WorldDeltaKind.CutTree, cellX, cellY);
+            && !_world.HasBlock(WorldDeltaKind.MinedStone, cellX, cellY)
+            && !_world.HasBlock(WorldDeltaKind.MinedStonePlan, cellX, cellY);
     }
 
-    /// <summary>Можно засеять: загружено, трава, влажность в пахотном диапазоне, клетка свободна (и не вырублена/не добыта).</summary>
+    /// <summary>Можно вырубить дерево: загружено, лесной шум высокий, не вода, не занято, ещё не вырублено и нет плана.</summary>
+    public bool CanCutTreeAt(long cellX, long cellY)
+    {
+        if (!IsLoadedAt(cellX, cellY))
+            return false;
+
+        GeneratedCell cell = GetCell(cellX, cellY);
+        return cell.ForestQ16 >= TreeForestMin
+            && cell.Terrain != BaseTerrainKind.Water
+            && !HasEntityBlocking(cellX, cellY)
+            && !_world.HasBlock(WorldDeltaKind.CutTree, cellX, cellY)
+            && !_world.HasBlock(WorldDeltaKind.CutTreePlan, cellX, cellY);
+    }
+
+    /// <summary>
+    /// Можно засеять: загружено, пригодная ПОЧВА (голая земля), клетка свободна от постоянных
+    /// объектов и чертежей. Гейт строгий по поверхности: «трава» как терреин ещё не значит земля —
+    /// песок (пустыня/пляж), лёд и клетки под видимым декором (дерево/камень) не годятся,
+    /// см. <see cref="IsArableSoil"/>. Прежний зажим влажности (FarmMoistureMin/Max) намеренно
+    /// НЕ применяется: он снят как источник «пустот» при разметке (PLAN §56.1.2 / §56.2.1).
+    /// </summary>
     public bool CanPlantAt(long cellX, long cellY)
     {
-        // Один семпл генератора на все террейн/влажностные условия.
-        GeneratedCell cell = WorldCellQuery.CellAt(_seed, _generatorVersion, cellX, cellY);
-        return IsLoadedAt(cellX, cellY)
-            && cell.Terrain == BaseTerrainKind.Grass
+        if (!IsLoadedAt(cellX, cellY))
+            return false;
+
+        GeneratedCell cell = GetCell(cellX, cellY);
+        return IsArableSoil(in cell, cellX, cellY)
             && !HasEntityBlocking(cellX, cellY)
             && !_world.HasBlock(WorldDeltaKind.Crop, cellX, cellY)
-            && !_world.HasBlock(WorldDeltaKind.CutTree, cellX, cellY)
-            && !_world.HasBlock(WorldDeltaKind.MinedStone, cellX, cellY)
-            && cell.MoistureQ16 >= FarmMoistureMin && cell.MoistureQ16 <= FarmMoistureMax;
+            && !_world.HasBlock(WorldDeltaKind.CropPlan, cellX, cellY);
     }
 
     /// <summary>Можно сложить склад: загружено, трава, клетка свободна, склада ещё нет.</summary>
     public bool CanStockpileAt(long cellX, long cellY)
         => IsReadyBase(cellX, cellY)
-            && !_world.HasBlock(WorldDeltaKind.Stockpile, cellX, cellY);
+            && !_world.HasBlock(WorldDeltaKind.Stockpile, cellX, cellY)
+            && !_world.HasBlock(WorldDeltaKind.StockpilePlan, cellX, cellY);
 
     // ---------- Действия (гейт + метка) ----------
 
@@ -121,9 +137,48 @@ public sealed class WorldGameRules
 
     // ---------- Служебное ----------
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private GeneratedCell GetCell(long cellX, long cellY)
+    {
+        // F-011 fast-path: чтение из уже загруженного в память чанка за O(1)
+        if (_world is IWorldCellSource source && source.TryCellInfo(cellX, cellY, out GeneratedCell residentCell))
+            return residentCell;
+        return WorldCellQuery.CellAt(_seed, _generatorVersion, cellX, cellY);
+    }
+
+    /// <summary>
+    /// Пригодная под грядку/посев почва — строго голая ЗЕМЛЯ, а не «трава по террейну».
+    /// Единый источник истины с рендером: пропускаются ровно те клетки, которые
+    /// StreamingWorldView.GetCompositeGroundIndex рисует землёй (CompositeGrass/CompositeSteppe),
+    /// и отсекаются вода/песок/лёд/дерево/камень. Иначе «поставил чертёж на землю», а на экране
+    /// он лежит на песке, льду, дереве или камне — тот самый «чертёж на рандом».
+    /// </summary>
+    private bool IsArableSoil(in GeneratedCell cell, long cellX, long cellY)
+    {
+        if (cell.Terrain != BaseTerrainKind.Grass)
+            return false;
+
+        // Песок (пустыня и прибрежный пляж) и лёд рисуются не землёй (см. рендер вида).
+        if (cell.Biome == (byte)BiomeType.Desert
+            || cell.Biome == (byte)BiomeType.Glacier
+            || cell.Biome == (byte)BiomeType.DeepWater)
+            return false;
+
+        // Видимый декор: дерево/камень по тем же порогам, что рисует вид (WorldDecor).
+        // Уже вырубленное/добытое (готовая метка) декор не рисует — клетка снова голая земля.
+        bool visibleTree = cell.ForestQ16 >= WorldDecor.ForestMinQ16
+            && !_world.HasBlock(WorldDeltaKind.CutTree, cellX, cellY);
+        if (visibleTree)
+            return false;
+
+        bool visibleStone = cell.StoneQ16 >= WorldDecor.StoneMinQ16
+            && !_world.HasBlock(WorldDeltaKind.MinedStone, cellX, cellY);
+        return !visibleStone;
+    }
+
     /// <summary>Общая база для «строительных» гейтов: загружено, трава, клетка не занята объектом.</summary>
     private bool IsReadyBase(long cellX, long cellY)
         => IsLoadedAt(cellX, cellY)
-            && WorldCellQuery.TerrainAt(_seed, _generatorVersion, cellX, cellY) == BaseTerrainKind.Grass
+            && GetCell(cellX, cellY).Terrain == BaseTerrainKind.Grass
             && !HasEntityBlocking(cellX, cellY);
 }

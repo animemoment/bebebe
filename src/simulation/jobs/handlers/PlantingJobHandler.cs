@@ -16,16 +16,31 @@ public sealed class PlantingJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
-        // Planting requires grain, not logs.
-        return GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Grain);
+        if (!FarmJobManager.Instance.IsGardenBed(job.TargetX, job.TargetY))
+            return false;
+
+        // Planting requires grain (from ground or stockpile).
+        return GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Grain) || StockpileManager.Instance.GetLiveItemCount(ItemId.Grain) > 0;
     }
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        pool.WaypointCount[agentIndex] = 0;
+        pool.WaypointIndex[agentIndex] = 0;
+
         Vector2 pos = pool.GetPosition(agentIndex);
 
-        // P0.3: радиус 3 чанка (40 тайлов еды) вместо полного 32 — тот же лимит что в NeedsJobSystem.
-        if (GroundItemManager.Instance.TryReserveGroundItems(pos, 5.0f, true, ItemId.Grain, 3, out var itemCell, out var itemId, out int resCount))
+        bool reservedFromGround = GroundItemManager.Instance.TryReserveGroundItems(pos, 5.0f, true, ItemId.Grain, 3, out var itemCell, out var itemId, out int resCount);
+        bool reservedFromStock = false;
+        (int X, int Y) stockCell = (-1, -1);
+        int stockResCount = 0;
+
+        if (!reservedFromGround)
+        {
+            reservedFromStock = StockpileManager.Instance.TryReserveStockpileItem(pos, ItemId.Grain, 1, 0, out stockCell, out stockResCount);
+        }
+
+        if (reservedFromGround)
         {
             pool.States[agentIndex] = AgentState.MovingToSource;
             pool.SourceCellX[agentIndex] = itemCell.X;
@@ -42,6 +57,19 @@ public sealed class PlantingJobHandler : IJobHandler
             {
                 GroundItemManager.Instance.ReleaseReservation(itemCell.X, itemCell.Y, resCount - 1);
             }
+        }
+        else if (reservedFromStock)
+        {
+            pool.States[agentIndex] = AgentState.MovingToSource;
+            pool.SourceCellX[agentIndex] = stockCell.X;
+            pool.SourceCellY[agentIndex] = stockCell.Y;
+            pool.TargetCellX[agentIndex] = job.TargetX;
+            pool.TargetCellY[agentIndex] = job.TargetY;
+            pool.ReservedItemCount[agentIndex] = 1;
+            pool.TargetPositionX[agentIndex] = stockCell.X * ctx.TileSize + 32f;
+            pool.TargetPositionY[agentIndex] = stockCell.Y * ctx.TileSize + 32f;
+            pool.WorkProgress[agentIndex] = 0f;
+            pool.StuckTimer[agentIndex] = 0f;
         }
         else
         {
@@ -87,7 +115,18 @@ public sealed class PlantingJobHandler : IJobHandler
         {
             if ((pool.GetPosition(agentIndex) - target).Length() <= ReachDist)
             {
-                int taken = GroundItemManager.Instance.TakeItems(pool.SourceCellX[agentIndex], pool.SourceCellY[agentIndex], 1);
+                int sx = pool.SourceCellX[agentIndex];
+                int sy = pool.SourceCellY[agentIndex];
+                int taken = 0;
+                if (StockpileManager.Instance.IsZoneTile(sx, sy))
+                {
+                    taken = StockpileManager.Instance.WithdrawReservedItem(sx, sy, 1);
+                }
+                if (taken == 0)
+                {
+                    taken = GroundItemManager.Instance.TakeItems(sx, sy, 1);
+                }
+
                 if (taken > 0)
                 {
                     pool.CarriedItemId[agentIndex] = ItemId.Grain;
@@ -167,7 +206,14 @@ public sealed class PlantingJobHandler : IJobHandler
     {
         if (pool.States[agentIndex] == AgentState.MovingToSource)
         {
-            GroundItemManager.Instance.ReleaseReservation(pool.SourceCellX[agentIndex], pool.SourceCellY[agentIndex], pool.ReservedItemCount[agentIndex]);
+            int sx = pool.SourceCellX[agentIndex];
+            int sy = pool.SourceCellY[agentIndex];
+            int count = pool.ReservedItemCount[agentIndex];
+            if (StockpileManager.Instance.IsZoneTile(sx, sy))
+            {
+                StockpileManager.Instance.CancelWithdrawalReservation(sx, sy, count);
+            }
+            GroundItemManager.Instance.ReleaseReservation(sx, sy, count);
         }
         else if (pool.CarriedItemCount[agentIndex] > 0)
         {

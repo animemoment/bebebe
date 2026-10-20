@@ -45,23 +45,26 @@ public static class OfflineAgentNeeds
             return current;
 
         float hunger = ClampNeed(current.Hunger + (float)(AgentNeedsConfig.HungerPerGameSec * elapsed));
-        float sleep = ClampNeed(current.Sleep + (float)(AgentNeedsConfig.SleepPerGameSec * elapsed));
+        float sleep = current.Sleep;
         float fatigue = ClampNeed(current.Fatigue);
 
         switch (activity)
         {
             case OfflineAgentActivity.Working:
+                sleep = ClampNeed(sleep + (float)(AgentNeedsConfig.SleepPerGameSec * elapsed));
                 fatigue = ClampNeed(fatigue + (float)(AgentNeedsConfig.FatigueWorkPerGameSec * elapsed));
                 break;
             case OfflineAgentActivity.Idle:
+                sleep = ClampNeed(sleep + (float)(AgentNeedsConfig.SleepPerGameSec * elapsed));
                 fatigue = ClampNeed(fatigue - (float)(AgentNeedsConfig.FatigueIdleRecoveryPerGameSec * elapsed));
                 break;
             case OfflineAgentActivity.Resting:
-                // Current runtime order: baseline needs update, then CommitResting.
-                sleep = ClampNeed(sleep - (float)(AgentNeedsConfig.RestSleepRecoveryPerGameSec * elapsed));
+                // Current runtime order: net rate (baseline sleep accrual minus rest recovery).
+                sleep = ClampNeed(sleep + (float)((AgentNeedsConfig.SleepPerGameSec - AgentNeedsConfig.RestSleepRecoveryPerGameSec) * elapsed));
                 fatigue = ClampNeed(fatigue - (float)(AgentNeedsConfig.RestFatigueRecoveryPerGameSec * elapsed));
                 break;
             case OfflineAgentActivity.Other:
+                sleep = ClampNeed(sleep + (float)(AgentNeedsConfig.SleepPerGameSec * elapsed));
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(activity), activity, "Unknown offline activity.");

@@ -20,6 +20,7 @@ public static class BuildConfig
             BuildingType.Bed => LogsBed,
             BuildingType.Bench => LogsBench,
             BuildingType.Nightstand => LogsNightstand,
+            BuildingType.CentralBlock => LogsCentralBlock,
             _ => LogsWall, // WoodWall и неизвестные
         };
     }
@@ -29,6 +30,7 @@ public static class BuildConfig
     public static int LogsBed = 20;
     public static int LogsBench = 10;
     public static int LogsNightstand = 10;
+    public static int LogsCentralBlock = 10; // §119 P5: центральный блок = 10 дерева
 
     // --- Сколько длится работа (в игровых секундах, 500 = 1 час) ---
     public static float ChopDurationSec = WorldTime.SecondsPerHour * 6f;   // рубка дерева
@@ -55,5 +57,5 @@ public static class BuildConfig
 
     // --- Гейт 100%: стройка начинается только когда ВСЕ бревна привезены ---
     // True = ждем все ресурсы всей стройки, False = старое поведение (по клеткам).
-    public static bool WaitForAllSiteResources = true;
+    public static bool WaitForAllSiteResources = false;
 }

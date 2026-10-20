@@ -59,21 +59,13 @@ public class StoneMiningTool : ITool
         _selectionBox?.EndSelection();
         _selectionBox?.ResetDefaultStyle();
 
-        // §28: добыча камня за кромкой острова — метка мира.
-        if (WorldPlacement != null)
-        {
-            WorldPlacementPass.Run(startTile.X, startTile.Y, endTile.X, endTile.Y, WorldPlacement,
-                isLeftClick ? WorldPlacement.TryMineStone : WorldPlacement.TryCancelMineStone);
-        }
+        int minX = Mathf.Min(startTile.X, endTile.X);
+        int maxX = Mathf.Max(startTile.X, endTile.X);
+        int minY = Mathf.Min(startTile.Y, endTile.Y);
+        int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        // ПЕРЕСЕЧЕНИЕ с островом, а не кламп: драг целиком за кромкой раньше писал/сносил
-        // клетки по краю острова, которых игрок не выбирал.
-        int minX = Mathf.Max(Mathf.Min(startTile.X, endTile.X), 0);
-        int maxX = Mathf.Min(Mathf.Max(startTile.X, endTile.X), MapRenderer.MapWidth - 1);
-        int minY = Mathf.Max(Mathf.Min(startTile.Y, endTile.Y), 0);
-        int maxY = Mathf.Min(Mathf.Max(startTile.Y, endTile.Y), MapRenderer.MapHeight - 1);
-        if (minX > maxX || minY > maxY)
-            return;
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 250_000) return;
 
         _cellBuffer.Clear();
 
@@ -86,6 +78,10 @@ public class StoneMiningTool : ITool
                     if (_mapData != null && _mapData.HasStone(x, y))
                     {
                         _cellBuffer.Add((x, y));
+                    }
+                    else if (WorldPlacement != null && !WorldPlacementPass.IsIslandCell(x, y))
+                    {
+                        WorldPlacement.TryMineStone(x, y);
                     }
                 }
             }
@@ -102,6 +98,10 @@ public class StoneMiningTool : ITool
                 for (int y = minY; y <= maxY; y++)
                 {
                     _cellBuffer.Add((x, y));
+                    if (WorldPlacement != null && !WorldPlacementPass.IsIslandCell(x, y))
+                    {
+                        WorldPlacement.TryCancelMineStone(x, y);
+                    }
                 }
             }
 

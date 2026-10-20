@@ -80,6 +80,7 @@ public static class WorldPlacementPass
         return applied;
     }
 
-    /// <summary>Устаревшее разделение острова и мира ликвидировано.</summary>
-    public static bool IsIslandCell(long cellX, long cellY) => false;
+    /// <summary>Клетка острова колонии: [0, MapWidth)×[0, MapHeight) — там работает обычная островная логика.</summary>
+    public static bool IsIslandCell(long cellX, long cellY)
+        => cellX >= 0 && cellY >= 0 && cellX < MapRenderer.MapWidth && cellY < MapRenderer.MapHeight;
 }

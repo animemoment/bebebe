@@ -28,11 +28,14 @@ public sealed class FarmingJobHandler : IJobHandler
         // ����� ����. ����� ���� ���������� �� ������ ��� ������.
         if (ctx.StoneOnGrass != null && ctx.StoneOnGrass[job.TargetX, job.TargetY])
             return false;
-        return !ctx.TreeOnGrass[job.TargetX, job.TargetY] && !ctx.SolidWalls[job.TargetX, job.TargetY];
+        return !TileClearanceService.HasBlockingObstacles(job.TargetX, job.TargetY, ClearancePolicy.FarmPlot, ctx);
     }
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        pool.WaypointCount[agentIndex] = 0;
+        pool.WaypointIndex[agentIndex] = 0;
+
         (int X, int Y) stand = (job.TargetX, job.TargetY);
         Game.Simulation.JobBroker.FindStandPosition(job.TargetX, job.TargetY, ctx, out stand);
 
@@ -41,7 +44,9 @@ public sealed class FarmingJobHandler : IJobHandler
         pool.TargetCellY[agentIndex] = job.TargetY;
         pool.TargetPositionX[agentIndex] = stand.X * ctx.TileSize + 32f;
         pool.TargetPositionY[agentIndex] = stand.Y * ctx.TileSize + 32f;
-        pool.WorkProgress[agentIndex] = 0f;
+        // P7б §119: продолжаем с per-cell прогресса (прерывание ≠ сброс на ноль).
+        pool.WorkProgress[agentIndex] =
+            FarmJobManager.Instance.TillProgress.GetFraction(job.TargetX, job.TargetY) * TillDuration;
         pool.StuckTimer[agentIndex] = 0f;
     }
 
@@ -104,6 +109,11 @@ public sealed class FarmingJobHandler : IJobHandler
 
     public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx)
     {
+        // P7б §119: прерывание сохраняет долю готовности в клетку — следующий
+        // агент продолжит с неё, а не с нуля.
+        FarmJobManager.Instance.TillProgress.SaveFraction(
+            pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex],
+            pool.WorkProgress[agentIndex] / TillDuration);
         WorkProgressTracker.Instance.Clear(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex]);
     }
 }

@@ -34,6 +34,11 @@ public sealed class AgentSimulationThread : IDisposable
 	private SimulationContext _ctx;
 	private readonly WanderJobSystem _wanderSystem = new();
 	private readonly NeedsJobSystem _needsSystem = new();
+	// §119 P2: система Worker'ов зон (выдача из очереди зоны + прерывание нуждами).
+	private readonly WorkerZoneJobSystem _workerJobSystem = new();
+
+	private readonly Vector2[][] _positionSnapRing = new Vector2[4][];
+	private int _posSnapCursor = 0;
 
 	public ConcurrentQueue<Vector2[]> PositionQueue { get; } = new();
 
@@ -45,6 +50,17 @@ public sealed class AgentSimulationThread : IDisposable
 	private volatile float _speedMultiplier = 1.0f;
 	private volatile bool _speedResetRequested;
 	private Task _simulationTask;
+	// Поколение петли симуляции. Start() может НЕ дождаться Stop() (таймаут 5 с) —
+	// тогда старая петля ещё жива. Без токена она воскрешалась от `_running = true` и
+	// тикала ПАРАЛЛЕЛЬНО с новой (два SimulationLoop на одном _pool/_ctx), а ссылка на
+	// неё терялась при перезаписи _simulationTask. Смена поколения гарантирует выход
+	// stale-петли на ближайшей границе тика, до касания новых _pool/_ctx.
+	// ПОКОЛЕНИЕ ПЕТЛИ — статическое (процесс-глобальное). Main.cs создаёт НОВЫЙ экземпляр
+	// AgentSimulationThread (Main.cs:367), поэтому инстансный токен не остановил бы петлю
+	// ПРЕДЫДУЩЕГО экземпляра: она живёт вечно и гадит в общие синглтоны
+	// (JobDispatcher.Instance.IdleWorkers, JobRegistry, HierarchicalPathfinder.Instance).
+	// Любой Start() инкрементирует поколение → все прежние петли выходят на границе тика.
+	private static volatile int _loopGeneration;
 	private uint _tickCounter;
 	// P1 (Phase3b): rebuild SpatialGrid не каждый суб-степ, а раз в 4 тика.
 	// При dt=0.05 агент идёт 6px/суб-степ (~1/10 тайла): сетка за 4 тика
@@ -156,6 +172,10 @@ public sealed class AgentSimulationThread : IDisposable
 	// срабатывал бы каждые 2 суб-степа (~8 раз за тик) — скан Ground-словаря
 	// под lock каждый раз. Квадратичный масштаб держит его ≤1 раза за тик.
 	private const float DispatchIntervalBase = 0.25f;
+
+	/// <summary>§119 P2: «сейчас» для роутера (ms) — тест-овервет или системные часы.</summary>
+	private static long RouterNowMs() =>
+		ZoneJobRouter.TestClockOverrideMs >= 0 ? ZoneJobRouter.TestClockOverrideMs : System.Environment.TickCount64;
 	private const float CropGrowthIntervalBase = 0.5f;
 	private const float StockpileSweepIntervalBase = 1.0f;
 	private const float IntervalScaleSpeed = 16f;
@@ -169,6 +189,18 @@ public sealed class AgentSimulationThread : IDisposable
 	{
 		try
 		{
+			if (_running || (_simulationTask != null && !_simulationTask.IsCompleted))
+			{
+				GD.Print("[AgentSimulationThread] Предыдущая симуляция активна, останавливаем перед новым стартом...");
+				if (!Stop(5000))
+				{
+					// Раньше результат игнорировался: живая старая петля получала обратно
+					// _running = true и работала параллельно с новой. Поколение ниже
+					// (++_loopGeneration) инвалидирует её принудительно.
+					GD.PrintErr("[AgentSimulationThread] Старая петля не встала за 5000 мс — инвалидирую её поколение (защита от двух петель симуляции).");
+				}
+			}
+
 			int width = ground.GetLength(0);
 			int height = ground.GetLength(1);
 			bool[,] solidWalls = new bool[width, height];
@@ -261,8 +293,12 @@ public sealed class AgentSimulationThread : IDisposable
 			if (ThreadPool.SetMinThreads(dop, dop))
 				_minThreadsAdjusted = true;
 
+			// Поколение инкрементируем ДО Task.Run: любая предыдущая петля увидит новое
+			// значение на своей границе тика и завершится, не тронув новый _pool/_ctx.
+			int generation = ++_loopGeneration;
+
 			_running = true;
-			_simulationTask = Task.Run(SimulationLoop);
+			_simulationTask = Task.Run(() => SimulationLoop(generation));
 		}
 		catch (Exception ex)
 		{
@@ -270,7 +306,7 @@ public sealed class AgentSimulationThread : IDisposable
 		}
 	}
 
-	private void SimulationLoop()
+	private void SimulationLoop(int generation)
 	{
 		// Понижаем приоритет фонового потока симуляции относительно UI/ОС Windows,
 		// чтобы системные прерывания (Win+Shift+S, клавиатура) не подвисали при 100k агентах.
@@ -282,7 +318,7 @@ public sealed class AgentSimulationThread : IDisposable
 		sw.Start();
 		renderTimer.Start();
 
-		while (_running)
+		while (_running && generation == _loopGeneration)
 		{
 			try
 			{
@@ -478,8 +514,12 @@ public sealed class AgentSimulationThread : IDisposable
 								dispatchScale = Math.Min(dispatchScale, 2);
 								using (GameProfiler.ScopeCustom("Simulation.ZoneDispatch"))
 								{
-									WorkZoneManager.Instance.DispatchZones(_pool, _ctx);
+									ZoneManager.Instance.DispatchZones(_pool, _ctx);
 								}
+								// §119 P1/P2: репуш непокрытых (30с) + чистка мёртвых работ
+								// из очередей зон + истёкший 60с-холд Worker'ов. Throttle
+								// 1р/2с внутри (как у SweepStockpileHaulJobs).
+								ZoneJobRouter.Instance.Sweep(RouterNowMs());
 								JobDispatcher.Instance.DispatchPendingJobs(_pool, _ctx, dispatchScale);
 								// GPU-трек удалён: агенты идут локальным BFS
 								// (FlowFieldManager.CalculateLocalDetourDirection).
@@ -502,7 +542,7 @@ public sealed class AgentSimulationThread : IDisposable
 								// работ). Внутри свой wall-clock гейт 5с.
 								using (GameProfiler.ScopeCustom("Simulation.PipelineReconcile"))
 								{
-									ConstructionPipeline.Instance.ReconcileTick(_ctx);
+									ConstructionManager.Instance.ReconcileTick(_ctx);
 								}
 							}
 
@@ -681,12 +721,12 @@ public sealed class AgentSimulationThread : IDisposable
 			// (AddChild/GetNode/SetCell/MultiMesh/QueueRedraw/EmitSignal/ResourceLoader).
 			// Разрешены: чистые вычисления, SoA-массивы, Interlocked/Volatile,
 			// ConcurrentQueue.Enqueue (снапшоты), ThreadLocal, ParallelRng.
-			// При выборе бекенда [GPU Compute] в профайлере F3 передаем расчет шага на видеокарту:
-			if (ActiveBackend == SimulationBackend.GpuCompute && count >= 2048)
+			// F-008: GPU Compute бэкенд шага агентов отключен во избежание двойного движения
+			// (GPU StepAgents смещает координаты, после чего CPU UpdateSingleAgent/MoveTowards повторно сдвигал координаты).
+			// Симуляция перемещения выполняется строго через векторизованный CPU SIMD.
+			if (ActiveBackend == SimulationBackend.GpuCompute)
 			{
-				float stepDelta = GetSimStepDelta(_speedMultiplier);
-				float stepLen = 200f * stepDelta;
-				Game.Simulation.Gpu.GpuAgentTransformSimulator.Instance.StepAgents(_pool, count, stepLen, 256f, 64f);
+				ActiveBackend = SimulationBackend.CpuSimd;
 			}
 
 			if (count < ParallelThreshold)
@@ -721,7 +761,9 @@ public sealed class AgentSimulationThread : IDisposable
 						{
 							for (int i = s; i < e; i++)
 							{
-								if (q.ShouldYieldCached(ref cached, ref sinceRefresh))
+								// PLAN.md §62: для легких агентов таймер Stopwatch проверяется каждые 32 агента,
+								// предотвращая деградацию конвейера команд CPU при 100k агентах.
+								if (q.ShouldYieldCached(ref cached, ref sinceRefresh, 32))
 									break;
 								UpdateSingleAgent(i, deltaTime, tickBucket);
 								p++;
@@ -742,7 +784,7 @@ public sealed class AgentSimulationThread : IDisposable
 							Interlocked.Add(ref errors, localErrors);
 						return p;
 					},
-					WorkKind.Heavy,
+					WorkKind.Fast,
 					"Simulation.Phase2_Balance");
 				errors += DynamicWorkScheduler.Shared.LastPhaseErrorCount;
 				if (errors > 0)
@@ -810,7 +852,7 @@ public sealed class AgentSimulationThread : IDisposable
 	{
 		var index = JobDispatcher.Instance.JobIndex;
 		var idle = JobDispatcher.Instance.IdleWorkers;
-		const int chunkDim = GenericJobSpatialIndex.ChunkGridDim;
+		const int chunkDim = JobSpatialPyramid.ChunkGridDim;
 		int chunksWithJobs = 0, chunksWithIdle = 0, chunksJobsNoIdle = 0;
 		long jobsInNoIdleChunks = 0, idleInJobChunks = 0;
 		int[] buf = _diagIdleBuf;
@@ -886,17 +928,25 @@ public sealed class AgentSimulationThread : IDisposable
 			}
 			else
 			{
-				// Тайм-слайсинг потребностей при мега-популяциях (>= 2048 агентов, PLAN.md §37, §44):
-				// Делим популяцию на 4 непрерывных среза с deltaTime * 4.
-				// Снижает нагрузку Phase3a ровно в 4 раза и удерживает данные среза в L2/L3 кэше!
+				// Тайм-слайсинг потребностей при мега-популяциях (>= 2048 агентов, PLAN.md §37, §44, §61):
+				// Делим популяцию на непрерывные срезы с масштабированием под размер пула:
+				// 2k-64k: 4 среза (x4), 64k-256k: 8 срезов (x8), 256k+: 16 срезов (x16).
+				// Снижает нагрузку Phase3a в 4-16 раз и удерживает срез в L2/L3 кэше процессора!
 				bool useSlicing = count >= 2048;
-				int sliceCount = useSlicing ? 4 : 1;
+				int sliceCount = 1;
+				if (useSlicing)
+				{
+					if (count >= 262144) sliceCount = 16;
+					else if (count >= 65536) sliceCount = 8;
+					else sliceCount = 4;
+				}
 				int sliceSize = (count + sliceCount - 1) / sliceCount;
-				int sliceIdx = useSlicing ? (int)(_tickCounter & 3) : 0;
+				int sliceMask = sliceCount - 1;
+				int sliceIdx = useSlicing ? (int)(_tickCounter & (uint)sliceMask) : 0;
 				int sliceStart = sliceIdx * sliceSize;
 				int sliceEnd = Math.Min(count, sliceStart + sliceSize);
 				int sliceLen = Math.Max(0, sliceEnd - sliceStart);
-				float effDeltaTime = useSlicing ? (deltaTime * 4.0f) : deltaTime;
+				float effDeltaTime = useSlicing ? (deltaTime * (float)sliceCount) : deltaTime;
 
 				long dbgFused0 = Stopwatch.GetTimestamp();
 				using (GameProfiler.ScopeCustom("Simulation.Phase3a_Fused"))
@@ -1064,6 +1114,43 @@ public sealed class AgentSimulationThread : IDisposable
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	private void BookkeepSingleAgentRest(int i, float deltaTime, uint tickBucket, bool cellChanged, AgentState state, bool rangeSliced = false)
 	{
+		// §119 P2: Worker обслуживается ЗОНОЙ, а не общим диспатчером.
+		if (state == AgentState.Idle && _pool.Classes[i] == AgentClass.Worker)
+		{
+			// Тайм-слайсинг как у Laborer'а; выдача ТОЛЬКО из очереди своей зоны.
+			if (rangeSliced || (i & 3) == tickBucket)
+			{
+				float timerDelta = rangeSliced ? deltaTime : (deltaTime * 4.0f);
+				if (_pool.NeedsRetryTimer[i] > 0f)
+				{
+					_pool.NeedsRetryTimer[i] -= timerDelta;
+				}
+				else
+				{
+					// Нужды Idle-Worker'а — обычным NeedsJobSystem (тот же путь).
+					if (_needsSystem.TryAssignNeedsBehavior(i, _pool, _ctx))
+						return;
+				}
+				_pool.JobSearchTimer[i] -= timerDelta;
+				if (_pool.JobSearchTimer[i] > 0f)
+					return;
+				_pool.JobSearchTimer[i] = WorkerZoneJobSystem.JobSearchIntervalSec;
+				_workerJobSystem.TryAssignZoneJob(i, _pool, _ctx);
+			}
+			return;
+		}
+
+		// §119 P2: прерывание РАБОТАЮЩЕГО Worker'а нуждами (+5 гистерезис).
+		// Тайм-слайсинг (i & 3) == tickBucket — как у диспатчера.
+		if (state != AgentState.Idle && state != AgentState.Evacuating
+			&& _pool.Classes[i] == AgentClass.Worker
+			&& _pool.NeedsBehavior[i] == NeedBehavior.None
+			&& (i & 3) == tickBucket)
+		{
+			if (_workerJobSystem.TryInterruptForNeeds(i, _pool, _ctx))
+				return; // агент ушёл в Needs-поведение, работа вернулась в зону
+		}
+
 		if (state == AgentState.Idle)
 		{
 			// Свободный агент переместился — обновляем его чанк в сетке бездельников,
@@ -1107,11 +1194,144 @@ public sealed class AgentSimulationThread : IDisposable
 		}
 	}
 
+	// ==================================================================
+	// Сторож НЕДОСТИЖИМЫХ целей (баг #3: «ИИ бесконечно идёт к цели за рекой»).
+	//
+	// Почему штатного детектора застревания не хватает: хендлеры снимают
+	// задачу по pool.StuckTimer >= 3с (TreeChoppingJobHandler.cs:72,
+	// ConstructionJobHandler.cs:97, ...), а StuckTimer растёт ТОЛЬКО когда
+	// агент вообще не сдвинулся (AgentMovementService.MoveToPoint, шаг 3).
+	// У берега крупной реки агент не «стоит», а СКОЛЬЗИТ вдоль воды — и
+	// MoveToPoint сбрасывает StuckTimer на каждом таком шаге
+	// (AgentMovementService.cs:249 в быстром пути и :346 в ветке скольжения).
+	// Итог: таймер застревания не набирается НИКОГДА, задача не помечается
+	// недостижимой, не снимается — агент идёт «прямо» в реку бесконечно.
+	// (Запрос пути при этом тоже молча падает в кулдаун:
+	// AgentMovementService.RequestHierarchicalPath.cs:185-190 — путь по земле
+	// через разделяющую реку/горы не существует, HierarchicalPathfinder
+	// возвращает false, а провал никуда не сообщается.)
+	//
+	// Здесь меряется ПРОГРЕСС, а не факт движения: если агент, идущий к цели
+	// задачи напрямую (без waypoints-маршрута), за UnreachableNoProgressSeconds
+	// игровых секунд не приблизился к цели — цель физически недостижима.
+	// Тогда задача снимается с кулдауном недостижимости
+	// (ReleaseJobWorkerForStuck → JobIndex.MarkJobUnreachable): её не выдадут
+	// другим агентам на время кулдауна, а сам агент возьмёт другую работу.
+	// Публичные сигнатуры не меняются — только приватные поля/метод.
+	// ==================================================================
+
+	/// <summary>Сколько игровых секунд без приближения к цели = цель недостижима.</summary>
+	private const float UnreachableNoProgressSeconds = 8f;
+
+	/// <summary>Кулдаун задачи после снятия как недостижимой (мс) — как JobValidator (30с там, здесь мягче).</summary>
+	private const int UnreachableReleaseCooldownMs = 15000;
+
+	/// <summary>Порог «приблизился» (пиксели): дрожание у стены не сбрасывает таймер.</summary>
+	private const float UnreachableProgressEpsilonPx = 2f;
+
+	/// <summary>Ближе этого (пиксели) цели не трогаем — агента у самой цели разбирает штатный Commit.</summary>
+	private const float UnreachableMinTargetDistPx = 48f;
+
+	/// <summary>Игровые секунды без прогресса к цели (индекс = агент).</summary>
+	private float[] _noProgressSeconds;
+
+	/// <summary>Лучшая (минимальная) дистанция до цели с последнего прогресса, px.</summary>
+	private float[] _bestTargetDistPx;
+
+	/// <summary>Счётчик суб-степов: сторож O(N) считается 1 раз на 4 суб-степа.</summary>
+	private int _unreachableWatchdogTick;
+
+	/// <summary>
+	/// Снимает задачи с заведомо недостижимыми целями (за рекой/горой/на другом
+	/// континенте) и помечает их кулдауном — вместо бесконечного похода «прямо в стену».
+	/// Вызывается ТОЛЬКО из sim-потока (Phase3b, последовательная фаза): мутирует
+	/// IdleWorkers/JobIndex так же, как это делают хендлеры из своего Commit.
+	/// </summary>
+	private void WatchdogUnreachableTargets(float deltaTime)
+	{
+		// Проход O(N) — дорогой: 1 раз на 4 суб-степа, но копим 4 шага,
+		// чтобы «секунды без прогресса» остались в игровых секундах.
+		if ((++_unreachableWatchdogTick & 3) != 0)
+			return;
+
+		int count = _pool.Capacity;
+		if (_noProgressSeconds == null || _noProgressSeconds.Length != count)
+		{
+			_noProgressSeconds = new float[count];
+			_bestTargetDistPx = new float[count];
+			Array.Fill(_bestTargetDistPx, float.MaxValue);
+		}
+
+		float dt = deltaTime * 4f;
+		for (int i = 0; i < count; i++)
+		{
+			AgentState state = _pool.States[i];
+
+			// Только идущие К ЦЕЛИ ЗАДАЧИ и только БЕЗ маршрута waypoints:
+			// при следовании по waypoints агент законно обходит препятствие, и
+			// дистанция до цели по прямой может временно расти — это не «застрял».
+			if ((state != AgentState.MovingToSource && state != AgentState.MovingToTarget)
+				|| _pool.CurrentJobId[i] < 0
+				|| _pool.WaypointCount[i] > 0)
+			{
+				_noProgressSeconds[i] = 0f;
+				_bestTargetDistPx[i] = float.MaxValue;
+				continue;
+			}
+
+			float dx = _pool.TargetPositionX[i] - _pool.PositionX[i];
+			float dy = _pool.TargetPositionY[i] - _pool.PositionY[i];
+			float distSq = dx * dx + dy * dy;
+
+			// Стоит у самой цели (или близко) — это разбирает штатный Commit хендлера.
+			if (distSq <= UnreachableMinTargetDistPx * UnreachableMinTargetDistPx)
+			{
+				_noProgressSeconds[i] = 0f;
+				_bestTargetDistPx[i] = float.MaxValue;
+				continue;
+			}
+
+			float dist = MathF.Sqrt(distSq);
+			float best = _bestTargetDistPx[i];
+			if (dist < best - UnreachableProgressEpsilonPx)
+			{
+				// Реально приблизился — маршрут рабочий, таймер обнуляем.
+				_bestTargetDistPx[i] = dist;
+				_noProgressSeconds[i] = 0f;
+				continue;
+			}
+			if (dist < best)
+				_bestTargetDistPx[i] = dist;
+
+			_noProgressSeconds[i] += dt;
+			if (_noProgressSeconds[i] < UnreachableNoProgressSeconds)
+				continue;
+
+			_noProgressSeconds[i] = 0f;
+			_bestTargetDistPx[i] = float.MaxValue;
+			// Цель недостижима: снимаем задачу с кулдауном (агент — Idle,
+			// задача — под IsJobOnCooldown). Хендлер сам получит OnCancel и
+			// вернёт резервы (StockpileHaulingJobHandler.OnCancel:215-234).
+			try
+			{
+				JobDispatcher.Instance.ReleaseJobWorkerForStuck(i, _pool, _ctx, UnreachableReleaseCooldownMs);
+			}
+			catch (Exception ex)
+			{
+				GD.PrintErr($"[UnreachableWatchdog] снятие задачи #{i}: {ex.Message}");
+			}
+		}
+	}
+
 	private void Phase3b_SequentialCommit(float deltaTime, bool rebuildSpatialGrid)
 	{
 		using (GameProfiler.Scope())
 		{
 			int count = _pool.Capacity;
+
+			// Баг #3: снять задачи с физически недостижимыми целями ДО коммита
+			// (последовательно, sim-поток) — иначе агент вечно идёт «прямо» в реку.
+			WatchdogUnreachableTargets(deltaTime);
 
 			// P1: разбивка для оверлея — видно, где сидят 7.3с: Rebuild или Commit.
 			// ScopeCustom вне горячего цикла: один Scope на фазу, не на агента.
@@ -1126,35 +1346,40 @@ public sealed class AgentSimulationThread : IDisposable
 				}
 			}
 
-			// Commit — дорого (TakeItems/SpawnItems/Release под lock'ами, один
-			// залипший агент сталлил все 10k в одном потоке — Amdahl-стопор A).
-			// Handler.Commit потокобезопасны (менеджеры под lock/CAS), записи SoA —
-			// по непересекающимся индексам: гоним через балансировщик.
-			using (GameProfiler.ScopeCustom("Simulation.Phase3b_Commit"))
-			{
-				if (count < ParallelThreshold)
-				{
-					for (int i = 0; i < count; i++)
-						CommitSingleAgent(i, deltaTime);
-				}
-				else
-				{
-					DynamicWorkBalancer.ForEachRange(count, (s, e) =>
-					{
-						for (int i = s; i < e; i++)
-						{
-							var state = _pool.States[i];
-							if (state == AgentState.Idle || state == AgentState.Evacuating)
-								continue;
+			// Commit — дорого (TakeItems/SpawnItems/Release под lock'ами).
+			// Fast-path: если нет задач в мире или все агенты свободны — коммитить нечего!
+			int totalJobs = JobDispatcher.Instance.JobIndex.TotalCount;
+			int totalIdle = JobDispatcher.Instance.IdleWorkers.TotalIdleCount;
+			int busyWorkers = count - totalIdle;
 
-							var jobType = _pool.CurrentJobType[i];
-							if (jobType != JobTypeId.None)
+			if (totalJobs > 0 && busyWorkers > 0)
+			{
+				using (GameProfiler.ScopeCustom("Simulation.Phase3b_Commit"))
+				{
+					if (busyWorkers <= ParallelThreshold || count < ParallelThreshold)
+					{
+						for (int i = 0; i < count; i++)
+							CommitSingleAgent(i, deltaTime);
+					}
+					else
+					{
+						DynamicWorkBalancer.ForEachRange(count, (s, e) =>
+						{
+							for (int i = s; i < e; i++)
 							{
-								var handler = JobRegistry.GetHandler(jobType);
-								handler?.Commit(i, deltaTime, _pool, _ctx);
+								var state = _pool.States[i];
+								if (state == AgentState.Idle || state == AgentState.Evacuating)
+									continue;
+
+								var jobType = _pool.CurrentJobType[i];
+								if (jobType != JobTypeId.None)
+								{
+									var handler = JobRegistry.GetHandler(jobType);
+									handler?.Commit(i, deltaTime, _pool, _ctx);
+								}
 							}
-						}
-					}, "Simulation.Phase3b_Balance");
+						}, "Simulation.Phase3b_Balance");
+					}
 				}
 			}
 		}
@@ -1180,10 +1405,17 @@ public sealed class AgentSimulationThread : IDisposable
 
 	private void PushSnapshot()
 	{
-		// Снапшот — свежий массив: ring переиспользовался и продюсер перезаписывал
-		// буфер, пока консьюмер (рендер) его читал — tearing позиций.
-		// Аллокация 10k Vector2 ~80КБ на 30Гц — приемлемо ради корректности.
-		var snapshot = new Vector2[_pool.Capacity];
+		// Finding 6 & PERF: ring из 4 буферов вместо постоянного new Vector2[10000] (80 КБ на 30-60 Гц = Gen2 GC спайки).
+		// Резерв очереди = 2, ротация = 4: гарантия полного отсутствия race/tearing с консьюмером.
+		int slot = _posSnapCursor % 4;
+		_posSnapCursor++;
+		var snapshot = _positionSnapRing[slot];
+		if (snapshot == null || snapshot.Length != _pool.Capacity)
+		{
+			snapshot = new Vector2[_pool.Capacity];
+			_positionSnapRing[slot] = snapshot;
+		}
+
 		_pool.CopyPositionsTo(snapshot);
 
 		PositionQueue.Enqueue(snapshot);
@@ -1191,14 +1423,25 @@ public sealed class AgentSimulationThread : IDisposable
 			PositionQueue.TryDequeue(out _);
 	}
 
-	public void Stop()
+	public bool Stop(int timeoutMs = 5000)
 	{
 		_running = false;
+		bool cleanStop = true;
 		try
 		{
-			_simulationTask?.Wait(500);
+			if (_simulationTask != null)
+			{
+				cleanStop = _simulationTask.Wait(timeoutMs);
+				if (!cleanStop)
+					GD.PrintErr($"[AgentSimulationThread] Таймаут остановки симуляции ({timeoutMs} мс). Поток всё ещё активен!");
+			}
 		}
-		catch { }
+		catch (Exception ex)
+		{
+			cleanStop = false;
+			GD.PrintErr($"[AgentSimulationThread] Исключение при остановке симуляции: {ex.Message}");
+		}
+
 		// FIX круг-2 №9: восстановить MinThreads, изменённые в Start().
 		if (_minThreadsAdjusted)
 		{
@@ -1206,6 +1449,8 @@ public sealed class AgentSimulationThread : IDisposable
 			catch { }
 			_minThreadsAdjusted = false;
 		}
+
+		return cleanStop;
 	}
 
 	public void Dispose()

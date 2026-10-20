@@ -8,7 +8,7 @@ namespace Game.UI;
 
 public partial class GroundItemRenderer : Node2D
 {
-    private const int MaxRenderedInstances = 4096;
+    private const int MaxRenderedInstances = 16384;
     private const float DefaultItemSize = 44f;
 
     private readonly Dictionary<ItemId, (MultiMesh Mesh, MultiMeshInstance2D Instance, float[] Buffer)> _renderers = new();
@@ -93,11 +93,7 @@ public partial class GroundItemRenderer : Node2D
         if (latestSnapshot.PositionsByItem == null || latestSnapshot.Counts == null)
             return;
 
-        // Аккумулятор теней: BeginFrame здесь (первый из трёх источников),
-        // Flush — в StockpileItemRenderer (последний). Порядок _Process между
-        // рендерерами не гарантирован, но аккумулятор идемпотентен: даже если
-        // Flush случится раньше чужого PushSpots, следующий кадр доберёт.
-        ItemShadows?.BeginFrame();
+        ItemShadows?.ClearSourceSpots(ItemShadowRenderer.ShadowSource.Ground);
         foreach (var (id, (mesh, _, buffer)) in _renderers)
         {
             int itemIdx = (int)id;
@@ -128,8 +124,7 @@ public partial class GroundItemRenderer : Node2D
 
                 mesh.Buffer = buffer;
 
-                // Тень того же пятна — в аккумулятор, не сразу на GPU.
-                ItemShadows?.PushSpots(positions, count, DefaultItemSize);
+                ItemShadows?.AddSourceSpots(ItemShadowRenderer.ShadowSource.Ground, positions, count, DefaultItemSize);
             }
         }
         swR.Stop();

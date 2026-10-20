@@ -1,6 +1,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using Game.Core;
 using Game.UI.Tools;
 
 namespace Game.UI;
@@ -16,6 +17,14 @@ namespace Game.UI;
 public partial class BuildMenuController : Control
 {
     public static BuildMenuController Instance { get; private set; }
+
+    private IDraftCoordinator _draft;
+
+    /// <summary>
+    /// Координатор черновика (HUDController). Узкий интерфейс вместо HUDController.Instance —
+    /// иначе цикл HUDController ↔ BuildMenuController (ветка (b) цикла #4).
+    /// </summary>
+    public void BindDraftCoordinator(IDraftCoordinator draft) => _draft = draft;
 
     /// <summary>Сколько кнопок максимум в одном HBox-ряду нижнего списка.</summary>
     public const int MaxButtonsPerRow = 5;
@@ -38,6 +47,8 @@ public partial class BuildMenuController : Control
     private Button _doorButton;
     private Button _wallMaterialButton;
     private Button _zoneButton;
+    /// <summary>§119 P5: кнопка «Центральный блок» (Build.tscn, верхний ряд).</summary>
+    private Button _centralBlockButton;
 
     /// <summary>Шаблонный ряд из сцены (HBoxContainer2 с 5 заглушками). Не удаляем, прячем при динамике.</summary>
     private HBoxContainer _templateRow;
@@ -103,6 +114,7 @@ public partial class BuildMenuController : Control
             _doorButton = _rootPanel.FindChild("DoorButton", true, false) as Button;
             _wallMaterialButton = _rootPanel.FindChild("WallMaterialButton", true, false) as Button;
             _zoneButton = _rootPanel.FindChild("ZoneButton", true, false) as Button;
+            _centralBlockButton = _rootPanel.FindChild("CentralBlockButton", true, false) as Button;
 
             if (_doorButton != null)
             {
@@ -118,6 +130,11 @@ public partial class BuildMenuController : Control
             {
                 _zoneButton.MouseFilter = MouseFilterEnum.Stop;
                 _zoneButton.Pressed += OnZoneBuildPressed;
+            }
+            if (_centralBlockButton != null)
+            {
+                _centralBlockButton.MouseFilter = MouseFilterEnum.Stop;
+                _centralBlockButton.Pressed += OnCentralBlockPressed;
             }
 
             _escButton = _rootPanel.FindChild("esc", true, false) as BaseButton
@@ -143,8 +160,14 @@ public partial class BuildMenuController : Control
     {
         if (node == null)
             return;
-        if (node is Panel || node is PanelContainer || node is ScrollContainer || node is ItemList)
+        // §113.5/B1: ScrollContainer НЕ ставим в Stop — в сцене он растянут до
+        // низа экрана (1007px при контенте 174px) и пустой частью накрывал
+        // кнопки левой колонки HUD (Farming/WarehouseArea и др.), съедая клики.
+        // Реальную панель держит PanelContainer ниже по рекурсии.
+        if (node is Panel || node is PanelContainer || node is ItemList)
             node.MouseFilter = MouseFilterEnum.Stop;
+        if (node is ScrollContainer)
+            node.MouseFilter = MouseFilterEnum.Ignore;
         foreach (Node child in node.GetChildren())
         {
             if (child is Control childCtrl)
@@ -168,8 +191,8 @@ public partial class BuildMenuController : Control
         ApplyZoneVisibility();
         _rootPanel.Visible = true;
         ResetDoorMode();
-        HUDController.Instance?.SetDraftDoorMode(false);
-        HUDController.Instance?.StartZoneDraft(_currentZoneId);
+        _draft?.SetDraftDoorMode(false);
+        _draft?.StartZoneDraft(_currentZoneId);
         UpdateModeButtons();
         OnOpened?.Invoke();
     }
@@ -241,7 +264,7 @@ public partial class BuildMenuController : Control
     /// </summary>
     private void OnZoneBuildPressed()
     {
-        var hud = HUDController.Instance;
+        var hud = _draft;
         bool nowDrafting = hud != null && hud.IsDrafting;
         if (nowDrafting)
         {
@@ -266,7 +289,7 @@ public partial class BuildMenuController : Control
     private void OnDoorPressed()
     {
         _doorMode = !_doorMode;
-        var hud = HUDController.Instance;
+        var hud = _draft;
         if (_doorMode)
         {
             // Дверь включилась — зону-черчение останавливаем (черновик живёт).
@@ -279,7 +302,7 @@ public partial class BuildMenuController : Control
     /// <summary>Подсветка: активный режим — красным, неактивный — белым.</summary>
     private void UpdateModeButtons()
     {
-        var hud = HUDController.Instance;
+        var hud = _draft;
         bool drafting = hud != null && hud.IsDrafting && !_doorMode;
         if (_zoneButton != null)
             _zoneButton.Modulate = drafting ? new Color(0.6f, 1f, 0.6f, 1f) : Color.Color8(255, 255, 255, 255);
@@ -297,13 +320,36 @@ public partial class BuildMenuController : Control
     /// <summary>CheckMark: коммит черновика, окно закрыть, инструмент сбросить.</summary>
     private void OnCheckMarkPressed()
     {
-        var hud = HUDController.Instance;
+        var hud = _draft;
         hud?.ConfirmDraft();
+    }
+
+    /// <summary>
+    /// §119 P5: «Центральный блок» — предмет стройки 10 дерева (как мебель,
+    /// путь BuildTool: остров через ConstructionManager, мир за кромкой через
+    /// WorldPlacement). Идёт тем же tool-каналом, что кровать/скамья/тумбочка.
+    /// </summary>
+    private void OnCentralBlockPressed()
+    {
+        var interaction = PlayerInteractionManager.Instance;
+        var mapRenderer = MapRenderer.Instance;
+        if (interaction == null || mapRenderer?.WallBuildManager == null || mapRenderer?.MapData == null)
+            return;
+
+        var tool = new BuildTool(
+            mapRenderer.WallBuildManager,
+            mapRenderer.GhostLayer,
+            mapRenderer.MapData,
+            BuildingType.CentralBlock,
+            MapRenderer.SourceCentralBlock
+        );
+        interaction.SetTool(tool);
+        tool.WorldPlacement = HUDController.Instance?.WorldPlacement;
     }
 
     private void CancelDraft()
     {
-        var hud = HUDController.Instance;
+        var hud = _draft;
         hud?.CancelDraft();
         ResetDoorMode();
     }
@@ -311,7 +357,7 @@ public partial class BuildMenuController : Control
     /// <summary>Крестик окна (esc-кнопка сцены): удалить поставленные чертежи+зону.</summary>
     private void OnDiscardPressed()
     {
-        var hud = HUDController.Instance;
+        var hud = _draft;
         hud?.DiscardDraft();
         ResetDoorMode();
         CloseSilent();
@@ -398,7 +444,7 @@ public partial class BuildMenuController : Control
     {
         _selectedMaterialId = string.IsNullOrEmpty(id) ? "wood" : id;
         UpdateMaterialSelection();
-        var hud = HUDController.Instance;
+        var hud = _draft;
         hud?.SetDraftMaterial(_selectedMaterialId);
         CloseMaterialPopup();
     }

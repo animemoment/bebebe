@@ -171,7 +171,8 @@ public static class SimdNeedsBatch
 		if (vectorized)
 		{
 			int n = Vector<float>.Count;
-			int limit = len - len % n;
+			int step2 = n * 2;
+			int limit2 = len - (len % step2);
 			var vHungerAdd = new Vector<float>(hungerAdd);
 			var vSleepAdd = new Vector<float>(sleepAdd);
 			var vCap = new Vector<float>(100f);
@@ -181,7 +182,48 @@ public static class SimdNeedsBatch
 			var wF = new Vector<float>(AgentNeedsConfig.MoodWeightFatigue);
 			var wE = new Vector<float>(AgentNeedsConfig.MoodWeightEnvironment);
 
-			for (int k = 0; k < limit; k += n)
+			int k = 0;
+			// 2x развернутый SIMD-цикл (Dual-issue ILP: параллельная загрузка и расчет 2 векторов)
+			for (; k < limit2; k += step2)
+			{
+				int idx0 = start + k;
+				int idx1 = idx0 + n;
+
+				Vector<float> h0 = new Vector<float>(hunger, idx0) + vHungerAdd;
+				Vector<float> h1 = new Vector<float>(hunger, idx1) + vHungerAdd;
+				h0 = Vector.ConditionalSelect(Vector.GreaterThan(h0, vCap), vCap, h0);
+				h1 = Vector.ConditionalSelect(Vector.GreaterThan(h1, vCap), vCap, h1);
+				h0.CopyTo(hunger, idx0);
+				h1.CopyTo(hunger, idx1);
+
+				Vector<float> s0 = new Vector<float>(sleep, idx0) + vSleepAdd;
+				Vector<float> s1 = new Vector<float>(sleep, idx1) + vSleepAdd;
+				s0 = Vector.ConditionalSelect(Vector.GreaterThan(s0, vCap), vCap, s0);
+				s1 = Vector.ConditionalSelect(Vector.GreaterThan(s1, vCap), vCap, s1);
+				s0.CopyTo(sleep, idx0);
+				s1.CopyTo(sleep, idx1);
+
+				Vector<float> f0 = new Vector<float>(fatigue, idx0);
+				Vector<float> f1 = new Vector<float>(fatigue, idx1);
+				Vector<float> e0 = new Vector<float>(env, idx0);
+				Vector<float> e1 = new Vector<float>(env, idx1);
+
+				Vector<float> p0 = h0 * wH + s0 * wS + f0 * wF + (vCap - e0) * wE;
+				Vector<float> p1 = h1 * wH + s1 * wS + f1 * wF + (vCap - e1) * wE;
+
+				Vector<float> m0 = vCap - p0;
+				Vector<float> m1 = vCap - p1;
+				m0 = Vector.ConditionalSelect(Vector.GreaterThan(m0, vCap), vCap, m0);
+				m1 = Vector.ConditionalSelect(Vector.GreaterThan(m1, vCap), vCap, m1);
+				m0 = Vector.ConditionalSelect(Vector.LessThan(m0, vZero), vZero, m0);
+				m1 = Vector.ConditionalSelect(Vector.LessThan(m1, vZero), vZero, m1);
+				m0.CopyTo(mood, idx0);
+				m1.CopyTo(mood, idx1);
+			}
+
+			// Одиночные SIMD-хвосты
+			int limit1 = len - (len % n);
+			for (; k < limit1; k += n)
 			{
 				int idx = start + k;
 				Vector<float> h = new Vector<float>(hunger, idx) + vHungerAdd;
@@ -195,19 +237,15 @@ public static class SimdNeedsBatch
 				Vector<float> f = new Vector<float>(fatigue, idx);
 				Vector<float> e = new Vector<float>(env, idx);
 
-				Vector<float> p = h * wH + s * wS;
-				p += f * wF;
-				p += (vCap - e) * wE;
+				Vector<float> p = h * wH + s * wS + f * wF + (vCap - e) * wE;
 				Vector<float> m = vCap - p;
-				var hi = Vector.GreaterThan(m, vCap);
-				m = Vector.ConditionalSelect(hi, vCap, m);
-				var lo = Vector.LessThan(m, vZero);
-				m = Vector.ConditionalSelect(lo, vZero, m);
+				m = Vector.ConditionalSelect(Vector.GreaterThan(m, vCap), vCap, m);
+				m = Vector.ConditionalSelect(Vector.LessThan(m, vZero), vZero, m);
 				m.CopyTo(mood, idx);
 			}
 
 			// Скалярный остаток
-			for (int i = start + limit; i < end; i++)
+			for (int i = start + limit1; i < end; i++)
 			{
 				float h = hunger[i] + hungerAdd;
 				hunger[i] = h > 100f ? 100f : h;
@@ -348,7 +386,42 @@ public static class SimdNeedsBatch
 		int[] curX = pool.CurrentCellX;
 		int[] curY = pool.CurrentCellY;
 		float[] stay = pool.CellStayTime;
-		for (int i = start; i < end; i++)
+
+		int len = end - start;
+		int limit2 = start + (len & ~1);
+		int i = start;
+		for (; i < limit2; i += 2)
+		{
+			int i1 = i + 1;
+			int cx0 = (int)posX[i] >> 6;
+			int cy0 = (int)posY[i] >> 6;
+			int cx1 = (int)posX[i1] >> 6;
+			int cy1 = (int)posY[i1] >> 6;
+
+			if (curX[i] == cx0 && curY[i] == cy0)
+			{
+				stay[i] += deltaTime;
+			}
+			else
+			{
+				curX[i] = cx0;
+				curY[i] = cy0;
+				stay[i] = 0f;
+			}
+
+			if (curX[i1] == cx1 && curY[i1] == cy1)
+			{
+				stay[i1] += deltaTime;
+			}
+			else
+			{
+				curX[i1] = cx1;
+				curY[i1] = cy1;
+				stay[i1] = 0f;
+			}
+		}
+
+		if (i < end)
 		{
 			int cx = (int)posX[i] >> 6;
 			int cy = (int)posY[i] >> 6;

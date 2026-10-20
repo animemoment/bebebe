@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using Game.Core;
 
@@ -25,19 +26,24 @@ public sealed class MiningJobHandler : IJobHandler
         if ((uint)job.TargetX >= (uint)ctx.MapWidth || (uint)job.TargetY >= (uint)ctx.MapHeight)
             return false;
         // ЖЁСТКИЙ ЭТАП 1: добыча на стройке — только стадия Clearing.
-        if (!ConstructionPipeline.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.Mining))
+        if (!ConstructionManager.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.Mining))
             return false;
         return ctx.StoneOnGrass[job.TargetX, job.TargetY];
     }
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        pool.WaypointCount[agentIndex] = 0;
+        pool.WaypointIndex[agentIndex] = 0;
+
         pool.States[agentIndex] = AgentState.MovingToSource;
         pool.TargetCellX[agentIndex] = job.TargetX;
         pool.TargetCellY[agentIndex] = job.TargetY;
         pool.TargetPositionX[agentIndex] = job.StandX * ctx.TileSize + 32f;
         pool.TargetPositionY[agentIndex] = job.StandY * ctx.TileSize + 32f;
-        pool.WorkProgress[agentIndex] = 0f;
+        // P7б §119: продолжаем с per-cell прогресса (прерывание ≠ сброс на ноль).
+        pool.WorkProgress[agentIndex] =
+            StoneJobManager.Instance.MineProgress.GetFraction(job.TargetX, job.TargetY) * MineDuration;
         pool.StuckTimer[agentIndex] = 0f;
     }
 
@@ -84,12 +90,40 @@ public sealed class MiningJobHandler : IJobHandler
             StoneJobManager.Instance.CompleteStone(tx, ty);
             WorkProgressTracker.Instance.Clear(tx, ty);
 
-            // Этап 1 пайплайна стройки: камень добыт — снять флаг клетки.
-            ConstructionPipeline.Instance.NotifyStoneCleared(tx, ty);
+            // Этап 1 пайплайна стройки и фермы: камень добыт — снять флаг клетки.
+            ConstructionManager.Instance.NotifyStoneCleared(tx, ty);
+            FarmJobManager.Instance.NotifyStoneCleared(tx, ty);
 
             // ParallelRng: ctx.Random не thread-safe (Commit идёт из параллели).
             int dropCount = ParallelRng.Next(8, 16);
-            GroundItemManager.Instance.SpawnItems(tx, ty, ItemId.Stone, dropCount);
+
+            bool isSiteOrFarm = ConstructionManager.Instance.IsSiteAt(tx, ty) ||
+                                FarmJobManager.Instance.IsPlotMarked(tx, ty) ||
+                                FarmJobManager.Instance.IsGardenBed(tx, ty);
+            (int X, int Y) dropPos = (tx, ty);
+            if (isSiteOrFarm)
+            {
+                for (int oy = -1; oy <= 1; oy++)
+                {
+                    for (int ox = -1; ox <= 1; ox++)
+                    {
+                        if (ox == 0 && oy == 0) continue;
+                        int nx = tx + ox, ny = ty + oy;
+                        if (nx >= 0 && ny >= 0 && nx < ctx.MapWidth && ny < ctx.MapHeight &&
+                            ctx.Ground[nx, ny] == TileType.Grass &&
+                            !ctx.SolidWalls[nx, ny] &&
+                            !ConstructionManager.Instance.IsSiteAt(nx, ny) &&
+                            !FarmJobManager.Instance.IsPlotMarked(nx, ny))
+                        {
+                            dropPos = (nx, ny);
+                            oy = 2;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            GroundItemManager.Instance.SpawnItems(dropPos.X, dropPos.Y, ItemId.Stone, dropCount);
 
             // Эталон Farming: stale unregister → освободить claim вручную.
             int mineJobId = pool.CurrentJobId[agentIndex];
@@ -107,6 +141,11 @@ public sealed class MiningJobHandler : IJobHandler
 
     public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx)
     {
+        // P7б §119: прерывание сохраняет долю готовности в клетку — следующий
+        // агент продолжит с неё, а не с нуля.
+        StoneJobManager.Instance.MineProgress.SaveFraction(
+            pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex],
+            pool.WorkProgress[agentIndex] / MineDuration);
         WorkProgressTracker.Instance.Clear(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex]);
     }
 }

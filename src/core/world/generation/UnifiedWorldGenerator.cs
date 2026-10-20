@@ -28,6 +28,7 @@ public static class UnifiedWorldGenerator
     /// </summary>
     public static long WorldOriginX { get; set; } = 0;
     public static long WorldOriginY { get; set; } = 0;
+    public static ulong ActiveWorldSeed { get; set; } = 0;
 
     public static void SetWorldOrigin(long originX, long originY)
     {
@@ -212,7 +213,7 @@ public static class UnifiedWorldGenerator
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    private static WorldClimateParams LerpClimate1D(in WorldClimateParams a, in WorldClimateParams b, uint t)
+    internal static WorldClimateParams LerpClimate1D(in WorldClimateParams a, in WorldClimateParams b, uint t)
     {
         return new WorldClimateParams(
             ElevationQ16: LerpQ16(a.ElevationQ16, b.ElevationQ16, t),
@@ -281,7 +282,9 @@ public static class UnifiedWorldGenerator
             mountainWeight = Math.Max(mountainWeight, 16000 + ((int)climate.ElevationQ16 - WorldClimateGenerator.SeaLevelQ16) * 60 / 100);
             int baseRidgeLift = (int)((long)multiRidge * 6500L / 65535L);
             int tectonicRidgeLift = (int)((long)multiRidge * mountainWeight * 16000L / (65535L * 65535L));
-            mountainLift = baseRidgeLift + tectonicRidgeLift;
+            // Плавное затухание горного хребта к уровню моря (устраняет 10000-уровневый обрыв в воду)
+            float shoreFade = Math.Clamp(((int)climate.ElevationQ16 - WorldClimateGenerator.SeaLevelQ16) / 2000f, 0f, 1f);
+            mountainLift = (int)((baseRidgeLift + tectonicRidgeLift) * shoreFade);
         }
 
         // Прибрежная геоморфология (бухты, мысы, защищенные гавани для причалов):
@@ -289,6 +292,8 @@ public static class UnifiedWorldGenerator
         int distToSeaLevel = (int)climate.ElevationQ16 - WorldClimateGenerator.SeaLevelQ16;
         if (Math.Abs(distToSeaLevel) < 4000)
         {
+            float coastFade = 1.0f - Math.Abs(distToSeaLevel) / 4000f;
+
             // 1. Мысы (Headlands): вытягивают полуострова в море
             ushort capeRaw = CoordinateHash.ValueNoiseQ16(worldSeed + 7171ul, generatorVersion, GenerationDomain.CoastFeature, warpedWx, warpedWy, 48);
             int capeDist = Math.Abs((int)capeRaw - 32768);
@@ -303,7 +308,7 @@ public static class UnifiedWorldGenerator
             ushort inletRaw = CoordinateHash.ValueNoiseQ16(worldSeed + 9393ul, generatorVersion, GenerationDomain.CoastFeature, warpedWx - 15, warpedWy + 33, 24);
             int inlet = ((int)inletRaw - 32768) * 900 / 32768;
 
-            coastalMod = capeLift + coveBasin + inlet;
+            coastalMod = (int)((capeLift + coveBasin + inlet) * coastFade);
         }
 
         // Гипсометрический якорь суши (Coastline Anchoring & Height Margin Dampening):
@@ -328,10 +333,6 @@ public static class UnifiedWorldGenerator
         }
 
         int rawLandElev = (int)climate.ElevationQ16 + hillOffset + mountainLift + coastalMod;
-        if (climate.ElevationQ16 < WorldClimateGenerator.SeaLevelQ16)
-        {
-            rawLandElev = Math.Min(rawLandElev, WorldClimateGenerator.SeaLevelQ16 - 1);
-        }
         ushort elevationQ16 = (ushort)Math.Clamp(rawLandElev, 0, 65535);
 
         // 3. Локальная гидрология: физическое русло реки и эрозионная пойма
@@ -479,11 +480,14 @@ public static class UnifiedWorldGenerator
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "Размеры окна колонии должны быть больше 0.");
 
+        long baseOriginX = WorldOriginX + originX;
+        long baseOriginY = WorldOriginY + originY;
+
         var data = new MapData(width, height)
         {
             Seed = unchecked((uint)worldSeed),
             Climate = explicitClimate ?? WorldClimateGenerator.SampleBlendedCell(
-                worldSeed, generatorVersion, WorldOriginX + originX + width / 2, WorldOriginY + originY + height / 2)
+                worldSeed, generatorVersion, baseOriginX + width / 2, baseOriginY + height / 2)
         };
 
         var heightMap = new float[width, height];
@@ -499,23 +503,23 @@ public static class UnifiedWorldGenerator
         var grid = new WorldClimateParams[subDivX + 1, subDivY + 1];
         Parallel.For(0, subDivY + 1, gy =>
         {
-            long gwy = WorldOriginY + originY + gy * SubSize;
+            long gwy = baseOriginY + gy * SubSize;
             for (int gx = 0; gx <= subDivX; gx++)
             {
-                long gwx = WorldOriginX + originX + gx * SubSize;
+                long gwx = baseOriginX + gx * SubSize;
                 grid[gx, gy] = explicitClimate ?? WorldClimateGenerator.SampleBlendedCell(worldSeed, generatorVersion, gwx, gwy);
             }
         });
 
         Parallel.For(0, height, ly =>
         {
-            long wy = WorldOriginY + originY + ly;
+            long wy = baseOriginY + ly;
             int by = Math.Min(subDivY - 1, ly / SubSize);
             uint v = (uint)(((long)(ly % SubSize)) * Q16One / SubSize);
 
             for (int lx = 0; lx < width; lx++)
             {
-                long wx = WorldOriginX + originX + lx;
+                long wx = baseOriginX + lx;
                 int bx = Math.Min(subDivX - 1, lx / SubSize);
                 uint u = (uint)(((long)(lx % SubSize)) * Q16One / SubSize);
 

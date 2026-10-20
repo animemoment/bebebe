@@ -13,6 +13,8 @@ namespace Game.UI.Tools;
 /// старое не сносится. Ghost перестраивается живьём во время драга.
 /// ПКМ во время драга — отменить только текущий драг (накопленное не трогаем).
 /// DoorMode: ЛКМ-клик по ghost-стене снимает её из черновика (будущий проём).
+/// ПКМ-драг по уже поставленной зоне снимает её целиком: тайлы зоны (склад/ферма) и
+/// кольцо стен вокруг (иначе повторная постановка упирается в «клетка занята» — баг #6).
 /// Commit (CheckMark): зона по типу + стены чертежами WoodWall. Cancel: чистка ghost.
 /// </summary>
 public class ZoneDraftTool : ITool
@@ -71,18 +73,22 @@ public class ZoneDraftTool : ITool
 
     public void OnHover(Vector2I tilePos, Vector2 worldPos) { }
 
+    private static readonly Color CancelFill = new(0.9f, 0.2f, 0.2f, 0.25f);
+    private static readonly Color CancelBorder = new(0.9f, 0.2f, 0.2f, 0.9f);
+    private bool _isRightDragging;
+
     public void OnClick(Vector2I tilePos, Vector2 worldPos, bool isLeftClick)
     {
         if (!isLeftClick)
         {
-            // ПКМ: отменить только текущий драг (если идёт). Накопленный черновик
-            // НЕ трогаем — пользователь такого не просил.
-            if (_dragging)
+            // ПКМ: удаление клеток из черновика или отмена чертежей
+            _isRightDragging = true;
+            _dragStart = tilePos;
+            _dragCurrent = tilePos;
+            if (_selectionBox != null)
             {
-                _dragging = false;
-                _selectionBox?.CancelSelection();
-                _selectionBox?.ResetDefaultStyle();
-                RepaintGhost();
+                _selectionBox.SetStyle(CancelFill, CancelBorder);
+                _selectionBox.StartSelection(worldPos);
             }
             return;
         }
@@ -101,9 +107,13 @@ public class ZoneDraftTool : ITool
         }
 
         // Новый драг: старое НЕ чистим, дописываем по Release.
+        _isRightDragging = false;
         _dragging = true;
         _dragStart = tilePos;
         _dragCurrent = tilePos;
+        // Мусор от снесённой ПКМ зоны не должен глушить превью кольца нового драга
+        // (сам RecalcWalls на Release тоже чистит, но превью рисуется раньше).
+        PruneStaleRemovedWalls();
         if (_selectionBox != null)
         {
             _selectionBox.SetStyle(ZoneFill, ZoneBorder);
@@ -114,25 +124,130 @@ public class ZoneDraftTool : ITool
 
     public void OnDrag(Vector2I startTile, Vector2I currentTile, Vector2 currentWorldPos)
     {
-        if (!_dragging || _doorMode)
+        if (!_dragging && !_isRightDragging)
+            return;
+        if (_doorMode)
+            return;
+        if (_dragCurrent == currentTile)
             return;
         _dragCurrent = currentTile;
         _selectionBox?.UpdateSelection(currentWorldPos);
-        RepaintGhost();
+        if (_dragging)
+        {
+            RepaintGhost();
+        }
     }
 
     public void OnRelease(Vector2I startTile, Vector2I endTile, Vector2 worldPos, bool isLeftClick)
     {
-        if (!isLeftClick || !_dragging || _doorMode)
+        if (_doorMode)
             return;
-        _dragging = false;
-        _dragCurrent = endTile;
-        _selectionBox?.EndSelection();
-        _selectionBox?.ResetDefaultStyle();
-        // Фиксируем прямоугольник: дописать клетки, пересчитать кольцо, перекрасить.
-        AccumulateRect(_dragStart, _dragCurrent);
-        RecalcWalls();
-        RepaintGhost();
+
+        if (_selectionBox != null && _selectionBox.IsSelecting)
+        {
+            _selectionBox.EndSelection();
+            _selectionBox.ResetDefaultStyle();
+        }
+
+        if (isLeftClick)
+        {
+            if (!_dragging)
+                return;
+            _dragging = false;
+            _dragCurrent = endTile;
+            // Фиксируем прямоугольник: дописать клетки, пересчитать кольцо, перекрасить.
+            AccumulateRect(_dragStart, _dragCurrent);
+            RecalcWalls();
+            RepaintGhost();
+        }
+        else
+        {
+            if (!_isRightDragging)
+                return;
+            _isRightDragging = false;
+            _dragCurrent = endTile;
+
+            int minX = Math.Min(startTile.X, endTile.X);
+            int maxX = Math.Max(startTile.X, endTile.X);
+            int minY = Math.Min(startTile.Y, endTile.Y);
+            int maxY = Math.Max(startTile.Y, endTile.Y);
+
+            var cancelSites = new List<(int X, int Y)>();
+            // Баг #6 («снял зону со стенами → поставил снова → стены не строятся, остаются
+            // призраки чертежей»): рамка ПКМ снимала только то, что лежит ВНУТРИ неё, а Commit
+            // создаёт больше состояния. Кольцо стройки у зоны лежит на 1 клетку НАРУЖУ рамки,
+            // а зона склада уходит в отложенные (_pendingZones) и привязана к группе стройки.
+            // Остаток: IsZoneTile/IsSiteAt навсегда true → повторный черновик отбрасывается
+            // гейтами CanCommitZoneCell/CanPlaceWall, сайты стен не создаются, а на карте
+            // висят призраки чертежей неснятого кольца. Поэтому снимаем зону ЦЕЛИКОМ:
+            // её тайлы + кольцо стен — но только когда рамка накрыла зону полностью.
+            // Частичный снос мир не трогает: иначе у соседней зоны отвалится общая стена,
+            // а pending-зона «воскреснет» после достройки стен (ActivatePendingZone).
+            var removedStockpile = new List<(int X, int Y)>();
+            var removedFarm = new List<(int X, int Y)>();
+            var ringSeen = new HashSet<Vector2I>();
+
+            for (int x = minX; x <= maxX; x++)
+            {
+                for (int y = minY; y <= maxY; y++)
+                {
+                    var p = new Vector2I(x, y);
+                    _zoneCells.Remove(p);
+                    _worldZoneCells.Remove(p);
+                    // Кольцо глушим только там, где реально был чертёж стены черновика:
+                    // иначе рамка ПКМ забивала _removedWalls сотнями тысяч «пустых» клеток
+                    // (их же потом стирал ClearGhost) и навсегда глушила кольцо новых зон.
+                    if (_wallCells.Remove(p) || _worldWallCells.Remove(p))
+                        _removedWalls.Add(p);
+
+                    if (ConstructionManager.Instance.IsSiteAt(x, y))
+                    {
+                        cancelSites.Add((x, y));
+                    }
+                    else if (BlueprintManager.Instance.IsBlueprintAt(x, y))
+                    {
+                        BlueprintManager.Instance.RemoveBlueprint(x, y, out _);
+                    }
+
+                    // Клетка зоны снимается целиком, только если вне рамки у неё не осталось
+                    // тайлов-соседей той же зоны (иначе это снос куска живой зоны).
+                    if (IsSoleZoneCell(x, y, minX, maxX, minY, maxY))
+                    {
+                        if (StockpileManager.Instance.IsZoneTile(x, y))
+                            removedStockpile.Add((x, y));
+                        if (FarmJobManager.Instance.IsGardenBed(x, y) || FarmJobManager.Instance.IsPlotMarked(x, y))
+                            removedFarm.Add((x, y));
+                        CollectZoneRingSites(x, y, minX, maxX, minY, maxY, cancelSites, ringSeen);
+                    }
+
+                    if (WorldPlacement != null)
+                    {
+                        WorldPlacement.TryRemoveWall(x, y);
+                        WorldPlacement.TryRemoveBuilding(x, y);
+                        WorldPlacement.TryRemoveFarmPlot(x, y);
+                        WorldPlacement.TryRemoveStockpile(x, y);
+                        WorldPlacement.TryCancelCutTree(x, y);
+                        WorldPlacement.TryCancelMineStone(x, y);
+                    }
+                }
+            }
+
+            // Порядок важен: сначала сама зона (активная/отложенная), потом кольцо стройки —
+            // CancelSitesBatch обнуляет группу и роняет привязанную к ней pending-зону склада
+            // (и снимает «воскрешение» через ActivatePendingZone после достройки стен).
+            if (removedStockpile.Count > 0)
+                StockpileManager.Instance.RemoveZoneTilesBatch(removedStockpile);
+            if (removedFarm.Count > 0)
+                FarmZoneManager.Instance.RemoveTiles(removedFarm);
+
+            if (cancelSites.Count > 0)
+            {
+                ConstructionManager.Instance.CancelSitesBatch(cancelSites);
+            }
+
+            RecalcWalls();
+            RepaintGhost();
+        }
     }
 
     /// <summary>
@@ -212,10 +327,19 @@ public class ZoneDraftTool : ITool
     /// <summary>Фермерству стены не положены: кольцо не генерируем вообще.</summary>
     private bool WallsForbidden => _zoneKind == "farming" || _zoneKind == "farm";
 
+    /// <summary>
+    /// Зоне нужна настоящая почва: у фермы — да (растения), у склада — нет
+    /// (склад на пляже/у причала осознанно разрешён, его зона не «грядка на песке»).
+    /// </summary>
+    private bool ZoneNeedsSoil => _zoneKind == "farming" || _zoneKind == "farm";
+
     private void RecalcWalls()
     {
         _wallCells.Clear();
         _worldWallCells.Clear();
+        // Чистим _removedWalls от записей снесённой зоны ДО построения кольца —
+        // иначе они глушат кольцо новой зоны в тех же клетках (баг #6).
+        PruneStaleRemovedWalls();
         if (WallsForbidden)
             return;
         foreach (var c in _zoneCells)
@@ -298,6 +422,20 @@ public class ZoneDraftTool : ITool
             _painted.Add(c);
     }
 
+    /// <summary>
+    /// Клетка превью активного драга: рисуем ровно то, что примет AccumulateRect на Release
+    /// (тот же гейт CanCommitZoneCell). Иначе ghost обещает воду/гору/визуальный песок/занятые
+    /// клетки, а Commit их молча отбрасывает — «зона обещала встать, но не встала».
+    /// </summary>
+    private void PaintZoneGhostCell(int x, int y, int zoneSource)
+    {
+        if (!CanCommitZoneCell(x, y))
+            return;
+        var p = new Vector2I(x, y);
+        _ghostLayer.SetCell(p, zoneSource, Vector2I.Zero);
+        _painted.Add(p);
+    }
+
     private void RepaintGhost()
     {
         if (_ghostLayer == null)
@@ -339,13 +477,29 @@ public class ZoneDraftTool : ITool
                 PaintWorldDragPreview(zoneSource);
                 return;
             }
-            for (int x = minX; x <= maxX; x++)
-                for (int y = minY; y <= maxY; y++)
+            long cellArea = (long)(maxX - minX + 1) * (maxY - minY + 1);
+            if (cellArea > 2500)
+            {
+                // Для больших прямоугольников (более 50x50 клеток):
+                // Заливка цветом зоны уже идеально и без лагов рисуется на GPU через _selectionBox.
+                // В TileMapLayer рисуем только контур (рамку), чтобы не вешать CPU сотнями тысяч SetCell каждый кадр движения мыши.
+                for (int x = minX; x <= maxX; x++)
                 {
-                    var p = new Vector2I(x, y);
-                    _ghostLayer.SetCell(p, zoneSource, Vector2I.Zero);
-                    _painted.Add(p);
+                    PaintZoneGhostCell(x, minY, zoneSource);
+                    PaintZoneGhostCell(x, maxY, zoneSource);
                 }
+                for (int y = minY + 1; y < maxY; y++)
+                {
+                    PaintZoneGhostCell(minX, y, zoneSource);
+                    PaintZoneGhostCell(maxX, y, zoneSource);
+                }
+            }
+            else
+            {
+                for (int x = minX; x <= maxX; x++)
+                    for (int y = minY; y <= maxY; y++)
+                        PaintZoneGhostCell(x, y, zoneSource);
+            }
             // Кольцо превью: соседи прямоугольника драга (для фермы — нет кольца).
             if (!WallsForbidden)
             {
@@ -380,6 +534,24 @@ public class ZoneDraftTool : ITool
         int maxX = Math.Max(_dragStart.X, _dragCurrent.X);
         int minY = Math.Min(_dragStart.Y, _dragCurrent.Y);
         int maxY = Math.Max(_dragStart.Y, _dragCurrent.Y);
+        long worldArea = (long)(maxX - minX + 1) * (maxY - minY + 1);
+
+        if (worldArea > 2500)
+        {
+            // Для огромных зон в мире рисуем периметр, заливку берет _selectionBox
+            for (int x = minX; x <= maxX; x++)
+            {
+                PaintWorldCell(x, minY, zoneSource, warehouse);
+                PaintWorldCell(x, maxY, zoneSource, warehouse);
+            }
+            for (int y = minY + 1; y < maxY; y++)
+            {
+                PaintWorldCell(minX, y, zoneSource, warehouse);
+                PaintWorldCell(maxX, y, zoneSource, warehouse);
+            }
+            return;
+        }
+
         long scanned = 0;
         for (int x = minX; x <= maxX; x++)
         {
@@ -387,17 +559,22 @@ public class ZoneDraftTool : ITool
             {
                 if (++scanned > WorldPlacementPass.MaxScannedCells)
                     return;
-                if (WorldPlacementPass.IsIslandCell(x, y))
-                    continue;
-                if (!WorldPlacement.IsWorldCell(x, y))
-                    continue;
-                if (!(warehouse ? WorldPlacement.CanPlaceStockpile(x, y) : WorldPlacement.CanPlaceFarm(x, y)))
-                    continue;
-                var p = new Vector2I(x, y);
-                _ghostLayer.SetCell(p, zoneSource, Vector2I.Zero);
-                _painted.Add(p);
+                PaintWorldCell(x, y, zoneSource, warehouse);
             }
         }
+    }
+
+    private void PaintWorldCell(int x, int y, int zoneSource, bool warehouse)
+    {
+        if (WorldPlacementPass.IsIslandCell(x, y))
+            return;
+        if (!WorldPlacement.IsWorldCell(x, y))
+            return;
+        if (!(warehouse ? WorldPlacement.CanPlaceStockpile(x, y) : WorldPlacement.CanPlaceFarm(x, y)))
+            return;
+        var p = new Vector2I(x, y);
+        _ghostLayer.SetCell(p, zoneSource, Vector2I.Zero);
+        _painted.Add(p);
     }
 
     /// <summary>
@@ -407,20 +584,30 @@ public class ZoneDraftTool : ITool
     /// </summary>
     private bool CanCommitZoneCell(int x, int y)
         => CanPlaceZone(x, y)
+            && !StructureManager.Instance.HasStructureAt(x, y)
+            && !ConstructionManager.Instance.IsSiteAt(x, y)
             && !BuildingManager.Instance.HasBuildingAt(x, y)
             && !FarmJobManager.Instance.IsGardenBed(x, y)
             && !FarmJobManager.Instance.IsPlotMarked(x, y)
             && !BlueprintManager.Instance.IsBlueprintAt(x, y)
             && !StockpileManager.Instance.IsZoneTile(x, y);
 
-    /// <summary>Клетка пригодна под зону: только трава (вода/гора запрещены).</summary>
+    /// <summary>Клетка пригодна под зону: только визуальная трава (вода/гора/песок-пустыня запрещены).</summary>
     private bool CanPlaceZone(int x, int y)
     {
         if (_mapData == null)
             return x >= 0 && y >= 0 && x < MapRenderer.MapWidth && y < MapRenderer.MapHeight;
         if ((uint)x >= (uint)_mapData.Width || (uint)y >= (uint)_mapData.Height)
             return false;
-        return _mapData.Ground[x, y] == TileType.Grass;
+        if (_mapData.Ground[x, y] != TileType.Grass)
+            return false;
+        // Баг #4 («чертежи грядок на рандом»): пустыня/пляж имеют Ground == Grass
+        // (UnifiedWorldGenerator кладёт траву всем не-вода/не-гора), но рендер красит их
+        // песком (MapRenderer: Biome == Desert → Sand). Гейт по биому, а не по Ground —
+        // иначе грядка встаёт на визуальный песок. Тот же гейт, что был в FarmingTool.
+        if (ZoneNeedsSoil && _mapData.GetBiome(x, y) == Game.Core.WorldStreaming.BiomeType.Desert)
+            return false;
+        return true;
     }
 
     private bool CanPlaceWall(int x, int y)
@@ -428,6 +615,10 @@ public class ZoneDraftTool : ITool
         if (_mapData != null && _mapData.Ground[x, y] != TileType.Grass)
             return false;
         // Камень НЕ исключаем: этап 1 пайплайна его добудет (Mining), стена встанет после.
+        if (StructureManager.Instance.HasStructureAt(x, y))
+            return false;
+        if (ConstructionManager.Instance.IsSiteAt(x, y))
+            return false;
         var walls = MapRenderer.Instance?.WallBuildManager;
         if (walls != null && walls.IsWallAt(x, y))
             return false;
@@ -439,6 +630,86 @@ public class ZoneDraftTool : ITool
         if (FarmJobManager.Instance.IsGardenBed(x, y) || FarmJobManager.Instance.IsPlotMarked(x, y))
             return false;
         return true;
+    }
+
+    /// <summary>
+    /// Клетка снимается ПКМ как «своя» (зона уходит целиком), а не как кусок живой зоны:
+    /// вне рамки сноса [minX..maxX, minY..maxY] у неё не осталось тайлов-соседей зоны.
+    /// Так частичный снос не рвёт соседнюю зону и не «воскрешает» pending-зону склада.
+    /// </summary>
+    private static bool IsSoleZoneCell(int x, int y, int minX, int maxX, int minY, int maxY)
+    {
+        for (int ox = -1; ox <= 1; ox++)
+        {
+            for (int oy = -1; oy <= 1; oy++)
+            {
+                int nx = x + ox, ny = y + oy;
+                if (nx >= minX && nx <= maxX && ny >= minY && ny <= maxY)
+                    continue; // сосед тоже внутри рамки — он тоже снимается
+                if (StockpileManager.Instance.IsZoneTile(nx, ny))
+                    return false;
+                if (FarmJobManager.Instance.IsGardenBed(nx, ny) || FarmJobManager.Instance.IsPlotMarked(nx, ny))
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Кольцо стен сносимой островной зоны: 8 соседей её клетки, где стоит площадка-стена
+    /// и рядом (вне рамки) нет тайлов живой зоны. Без этого кольцо/призраки чертежей
+    /// остаются после сноса зоны ПКМ, а повторная постановка видит «клетка занята».
+    /// </summary>
+    private static void CollectZoneRingSites(int x, int y, int minX, int maxX, int minY, int maxY,
+        List<(int X, int Y)> cancelSites, HashSet<Vector2I> seen)
+    {
+        for (int ox = -1; ox <= 1; ox++)
+        {
+            for (int oy = -1; oy <= 1; oy++)
+            {
+                if (ox == 0 && oy == 0)
+                    continue;
+                int nx = x + ox, ny = y + oy;
+                if (!WorldPlacementPass.IsIslandCell(nx, ny))
+                    continue;
+                if (!ConstructionManager.Instance.IsWallSiteAt(nx, ny))
+                    continue;
+                if (!IsSoleZoneCell(nx, ny, minX, maxX, minY, maxY))
+                    continue; // стена принадлежит живой соседней зоне — не трогаем
+                if (seen.Add(new Vector2I(nx, ny)))
+                    cancelSites.Add((nx, ny));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Баг #6, вторая половина: клетки, снятые ПКМ, лежат в _removedWalls до Cancel/Commit,
+    /// поэтому новый черновик в тех же клетках НАВСЕГДА терял кольцо стен («стены не строятся»),
+    /// а закрытие/переоткрытие окна (новый ZoneDraftTool) «лечило». Держим в _removedWalls
+    /// только то, что реально является кольцом ТЕКУЩЕГО черновика: у снесённой зоны кольца
+    /// больше нет — записи уходят, проёмы двери (они всегда соседи клеток зоны) остаются.
+    /// </summary>
+    private void PruneStaleRemovedWalls()
+    {
+        if (_removedWalls.Count == 0)
+            return;
+        _removedWalls.RemoveWhere(p => !IsDraftRingCell(p));
+    }
+
+    private bool IsDraftRingCell(Vector2I p)
+    {
+        for (int ox = -1; ox <= 1; ox++)
+        {
+            for (int oy = -1; oy <= 1; oy++)
+            {
+                if (ox == 0 && oy == 0)
+                    continue;
+                var n = new Vector2I(p.X + ox, p.Y + oy);
+                if (_zoneCells.Contains(n) || _worldZoneCells.Contains(n))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private void ClearGhost()
@@ -476,11 +747,21 @@ public class ZoneDraftTool : ITool
         foreach (var w in _wallCells)
             wallList.Add((w.X, w.Y));
 
+        bool hasWalls = wallList.Count > 0 && !WallsForbidden;
         if (zoneList.Count > 0)
         {
             if (_zoneKind == "warehouse")
             {
-                StockpileManager.Instance.AddZoneTilesBatch(zoneList);
+                if (!hasWalls)
+                {
+                    // Открытый склад без стен активируется сразу
+                    StockpileManager.Instance.AddZoneTilesBatch(zoneList);
+                }
+                else
+                {
+                    // Склад со стенами: зона сразу отображается игроку (фиолетовый рендер), но активируется только после завершения стен
+                    StockpileManager.Instance.AddPendingZoneTilesBatch(zoneList);
+                }
             }
             else
             {
@@ -489,10 +770,12 @@ public class ZoneDraftTool : ITool
             }
         }
 
-        if (wallList.Count > 0 && !WallsForbidden)
+        if (hasWalls)
         {
             var mat = WallMaterialRegistry.ById(_wallMaterialId);
-            ConstructionPipeline.Instance.StartSite(wallList, mat.Type, _mapData);
+            var def = StructureRegistry.Get(mat.Type);
+            List<(int X, int Y)> pendingWarehouseZone = _zoneKind == "warehouse" ? zoneList : null;
+            ConstructionManager.Instance.StartSitesBatch(wallList, def, _mapData, pendingWarehouseZone);
         }
 
         // §28: мировая часть черновика — зона (метки посева/склада) и кольцо стен.

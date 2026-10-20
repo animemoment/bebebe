@@ -82,14 +82,16 @@ public sealed class WorldChunkStore
                     FileAccess.Write,
                     FileShare.None,
                     bufferSize: 64 * 1024,
-                    options: FileOptions.WriteThrough))
+                    options: FileOptions.None))
                 {
                     stream.Write(encoded, 0, encoded.Length);
-                    stream.Flush(flushToDisk: true);
                 }
 
-                // Temp находится рядом с target: Move с overwrite выполняет замену в рамках
-                // одного тома только после полной записи и flush; до этого старый файл цел.
+                // Temp находится рядом с target: File.Move(overwrite) заменяет файл атомарно
+                // в пределах тома, поэтому до замены старый delta цел. Явного fsync нет
+                // (FileOptions.None и отсутствие Flush(true)): при сбое питания возможна
+                // ситуация «валидное имя, битые данные». Читатель обязан это переживать —
+                // см. graceful degradation в WorldChunkStreamer.ProcessChunk.
                 File.Move(tempPath, targetPath, overwrite: true);
                 return true;
             }

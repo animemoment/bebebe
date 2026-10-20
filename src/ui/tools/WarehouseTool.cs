@@ -50,37 +50,39 @@ public class WarehouseTool : ITool
         _selectionBox?.EndSelection();
         _selectionBox?.ResetDefaultStyle();
 
-        // §28: склад за кромкой острова — метки мира.
-        if (WorldPlacement != null)
-        {
-            WorldPlacementPass.Run(startTile.X, startTile.Y, endTile.X, endTile.Y, WorldPlacement,
-                isLeftClick ? WorldPlacement.TryPlaceStockpile : WorldPlacement.TryRemoveStockpile);
-        }
+        int minX = Mathf.Min(startTile.X, endTile.X);
+        int maxX = Mathf.Max(startTile.X, endTile.X);
+        int minY = Mathf.Min(startTile.Y, endTile.Y);
+        int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        // ПЕРЕСЕЧЕНИЕ с островом, а не кламп: драг целиком за кромкой раньше писал/сносил
-        // клетки по краю острова, которых игрок не выбирал.
-        int minX = Mathf.Max(Mathf.Min(startTile.X, endTile.X), 0);
-        int maxX = Mathf.Min(Mathf.Max(startTile.X, endTile.X), MapRenderer.MapWidth - 1);
-        int minY = Mathf.Max(Mathf.Min(startTile.Y, endTile.Y), 0);
-        int maxY = Mathf.Min(Mathf.Max(startTile.Y, endTile.Y), MapRenderer.MapHeight - 1);
-        if (minX > maxX || minY > maxY)
-            return;
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 250_000) return;
 
-        // Батч: 10k клеток одним вызовом (один lock + один sweep),
-        // вместо 10k AddZoneTile (10k lock + 10k CallDeferred + 10k sweep).
-        var tiles = new System.Collections.Generic.List<(int X, int Y)>(
-            (maxX - minX + 1) * (maxY - minY + 1));
+        var islandTiles = new List<(int X, int Y)>();
         for (int x = minX; x <= maxX; x++)
         {
             for (int y = minY; y <= maxY; y++)
             {
-                tiles.Add((x, y));
+                if (WorldPlacementPass.IsIslandCell(x, y))
+                {
+                    islandTiles.Add((x, y));
+                }
+                else if (WorldPlacement != null)
+                {
+                    if (isLeftClick)
+                        WorldPlacement.TryPlaceStockpile(x, y);
+                    else
+                        WorldPlacement.TryRemoveStockpile(x, y);
+                }
             }
         }
-        if (isLeftClick)
-            StockpileManager.Instance.AddZoneTilesBatch(tiles);
-        else
-            StockpileManager.Instance.RemoveZoneTilesBatch(tiles);
+        if (islandTiles.Count > 0)
+        {
+            if (isLeftClick)
+                StockpileManager.Instance.AddZoneTilesBatch(islandTiles);
+            else
+                StockpileManager.Instance.RemoveZoneTilesBatch(islandTiles);
+        }
     }
 
     public void Cancel()

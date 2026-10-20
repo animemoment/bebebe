@@ -37,6 +37,9 @@ public interface IToolWorldPlacement
 
     bool TryPlaceBuilding(long cellX, long cellY);
 
+    /// <summary>Пройдёт ли мебель/здание гейт мира (трава, чанк загружен, клетка свободна) — для ghost.</summary>
+    bool CanPlaceBuilding(long cellX, long cellY);
+
     bool TryRemoveBuilding(long cellX, long cellY);
 
     bool TryCutTree(long cellX, long cellY);

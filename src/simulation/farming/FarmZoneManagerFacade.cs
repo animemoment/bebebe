@@ -18,6 +18,11 @@ public sealed class FarmZoneManager
     public FarmZone HoveredZone => Adapt(Z.HoveredZone);
     public FarmZone SelectedZone => Adapt(Z.SelectedZone);
 
+    private readonly Dictionary<Action<FarmZone>, Action<Zone>> _hoveredHandlers = new();
+    private readonly Dictionary<Action<FarmZone>, Action<Zone>> _selectedHandlers = new();
+    private readonly Dictionary<Action<FarmZone>, Action<Zone>> _autoPlantHandlers = new();
+    private readonly object _evtLock = new();
+
     public event Action OnZonesUpdated
     {
         add => Z.OnZonesUpdated += value;
@@ -25,13 +30,47 @@ public sealed class FarmZoneManager
     }
     public event Action<FarmZone> OnZoneHovered
     {
-        add => Z.OnZoneHovered += z => value?.Invoke(Adapt(z));
-        remove { }
+        add
+        {
+            if (value == null) return;
+            lock (_evtLock)
+            {
+                Action<Zone> wrapper = z => value(Adapt(z));
+                _hoveredHandlers[value] = wrapper;
+                Z.OnZoneHovered += wrapper;
+            }
+        }
+        remove
+        {
+            if (value == null) return;
+            lock (_evtLock)
+            {
+                if (_hoveredHandlers.Remove(value, out var wrapper))
+                    Z.OnZoneHovered -= wrapper;
+            }
+        }
     }
     public event Action<FarmZone> OnZoneSelected
     {
-        add => Z.OnZoneSelected += z => value?.Invoke(Adapt(z));
-        remove { }
+        add
+        {
+            if (value == null) return;
+            lock (_evtLock)
+            {
+                Action<Zone> wrapper = z => value(Adapt(z));
+                _selectedHandlers[value] = wrapper;
+                Z.OnZoneSelected += wrapper;
+            }
+        }
+        remove
+        {
+            if (value == null) return;
+            lock (_evtLock)
+            {
+                if (_selectedHandlers.Remove(value, out var wrapper))
+                    Z.OnZoneSelected -= wrapper;
+            }
+        }
     }
     public event Action OnZoneDeselected
     {
@@ -40,8 +79,25 @@ public sealed class FarmZoneManager
     }
     public event Action<FarmZone> OnAutoPlantChanged
     {
-        add => Z.OnAutoPlantChanged += z => value?.Invoke(Adapt(z));
-        remove { }
+        add
+        {
+            if (value == null) return;
+            lock (_evtLock)
+            {
+                Action<Zone> wrapper = z => value(Adapt(z));
+                _autoPlantHandlers[value] = wrapper;
+                Z.OnAutoPlantChanged += wrapper;
+            }
+        }
+        remove
+        {
+            if (value == null) return;
+            lock (_evtLock)
+            {
+                if (_autoPlantHandlers.Remove(value, out var wrapper))
+                    Z.OnAutoPlantChanged -= wrapper;
+            }
+        }
     }
 
     private static FarmZone Adapt(Zone z)

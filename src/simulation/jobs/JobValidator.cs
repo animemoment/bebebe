@@ -123,7 +123,7 @@ public sealed class JobValidator
             // Иначе мёртвая работа вечно числится в индексе ("давнюю не берут"):
             // claim-проходы её пропускают по CanAgentExecute, а аудит раньше
             // ставил только кулдаун. Sweep пересоздаст при появлении предметов.
-            if ((job.TypeId == JobTypeId.StockpileHauling || job.TypeId == JobTypeId.BlueprintDelivery)
+            if (job.TypeId == JobTypeId.StockpileHauling
                 && !GroundItemManager.Instance.HasItemsAt(job.SourceX, job.SourceY)
                 && !GroundItemManager.Instance.HasItemsAt(job.TargetX, job.TargetY))
             {
@@ -221,7 +221,7 @@ public sealed class JobValidator
                     if (++n > MaxMarksPerTick)
                         break;
                     if (!index.HasJobAt(x, y, JobTypeId.TreeChopping)
-                        && ConstructionPipeline.Instance.IsStageAllowed(x, y, JobTypeId.TreeChopping))
+                        && ConstructionManager.Instance.IsStageAllowed(x, y, JobTypeId.TreeChopping))
                     {
                         JobBroker.Instance.RegisterTreeChop(x, y);
                         fixed_++;
@@ -238,7 +238,7 @@ public sealed class JobValidator
                     if (++n > MaxMarksPerTick)
                         break;
                     if (!index.HasJobAt(x, y, JobTypeId.Mining)
-                        && ConstructionPipeline.Instance.IsStageAllowed(x, y, JobTypeId.Mining))
+                        && ConstructionManager.Instance.IsStageAllowed(x, y, JobTypeId.Mining))
                     {
                         JobBroker.Instance.RegisterStoneMine(x, y);
                         fixed_++;
@@ -261,12 +261,12 @@ public sealed class JobValidator
                     if (!index.HasJobAt(cell.X, cell.Y, JobTypeId.BlueprintDelivery) &&
                         !index.HasJobAt(cell.X, cell.Y, JobTypeId.Construction))
                     {
-                        if (ConstructionPipeline.Instance.IsStageAllowed(cell.X, cell.Y, JobTypeId.BlueprintDelivery))
+                        if (ConstructionManager.Instance.IsStageAllowed(cell.X, cell.Y, JobTypeId.BlueprintDelivery))
                         {
                             JobBroker.Instance.RegisterBlueprint(cell.X, cell.Y, type, target);
                             fixed_++;
                         }
-                        else if (ConstructionPipeline.Instance.IsStageAllowed(cell.X, cell.Y, JobTypeId.Construction))
+                        else if (ConstructionManager.Instance.IsStageAllowed(cell.X, cell.Y, JobTypeId.Construction))
                         {
                             JobBroker.Instance.RegisterConstructionAt(cell.X, cell.Y);
                             fixed_++;

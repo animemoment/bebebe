@@ -7,7 +7,7 @@ namespace Game.UI;
 
 public partial class CropRenderer : Node2D
 {
-	private const int MaxCrops = 4096;
+	private const int MaxCrops = 16384;
 	private const float CropSize = 64f;
 
 	// UID'ы фаз роста. ВАЖНО: эти четыре UID сейчас осиротели — самих PNG в
@@ -25,10 +25,10 @@ public partial class CropRenderer : Node2D
 
 	private static readonly string[][] StageTextureFallbacks =
 	{
-		new[] { "res://ui/assets/textures/crops/phase1.png" },
-		new[] { "res://ui/assets/textures/crops/phase2.png" },
-		new[] { "res://ui/assets/textures/crops/phase3.png" },
-		new[] { "res://ui/assets/textures/crops/phase4.png" }
+		new[] { "res://ui/assets/textures/crops/phase1.png", "res://ui/assets/textures/icons/Wheat.png" },
+		new[] { "res://ui/assets/textures/crops/phase2.png", "res://ui/assets/textures/icons/Wheat.png" },
+		new[] { "res://ui/assets/textures/crops/phase3.png", "res://ui/assets/textures/icons/Wheat.png" },
+		new[] { "res://ui/assets/textures/crops/phase4.png", "res://ui/assets/textures/icons/Wheat.png" }
 	};
 
 	private readonly MultiMeshInstance2D[] _instances = new MultiMeshInstance2D[4];
@@ -105,6 +105,8 @@ public partial class CropRenderer : Node2D
 
 		if (latest.PositionsByStage == null || latest.Counts == null) return;
 
+		ItemShadows?.ClearSourceSpots(ItemShadowRenderer.ShadowSource.Crop);
+
 		for (int stage = 0; stage < 4; stage++)
 		{
 			int count = Math.Min(latest.Counts[stage], MaxCrops);
@@ -135,7 +137,7 @@ public partial class CropRenderer : Node2D
 
 				// Ростки 3-4 стадии выше — им тень, мелочь 1-2 пропускаем (Syx early-out).
 				if (stage >= 2)
-					ItemShadows?.PushSpots(positions, count, CropSize);
+					ItemShadows?.AddSourceSpots(ItemShadowRenderer.ShadowSource.Crop, positions, count, CropSize);
 			}
 		}
 	}

@@ -16,7 +16,9 @@ public sealed class WorldJobBoard
 	private readonly StreamingWorldView _view;
 	private readonly StreamingWorldManager _manager;
 	private readonly List<WorldPlan> _pending = new(512);
-	private readonly HashSet<(long X, long Y)> _claimed = new();
+	// Ключ с PlanKind: CutTreePlan/MinedStonePlan НЕ входят в WorldDeltaKind.BlockingKinds,
+	// поэтому на одной клетке могут стоять два разных плана — претензии на них независимы.
+	private readonly HashSet<(byte Kind, long X, long Y)> _claimed = new();
 
 	public WorldJobBoard(StreamingWorldView view, StreamingWorldManager manager)
 	{
@@ -52,7 +54,7 @@ public sealed class WorldJobBoard
 		for (int i = 0; i < _pending.Count; i++)
 		{
 			WorldPlan candidate = _pending[i];
-			if (_claimed.Contains((candidate.CellX, candidate.CellY)))
+			if (_claimed.Contains((candidate.PlanKind, candidate.CellX, candidate.CellY)))
 				continue;
 			if (allow != null && !allow(candidate))
 				continue;
@@ -66,7 +68,7 @@ public sealed class WorldJobBoard
 			found = true;
 		}
 		if (found)
-			_claimed.Add((plan.CellX, plan.CellY));
+			_claimed.Add((plan.PlanKind, plan.CellX, plan.CellY));
 		return found;
 	}
 
@@ -76,20 +78,26 @@ public sealed class WorldJobBoard
 	/// </summary>
 	public bool Complete(WorldPlan plan)
 	{
-		_claimed.Remove((plan.CellX, plan.CellY));
-		if (!_manager.TryRemoveBlock(plan.PlanKind, plan.CellX, plan.CellY))
-			return false;
-		if (_manager.TryPlaceBlock(plan.DoneKind, plan.CellX, plan.CellY))
+		_claimed.Remove((plan.PlanKind, plan.CellX, plan.CellY));
+		if (_manager.TryReplaceBlock(plan.PlanKind, plan.DoneKind, plan.CellX, plan.CellY))
 			return true;
-		// Готовое не встало: вернуть чертёж. Если и это не удалось — задача потеряна;
-		// считаем такие случаи (молча терять чертежи нельзя).
-		if (!_manager.TryPlaceBlock(plan.PlanKind, plan.CellX, plan.CellY))
-			LostPlans++;
+		LostPlans++;
+		return false;
+	}
+
+	/// <summary>Есть ли активные претензии на задачи в указанном чанке.</summary>
+	public bool IsChunkClaimed(ChunkKey key)
+	{
+		foreach (var (_, x, y) in _claimed)
+		{
+			if (WorldCoordinates.ChunkForTile(x, y) == key)
+				return true;
+		}
 		return false;
 	}
 
 	/// <summary>Человек бросил задачу (чертёж снят или чанк выгрузился): снять пометку.</summary>
-	public void Release(WorldPlan plan) => _claimed.Remove((plan.CellX, plan.CellY));
+	public void Release(WorldPlan plan) => _claimed.Remove((plan.PlanKind, plan.CellX, plan.CellY));
 
 	/// <summary>Метка ещё актуальна: чанк загружен и чертёж на месте.</summary>
 	public bool IsStillPlanned(WorldPlan plan)

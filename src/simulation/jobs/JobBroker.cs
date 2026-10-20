@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Game.Core;
 
@@ -23,22 +23,80 @@ public sealed class JobBroker
 
     public static bool FindStandPosition(int tx, int ty, SimulationContext ctx, out (int X, int Y) stand)
     {
+        if (ctx == null)
+        {
+            stand = (tx, ty);
+            return false;
+        }
+
+        // 1. Кардинальные соседи (расстояние 1)
         for (int i = 0; i < 4; i++)
         {
             int nx = tx + StandDx[i];
             int ny = ty + StandDy[i];
-            if ((uint)nx < (uint)ctx.MapWidth && (uint)ny < (uint)ctx.MapHeight &&
-                ctx.Ground[nx, ny] == TileType.Grass &&
-                !ctx.SolidWalls[nx, ny] &&
-                !ctx.TreeOnGrass[nx, ny])
+            if (IsWalkable(nx, ny, ctx))
             {
                 stand = (nx, ny);
                 return true;
             }
         }
 
+        // 2. Диагональные соседи (расстояние 1)
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                if (dx == 0 && dy == 0) continue;
+                int nx = tx + dx;
+                int ny = ty + dy;
+                if (IsWalkable(nx, ny, ctx))
+                {
+                    stand = (nx, ny);
+                    return true;
+                }
+            }
+        }
+
+        // 3. Расширенный радиус до 3 клеток
+        for (int r = 2; r <= 3; r++)
+        {
+            for (int dy = -r; dy <= r; dy++)
+            {
+                for (int dx = -r; dx <= r; dx++)
+                {
+                    if (Math.Abs(dx) != r && Math.Abs(dy) != r) continue;
+                    int nx = tx + dx;
+                    int ny = ty + dy;
+                    if (IsWalkable(nx, ny, ctx))
+                    {
+                        stand = (nx, ny);
+                        return true;
+                    }
+                }
+            }
+        }
+
         stand = (tx, ty);
         return false;
+    }
+
+    private static bool IsWalkable(int x, int y, SimulationContext ctx)
+    {
+        if ((uint)x >= (uint)ctx.MapWidth || (uint)y >= (uint)ctx.MapHeight)
+            return false;
+        if (ctx.SolidWalls != null && ctx.SolidWalls[x, y])
+            return false;
+        if (ctx.TreeOnGrass != null && ctx.TreeOnGrass[x, y])
+            return false;
+        if (ctx.StoneOnGrass != null && ctx.StoneOnGrass[x, y])
+            return false;
+        if (ctx.Ground != null)
+        {
+            var g = ctx.Ground[x, y];
+            if (g == TileType.Water || g == TileType.Mountain)
+                return false;
+        }
+        return true;
     }
 
     public void RegisterTreeChop(int x, int y, SimulationContext ctx = null)
@@ -61,6 +119,10 @@ public sealed class JobBroker
             MaxWorkers = 1,
             WorkDuration = 8.0f
         });
+        // §119 P1: пуш роутеру зон (пуш = уведомление; реестр — источник истины).
+        int treeJobId = JobDispatcher.Instance.JobIndex.TryGetJobIdByPos(x, y, JobTypeId.TreeChopping, out _);
+        if (treeJobId >= 0)
+            ZoneJobRouter.Instance.Push(JobTypeId.TreeChopping, x, y, treeJobId);
     }
 
     public void RegisterTreeChopBatch(List<(int X, int Y)> trees, SimulationContext ctx = null)
@@ -91,6 +153,15 @@ public sealed class JobBroker
         }
 
         JobDispatcher.Instance.RegisterBatch(batch);
+
+        // §119 P1: батч-пуш роутеру зон (реестр — источник истины, id по позиции).
+        var treeIndex = JobDispatcher.Instance.JobIndex;
+        foreach (var (x, y) in trees)
+        {
+            int jid = treeIndex.TryGetJobIdByPos(x, y, JobTypeId.TreeChopping, out _);
+            if (jid > 0)
+                ZoneJobRouter.Instance.Push(JobTypeId.TreeChopping, x, y, jid);
+        }
     }
 
     public void UnregisterTreeChop(int x, int y) =>
@@ -123,6 +194,10 @@ public sealed class JobBroker
             MaxWorkers = 1,
             WorkDuration = 8.0f
         });
+        // §119 P1: пуш роутеру зон.
+        int mineJobId = JobDispatcher.Instance.JobIndex.TryGetJobIdByPos(x, y, JobTypeId.Mining, out _);
+        if (mineJobId >= 0)
+            ZoneJobRouter.Instance.Push(JobTypeId.Mining, x, y, mineJobId);
     }
 
     public void RegisterStoneMineBatch(List<(int X, int Y)> stones, SimulationContext ctx = null)
@@ -153,6 +228,15 @@ public sealed class JobBroker
         }
 
         JobDispatcher.Instance.RegisterBatch(batch);
+
+        // §119 P1: батч-пуш роутеру зон.
+        var stoneIndex = JobDispatcher.Instance.JobIndex;
+        foreach (var (x, y) in stones)
+        {
+            int jid = stoneIndex.TryGetJobIdByPos(x, y, JobTypeId.Mining, out _);
+            if (jid > 0)
+                ZoneJobRouter.Instance.Push(JobTypeId.Mining, x, y, jid);
+        }
     }
 
     public void UnregisterStoneMine(int x, int y) =>
@@ -176,6 +260,10 @@ public sealed class JobBroker
             StandY = y,
             MaxWorkers = 1
         });
+        // §119 P1: пуш роутеру зон.
+        int haulJobId = JobDispatcher.Instance.JobIndex.TryGetJobIdByPos(x, y, JobTypeId.StockpileHauling, out _);
+        if (haulJobId >= 0)
+            ZoneJobRouter.Instance.Push(JobTypeId.StockpileHauling, x, y, haulJobId);
     }
 
     /// <summary>
@@ -246,10 +334,20 @@ public sealed class JobBroker
             });
         }
         JobDispatcher.Instance.RegisterBatch(batch);
+        // §119 P1: батч-пуш haul-работ роутеру зон (sweep-регистрации тоже идут через роутер).
+        var haulIndex = JobDispatcher.Instance.JobIndex;
+        for (int i = 0; i < itemTiles.Count; i++)
+        {
+            var (x, y) = itemTiles[i];
+            int jid = haulIndex.TryGetJobIdByPos(x, y, JobTypeId.StockpileHauling, out _);
+            if (jid > 0)
+                ZoneJobRouter.Instance.Push(JobTypeId.StockpileHauling, x, y, jid);
+        }
     }
 
     public void RegisterBlueprint(int x, int y, BuildingType type, int targetLogs)
     {
+        DemandRegistry.Instance.RegisterDemand(DemandType.Blueprint, x, y, ItemId.Log, targetLogs);
         JobDispatcher.Instance.RegisterJob(new JobData
         {
             TypeId = JobTypeId.BlueprintDelivery,
@@ -263,6 +361,11 @@ public sealed class JobBroker
             TargetItemCount = targetLogs,
             MaxWorkers = 1
         });
+        // §119 P1: пуш роутеру зон.
+        int bpJobId = JobDispatcher.Instance.JobIndex.TryGetJobIdByPos(x, y, JobTypeId.BlueprintDelivery, out _);
+        if (bpJobId >= 0)
+            ZoneJobRouter.Instance.Push(JobTypeId.BlueprintDelivery, x, y, bpJobId);
+        JobDispatcher.Instance.TriggerImmediateDispatch();
     }
 
     public void RegisterBlueprintBatch(List<(int X, int Y)> cells, BuildingType type, int targetLogs)
@@ -271,6 +374,7 @@ public sealed class JobBroker
         var batch = new List<JobData>(cells.Count);
         foreach (var (x, y) in cells)
         {
+            DemandRegistry.Instance.RegisterDemand(DemandType.Blueprint, x, y, ItemId.Log, targetLogs);
             batch.Add(new JobData
             {
                 TypeId = JobTypeId.BlueprintDelivery,
@@ -286,16 +390,33 @@ public sealed class JobBroker
             });
         }
         JobDispatcher.Instance.RegisterBatch(batch);
+        // §119 P1: батч-пуш роутеру зон.
+        var bpIndex = JobDispatcher.Instance.JobIndex;
+        foreach (var (x, y) in cells)
+        {
+            int jid = bpIndex.TryGetJobIdByPos(x, y, JobTypeId.BlueprintDelivery, out _);
+            if (jid > 0)
+                ZoneJobRouter.Instance.Push(JobTypeId.BlueprintDelivery, x, y, jid);
+        }
+        JobDispatcher.Instance.TriggerImmediateDispatch();
     }
 
     public void UnregisterBlueprint(int x, int y)
     {
+        DemandRegistry.Instance.UnregisterDemand(x, y, ItemId.Log);
         JobDispatcher.Instance.UnregisterJobByPos(x, y, JobTypeId.BlueprintDelivery);
         JobDispatcher.Instance.UnregisterJobByPos(x, y, JobTypeId.Construction);
     }
 
     public void UnregisterBlueprintBatch(List<(int X, int Y)> cells)
     {
+        if (cells != null)
+        {
+            foreach (var (x, y) in cells)
+            {
+                DemandRegistry.Instance.UnregisterDemand(x, y, ItemId.Log);
+            }
+        }
         JobDispatcher.Instance.UnregisterBatchByPositions(cells, JobTypeId.BlueprintDelivery);
         JobDispatcher.Instance.UnregisterBatchByPositions(cells, JobTypeId.Construction);
     }
@@ -311,7 +432,10 @@ public sealed class JobBroker
         if (JobDispatcher.Instance.JobIndex.TryAddJobProgressClamped(x, y, JobTypeId.BlueprintDelivery, count, out int accepted, out bool isCompleted, out var job))
         {
             if (accepted > 0)
-                BlueprintManager.Instance.AddDeliveredLogs(x, y, accepted);
+            {
+                DemandRegistry.Instance.UpdateDelivered(x, y, ItemId.Log, accepted);
+                ConstructionManager.Instance.DeliverMaterial(x, y, ItemId.Log, accepted, out _, out _);
+            }
             int overflow = count - accepted;
             if (overflow > 0)
             {
@@ -340,10 +464,13 @@ public sealed class JobBroker
                 JobDispatcher.Instance.UnregisterJob(job.Id);
 
                 // Этап 2→3 пайплайна стройки: клетка в Building (идемпотентно
-                // по клетке — счётчиков больше нет), Construction как раньше.
-                ConstructionPipeline.Instance.NotifySupplyDone(x, y);
+                // по клетке — счётчиков больше нет).
+                ConstructionManager.Instance.NotifySupplyDone(x, y);
 
-                RegisterConstructionAt(x, y);
+                if (!BuildConfig.WaitForAllSiteResources)
+                {
+                    RegisterConstructionAt(x, y);
+                }
             }
         }
         else
@@ -372,6 +499,10 @@ public sealed class JobBroker
             MaxWorkers = 1,
             WorkDuration = WorldTime.SecondsPerHour * 4f
         });
+        // §119 P1: пуш роутеру зон (ConstructionManager — внешняя точка, спека task-15).
+        int consJobId = JobDispatcher.Instance.JobIndex.TryGetJobIdByPos(x, y, JobTypeId.Construction, out _);
+        if (consJobId >= 0)
+            ZoneJobRouter.Instance.Push(JobTypeId.Construction, x, y, consJobId);
     }
 
     public void RegisterFarmPlot(int x, int y)
@@ -388,6 +519,10 @@ public sealed class JobBroker
             MaxWorkers = 1,
             WorkDuration = Game.Simulation.Jobs.FarmingJobHandler.TillDuration
         });
+        // §119 P1: пуш роутеру зон.
+        int farmJobId = JobDispatcher.Instance.JobIndex.TryGetJobIdByPos(x, y, JobTypeId.Farming, out _);
+        if (farmJobId >= 0)
+            ZoneJobRouter.Instance.Push(JobTypeId.Farming, x, y, farmJobId);
     }
 
     public void RegisterFarmPlotBatch(List<(int X, int Y)> plots)
@@ -410,6 +545,14 @@ public sealed class JobBroker
             });
         }
         JobDispatcher.Instance.RegisterBatch(batch);
+        // §119 P1: батч-пуш роутеру зон.
+        var farmIndex = JobDispatcher.Instance.JobIndex;
+        foreach (var (x, y) in plots)
+        {
+            int jid = farmIndex.TryGetJobIdByPos(x, y, JobTypeId.Farming, out _);
+            if (jid > 0)
+                ZoneJobRouter.Instance.Push(JobTypeId.Farming, x, y, jid);
+        }
     }
 
     public void UnregisterFarmPlot(int x, int y) =>
@@ -432,6 +575,10 @@ public sealed class JobBroker
             MaxWorkers = 1,
             WorkDuration = 10.0f
         });
+        // §119 P1: пуш роутеру зон.
+        int plantJobId = JobDispatcher.Instance.JobIndex.TryGetJobIdByPos(x, y, JobTypeId.Planting, out _);
+        if (plantJobId >= 0)
+            ZoneJobRouter.Instance.Push(JobTypeId.Planting, x, y, plantJobId);
     }
 
     public void UnregisterPlanting(int x, int y) =>
@@ -451,6 +598,10 @@ public sealed class JobBroker
             MaxWorkers = 1,
             WorkDuration = 5.0f
         });
+        // §119 P1: пуш роутеру зон.
+        int harvJobId = JobDispatcher.Instance.JobIndex.TryGetJobIdByPos(x, y, JobTypeId.Harvesting, out _);
+        if (harvJobId >= 0)
+            ZoneJobRouter.Instance.Push(JobTypeId.Harvesting, x, y, harvJobId);
     }
 
     public void UnregisterHarvest(int x, int y) =>

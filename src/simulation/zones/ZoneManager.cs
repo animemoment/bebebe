@@ -7,8 +7,11 @@ using Game.Core;
 namespace Game.Simulation;
 
 /// <summary>
-/// Унифицированный менеджер зон: Farm-грядки и Work-зоны-бригадиры в одном
-/// владельце тайлов. Один тайл — максимум одна зона любого вида.
+/// Унифицированный менеджер зон: Farm-грядки (тайлы) и Work-зоны-бригадиры
+/// (§119 P0: центр + РАДИУС 64..512, клетки НЕ материализуются) в одном
+/// владельце. Farm-тайлы по-прежнему «один тайл — одна Farm-зона»; Work-зоны
+/// НЕ пишут тайлы в _tileToZoneId — попадание проверяется формулой радиуса,
+/// пересечения Work-зон разрешает партиция P1 (ScheduleRepartition).
 /// Заменяет FarmZoneManager + WorkZoneManager (те оставлены тонкими фасадами).
 /// </summary>
 public sealed class ZoneManager
@@ -28,6 +31,12 @@ public sealed class ZoneManager
 	// Границы карты для клиппа дисков Work-зон (B1: volatile — пишет sim, читает UI).
 	private static volatile int _mapW = 512;
 	private static volatile int _mapH = 512;
+
+	/// <summary>§119 P1: ширина карты для покрытий (ZoneCoverageMap).</summary>
+	public static int MapWidth => _mapW;
+
+	/// <summary>§119 P1: высота карты для покрытий (ZoneCoverageMap).</summary>
+	public static int MapHeight => _mapH;
 
 	// Round-robin кап зон-бригадиров на тик.
 	private const int MaxZonesPerPass = 4;
@@ -50,14 +59,35 @@ public sealed class ZoneManager
 		if (h > 0) _mapH = h;
 	}
 
-	private static List<int> CalcChunkIndices(HashSet<(int X, int Y)> tiles)
+	/// <summary>
+	/// §119 P0: индексы чанков (16×16, сетка ChunkDim×ChunkDim), пересекающих
+	/// ДИСК зоны, — аналитически, БЕЗ материализации клеток. Чанк пересекает
+	/// диск, если ближайшая к центру точка прямоугольника чанка в радиусе r
+	/// (clamp центра в прямоугольник чанка). Тот же индекс-пространство, что
+	/// у CalcChunkIndices, — диспатч (JobIndex.GetChunkJobCount) не меняется.
+	/// </summary>
+	private static List<int> CalcChunkIndicesForDisc(int cx, int cy, int r)
 	{
 		var set = new HashSet<int>();
-		foreach (var (x, y) in tiles)
+		int minCx = Math.Clamp((cx - r) >> 4, 0, ChunkDim - 1);
+		int maxCx = Math.Clamp((cx + r) >> 4, 0, ChunkDim - 1);
+		int minCy = Math.Clamp((cy - r) >> 4, 0, ChunkDim - 1);
+		int maxCy = Math.Clamp((cy + r) >> 4, 0, ChunkDim - 1);
+		long rr = (long)r * r;
+		for (int chy = minCy; chy <= maxCy; chy++)
 		{
-			int cx = Math.Clamp(x >> 4, 0, ChunkDim - 1);
-			int cy = Math.Clamp(y >> 4, 0, ChunkDim - 1);
-			set.Add(cy * ChunkDim + cx);
+			int y0 = chy << 4;
+			// Ближайшая к центру Y-координата прямоугольника чанка.
+			int ny = Math.Clamp(cy, y0, y0 + 15);
+			long dy = ny - cy;
+			for (int chx = minCx; chx <= maxCx; chx++)
+			{
+				int x0 = chx << 4;
+				int nx = Math.Clamp(cx, x0, x0 + 15);
+				long dx = nx - cx;
+				if (dx * dx + dy * dy <= rr)
+					set.Add(chy * ChunkDim + chx);
+			}
 		}
 		return new List<int>(set);
 	}
@@ -137,18 +167,34 @@ public sealed class ZoneManager
 		List<int> removedZoneIds = null;
 		lock (_lock)
 		{
+			var zoneTilesToRemove = new Dictionary<int, List<(int X, int Y)>>();
 			foreach (var pos in tilesToRemove)
 			{
 				if (_tileToZoneId.TryGetValue(pos, out int zoneId))
 				{
-					_tileToZoneId.Remove(pos);
 					if (_zones.TryGetValue(zoneId, out var zone))
 					{
 						// Work-зоны неделимы: удаление тайлов из них запрещено.
 						if (zone.Kind == ZoneKind.Work) continue;
-						zone.Tiles.Remove(pos);
+						if (!zoneTilesToRemove.TryGetValue(zoneId, out var list))
+						{
+							list = new List<(int X, int Y)>();
+							zoneTilesToRemove[zoneId] = list;
+						}
+						list.Add(pos);
 						affectedZones.Add(zoneId);
 					}
+					_tileToZoneId.Remove(pos);
+				}
+			}
+			foreach (var (zid, toRemoveList) in zoneTilesToRemove)
+			{
+				if (_zones.TryGetValue(zid, out var z))
+				{
+					var newTiles = new HashSet<(int X, int Y)>(z.Tiles);
+					foreach (var p in toRemoveList)
+						newTiles.Remove(p);
+					z.Tiles = newTiles;
 				}
 			}
 			foreach (int zoneId in affectedZones)
@@ -187,6 +233,7 @@ public sealed class ZoneManager
 			}
 		}
 		// Вне лока: симуляция.
+		FarmJobManager.Instance.UnmarkPlotsBatch(tilesToRemove);
 		for (int i = 0; i < tilesToRemove.Count; i++)
 		{
 			var pos = tilesToRemove[i];
@@ -219,14 +266,21 @@ public sealed class ZoneManager
 
 	// ---------------- Work API ----------------
 
-	/// <summary>Создать Work-зону-бригадир кругом вокруг центра. maxWorkers=0 — без лимита.</summary>
-	public bool CreateWorkZoneAt(int cx, int cy, ulong jobMask, int tilesTarget, int maxWorkers, out Zone zone, out string failReason)
+	/// <summary>
+	/// §119 P0: создать Work-зону-бригадир = ЦЕНТР + РАДИУС (64..512, кламп),
+	/// ровно ОДИН бит JobMask (одна зона = один тип работ), DesiredWorkers —
+	/// заявка без потолка (0..999). Клетки НЕ материализуются; пересечения
+	/// зон не режутся (партиция — P1). Параметр радиусный: UI-слайдер до P2
+	/// шлёт легаси-значение, оно клампится в 64..512.
+	/// </summary>
+	public bool CreateWorkZoneAt(int cx, int cy, ulong jobMask, int radiusTiles, int desiredWorkers, out Zone zone, out string failReason)
 	{
 		zone = null;
 		failReason = null;
-		if (jobMask == 0 || (jobMask & 1UL) != 0)
+		// §119: ровно один тип работ — ровно один бит; бит 0 (JobTypeId.None) запрещён.
+		if (jobMask == 0 || (jobMask & (jobMask - 1)) != 0 || (jobMask & 1UL) != 0)
 		{
-			failReason = "маска пуста или содержит бит 0";
+			failReason = "маска должна содержать ровно один бит типа работ (не 0)";
 			return false;
 		}
 		int w = _mapW, h = _mapH;
@@ -235,38 +289,59 @@ public sealed class ZoneManager
 			failReason = "центр вне карты";
 			return false;
 		}
-		maxWorkers = Math.Clamp(maxWorkers, 0, 64);
-		int target = Math.Clamp(tilesTarget, 128, 2048);
-		int r = Zone.CalcRadius(target);
-		var tiles = Zone.BuildDisc(cx, cy, r);
-		tiles.RemoveWhere(t => t.Item1 < 0 || t.Item2 < 0 || t.Item1 >= w || t.Item2 >= h);
-		if (tiles.Count == 0)
-		{
-			failReason = "вне карты";
-			return false;
-		}
+		int r = Math.Clamp(radiusTiles, WorkZone.MinRadiusTiles, WorkZone.MaxRadiusTiles);
+		desiredWorkers = Math.Clamp(desiredWorkers, 0, WorkZone.MaxDesiredWorkers);
 		lock (_lock)
 		{
-			foreach (var t in tiles)
-			{
-				if (_tileToZoneId.TryGetValue(t, out int otherId))
-				{
-					failReason = $"пересекает зону #{otherId}";
-					return false;
-				}
-			}
 			int id = _nextZoneId++;
-			zone = new Zone(id, $"Зона #{id}", cx, cy, r, target, maxWorkers, jobMask, tiles, CalcChunkIndices(tiles));
+			zone = new Zone(id, $"Зона #{id}", cx, cy, r, desiredWorkers, jobMask, CalcChunkIndicesForDisc(cx, cy, r));
 			_zones[id] = zone;
 			BumpZonesVersion_NoLock();
-			foreach (var t in tiles)
-				_tileToZoneId[t] = id;
 		}
+		ScheduleRepartition();
 		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
 		return true;
 	}
 
 	// ---------------- Общие операции ----------------
+
+	/// <summary>
+	/// §119 P7б (task-17): восстановить Work-зону с СОХРАНЁННЫМ id и полями
+	/// (обратная сторона снапшота GetAllZones для ZonePersistence). Вызывается
+	/// ТОЛЬКО из пути загрузки колонии (до старта сима/диспатча). Соседние id
+	/// не переиспользуются: _nextZoneId всегда растёт (max(restored)+1).
+	/// </summary>
+	public bool RestoreWorkZoneForPersistence(
+		int id, string name, int cx, int cy, int radiusTiles, int desiredWorkers,
+		ulong jobMask, int? priorityOverride, bool enabled, int anchorBlockId)
+	{
+		if (id < 1 || jobMask == 0 || (jobMask & (jobMask - 1)) != 0 || (jobMask & 1UL) != 0)
+			return false;
+		int w = _mapW, h = _mapH;
+		if (cx < 0 || cy < 0 || cx >= w || cy >= h)
+			return false;
+		int r = Math.Clamp(radiusTiles, WorkZone.MinRadiusTiles, WorkZone.MaxRadiusTiles);
+		lock (_lock)
+		{
+			if (_zones.ContainsKey(id))
+				return false; // дубликат в файле — вторую молча не ставим
+			if (id >= _nextZoneId)
+				_nextZoneId = id + 1;
+			var zone = new Zone(id, string.IsNullOrEmpty(name) ? $"Зона #{id}" : name,
+				cx, cy, r, Math.Clamp(desiredWorkers, 0, WorkZone.MaxDesiredWorkers),
+				jobMask, CalcChunkIndicesForDisc(cx, cy, r))
+			{
+				PriorityOverride = priorityOverride is >= 1 and <= 10 ? priorityOverride : null,
+				Enabled = enabled,
+				AnchorBlockId = anchorBlockId
+			};
+			_zones[id] = zone;
+			BumpZonesVersion_NoLock();
+		}
+		ScheduleRepartition();
+		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
+		return true;
+	}
 
 	public bool RemoveZone(int id)
 	{
@@ -284,18 +359,96 @@ public sealed class ZoneManager
 			if (HoveredZone?.Id == id) HoveredZone = null;
 		}
 		if (wasSelected) Callable.From(() => OnZoneDeselected?.Invoke()).CallDeferred();
+		// §119 P1: очередь удалённой зоны падает в непокрытые (спека: снос зоны —
+		// работы падают в непокрытые; репуш подберёт ≤30с).
+		ZoneJobRouter.Instance.OnZoneRemoved(id);
+		ScheduleRepartition();
 		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
 		return true;
 	}
 
+	/// <summary>
+	/// §119 P0/P5: удалить Work-зону с ЦЕНТРОМ в указанной клетке (путь для
+	/// сноса центрального блока-якоря). Farm-зоны не имеют центра — не матчатся.
+	/// Работы обрезанной зоны по контракту §119 ОСТАЮТСЯ у зоны до её смерти:
+	/// здесь зона исчезает целиком, а непокрытые работы подберёт репуш (P1).
+	/// </summary>
+	public bool RemoveZoneAtCenter(int cx, int cy)
+	{
+		int targetId = -1;
+		lock (_lock)
+		{
+			foreach (var kvp in _zones)
+			{
+				var z = kvp.Value;
+				if (z.Kind == ZoneKind.Work && z.CenterX == cx && z.CenterY == cy)
+				{
+					targetId = kvp.Key;
+					break;
+				}
+			}
+		}
+		return targetId != -1 && RemoveZone(targetId);
+	}
+
+	// ---------------- §119 P1: партиция покрытий (заглушка P0 → событие P1) ----------------
+
+	private volatile bool _repartitionDirty;
+
+	/// <summary>
+	/// §119: заявить пересчёт покрытий зон. P0 — пометка dirty; P1 — дополнительно
+	/// будит ZoneJobRouter (битмапы покрытия пересчитаются не чаще 1р/2с —
+	/// throttle внутри ZoneCoverageMap).
+	/// </summary>
+	public void ScheduleRepartition()
+	{
+		_repartitionDirty = true;
+		ZoneJobRouter.Instance.Coverage.RequestRebuild();
+	}
+
+	/// <summary>Для P1/тестов: есть ли незавершённая заявка на пересчёт.</summary>
+	public bool IsRepartitionPending => _repartitionDirty;
+
+	/// <summary>§119 P1: снять заявку после фактического пересчёта (зовёт ZoneJobRouter.Sweep).</summary>
+	public void ClearRepartitionPending() => _repartitionDirty = false;
+
+	/// <summary>§119 P1: версия состава зон (для покрытий/диагностики).</summary>
+	public int ZonesVersion => Volatile.Read(ref _zonesVersion);
+
+	/// <summary>
+	/// §119 P0: поиск зоны по клетке. Farm — точная битмапа _tileToZoneId;
+	/// Work — формула радиуса по списку зон (зон немного; битмапа покрытия
+	/// клетка→зона на каждый тип работ — P1). При перекрытии Work-зон —
+	/// ближайший центр (детерминизм; партиция P1 заменит на AssignedCount).
+	/// </summary>
 	public bool TryGetZoneAt(int x, int y, out Zone zone)
+	{
+		zone = FindZoneAt(x, y);
+		return zone != null;
+	}
+
+	private Zone FindZoneAt(int x, int y)
 	{
 		lock (_lock)
 		{
-			if (_tileToZoneId.TryGetValue((x, y), out int zoneId))
-				return _zones.TryGetValue(zoneId, out zone);
-			zone = null;
-			return false;
+			if (_tileToZoneId.TryGetValue((x, y), out int zoneId) && _zones.TryGetValue(zoneId, out var farm))
+				return farm;
+			Zone best = null;
+			long bestDist = long.MaxValue;
+			foreach (var z in _zones.Values)
+			{
+				if (z.Kind != ZoneKind.Work || !z.ContainsTile(x, y))
+					continue;
+				long dx = x - z.CenterX;
+				long dy = y - z.CenterY;
+				long d = dx * dx + dy * dy;
+				if (d < bestDist || (d == bestDist && best != null && z.Id > best.Id))
+				{
+					best = z;
+					bestDist = d;
+				}
+			}
+			return best;
 		}
 	}
 
@@ -356,76 +509,77 @@ public sealed class ZoneManager
 		_zonesVersion++;
 	}
 
-	public bool SetWorkTiles(int id, int target)
+	/// <summary>
+	/// §119 P0: задать РАДИУС зоны (64..512, кламп). Тайлы не перестраиваются —
+	/// пересчитываются только аналитические ChunkIndices. Пересечения не режем
+	/// (партиция спорных клеток — P1, ScheduleRepartition).
+	/// </summary>
+	public bool SetWorkRadius(int id, int radius)
 	{
-		int clamped = Math.Clamp(target, 128, 2048);
-		Zone zone;
-		lock (_lock)
-		{
-			if (!_zones.TryGetValue(id, out zone) || zone.Kind != ZoneKind.Work)
-				return false;
-		}
-		int r = Zone.CalcRadius(clamped);
-		var fresh = Zone.BuildDisc(zone.CenterX, zone.CenterY, r);
-		int w = _mapW, h = _mapH;
-		fresh.RemoveWhere(t => t.Item1 < 0 || t.Item2 < 0 || t.Item1 >= w || t.Item2 >= h);
-		if (fresh.Count == 0)
-			return false;
-		lock (_lock)
-		{
-			if (!_zones.TryGetValue(id, out zone) || zone.Kind != ZoneKind.Work)
-				return false;
-			var old = zone.Tiles;
-			foreach (var t in fresh)
-			{
-				if (old.Contains(t)) continue;
-				if (_tileToZoneId.TryGetValue(t, out int otherId) && otherId != id)
-					return false;
-			}
-			foreach (var t in old)
-				_tileToZoneId.Remove(t);
-			foreach (var t in fresh)
-				_tileToZoneId[t] = id;
-			zone.Tiles = fresh;
-			zone.ChunkIndices = CalcChunkIndices(fresh);
-			zone.TilesTarget = clamped;
-			zone.RadiusTiles = r;
-			zone.ResetAssigned();
-		}
-		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
-		return true;
-	}
-
-	public bool SetWorkWorkers(int id, int v)
-	{
+		int clamped = Math.Clamp(radius, WorkZone.MinRadiusTiles, WorkZone.MaxRadiusTiles);
 		lock (_lock)
 		{
 			if (!_zones.TryGetValue(id, out var zone) || zone.Kind != ZoneKind.Work)
 				return false;
-			zone.MaxWorkers = Math.Clamp(v, 0, 64);
-			return true;
+			zone.RadiusTiles = clamped;
+			zone.TilesTarget = clamped; // легаси-поле: до P2 хранит радиус
+			zone.ChunkIndices = CalcChunkIndicesForDisc(zone.CenterX, zone.CenterY, clamped);
+			zone.ResetAssigned();
+			BumpZonesVersion_NoLock();
 		}
+		ScheduleRepartition();
+		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
+		return true;
+	}
+
+	/// <summary>§119: задать ЗАЯВКУ на число рабочих (0..999, без потолка).</summary>
+	public bool SetWorkDesiredWorkers(int id, int v)
+	{
+		bool ok;
+		lock (_lock)
+		{
+			ok = _zones.TryGetValue(id, out var zone) && zone.Kind == ZoneKind.Work;
+			if (ok)
+			{
+				zone.DesiredWorkers = Math.Clamp(v, 0, WorkZone.MaxDesiredWorkers);
+				BumpZonesVersion_NoLock();
+			}
+		}
+		// §119 P1: DesiredWorkers == 0 снимает владение клетками — покрытию нужен пересчёт.
+		if (ok)
+			ScheduleRepartition();
+		return ok;
+	}
+
+	/// <summary>§119: вкл/выкл зоны (выключенная не владеет клетками — покрытию нужен пересчёт).</summary>
+	public bool SetWorkEnabled(int id, bool enabled)
+	{
+		bool ok;
+		lock (_lock)
+		{
+			ok = _zones.TryGetValue(id, out var zone) && zone.Kind == ZoneKind.Work;
+			if (ok)
+			{
+				zone.Enabled = enabled;
+				BumpZonesVersion_NoLock();
+			}
+		}
+		if (ok)
+		{
+			ScheduleRepartition();
+			Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
+		}
+		return ok;
 	}
 
 	public bool SetWorkPriorityOverride(int id, int v)
 	{
 		int clamped = Math.Clamp(v, 1, 10);
-		ulong snap;
 		lock (_lock)
 		{
 			if (!_zones.TryGetValue(id, out var zone) || zone.Kind != ZoneKind.Work)
 				return false;
-			snap = zone.JobMask;
 			zone.PriorityOverride = clamped;
-		}
-		var seen = new HashSet<JobCategory>();
-		for (int t = 1; t <= 10; t++)
-		{
-			if ((snap & (1UL << t)) == 0) continue;
-			var typeId = (JobTypeId)t;
-			var cat = JobPriorityManager.Instance.GetCategory(typeId);
-			if (seen.Add(cat))
-				JobPriorityManager.Instance.SetPriority(cat, clamped);
 		}
 		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
 		return true;
@@ -433,12 +587,7 @@ public sealed class ZoneManager
 
 	public void SetHoveredTile(int x, int y)
 	{
-		Zone newHovered = null;
-		lock (_lock)
-		{
-			if (_tileToZoneId.TryGetValue((x, y), out int zoneId))
-				_zones.TryGetValue(zoneId, out newHovered);
-		}
+		Zone newHovered = FindZoneAt(x, y);
 		if (HoveredZone != newHovered)
 		{
 			HoveredZone = newHovered;
@@ -453,12 +602,7 @@ public sealed class ZoneManager
 	/// </summary>
 	public Zone SelectZoneAt(int x, int y)
 	{
-		Zone targetZone = null;
-		lock (_lock)
-		{
-			if (_tileToZoneId.TryGetValue((x, y), out int zoneId))
-				_zones.TryGetValue(zoneId, out targetZone);
-		}
+		Zone targetZone = FindZoneAt(x, y);
 		if (targetZone != null)
 		{
 			SelectedZone = targetZone;
@@ -516,7 +660,7 @@ public sealed class ZoneManager
 			if (chunks == null || tiles == null) continue;
 			foreach (int chunkIdx in chunks)
 			{
-				if (zone.MaxWorkers > 0 && zoneAssigned >= zone.MaxWorkers)
+				if (zone.DesiredWorkers > 0 && zoneAssigned >= zone.DesiredWorkers)
 					break;
 				if (JobDispatcher.Instance.JobIndex.GetChunkJobCount(chunkIdx) == 0)
 					continue;
@@ -528,7 +672,7 @@ public sealed class ZoneManager
 				{
 					if (assigned >= MaxAssignPerChunk)
 						break;
-					if (zone.MaxWorkers > 0 && zoneAssigned >= zone.MaxWorkers)
+					if (zone.DesiredWorkers > 0 && zoneAssigned >= zone.DesiredWorkers)
 						break;
 					int agentIndex = buf[wi];
 					if (agentIndex < 0 || agentIndex >= pool.Capacity)
@@ -568,7 +712,7 @@ public sealed class ZoneManager
 									}
 									else
 									{
-										if (!zone.Matches(activeJob.TypeId) || !tiles.Contains((activeJob.TargetX, activeJob.TargetY)))
+										if (!zone.Matches(activeJob.TypeId) || !zone.ContainsTile(activeJob.TargetX, activeJob.TargetY))
 										{
 											try { handler.OnCancel(agentIndex, pool, ctx); }
 											catch (Exception ex)
@@ -651,5 +795,22 @@ public sealed class ZoneManager
 			result.Add(comp);
 		}
 		return result;
+	}
+
+	public void ClearAll()
+	{
+		lock (_lock)
+		{
+			_zones.Clear();
+			_tileToZoneId.Clear();
+			_nextZoneId = 1;
+			SelectedZone = null;
+			HoveredZone = null;
+			_repartitionDirty = false;
+			BumpZonesVersion_NoLock();
+		}
+		// §119 P1: смена мира — роутер тоже под ноль (очереди/покрытие старого мира невалидны).
+		ZoneJobRouter.Instance.Reset();
+		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
 	}
 }

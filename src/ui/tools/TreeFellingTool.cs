@@ -52,24 +52,18 @@ public class TreeFellingTool : ITool
         if (!_isDragging) return;
         _isDragging = false;
 
+        GD.Print($"[TREE-TOOL] release start=({startTile.X},{startTile.Y}) end=({endTile.X},{endTile.Y}) left={isLeftClick} worldPlacement={WorldPlacement != null} mapData={_mapData?.Width ?? -1}x{_mapData?.Height ?? -1}");
+
         _selectionBox?.EndSelection();
         _selectionBox?.ResetDefaultStyle();
 
-        // §28: вырубка за кромкой острова — метка мира.
-        if (WorldPlacement != null)
-        {
-            WorldPlacementPass.Run(startTile.X, startTile.Y, endTile.X, endTile.Y, WorldPlacement,
-                isLeftClick ? WorldPlacement.TryCutTree : WorldPlacement.TryCancelCutTree);
-        }
+        int minX = Mathf.Min(startTile.X, endTile.X);
+        int maxX = Mathf.Max(startTile.X, endTile.X);
+        int minY = Mathf.Min(startTile.Y, endTile.Y);
+        int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        // ПЕРЕСЕЧЕНИЕ с островом, а не кламп: драг целиком за кромкой раньше писал/сносил
-        // клетки по краю острова, которых игрок не выбирал.
-        int minX = Mathf.Max(Mathf.Min(startTile.X, endTile.X), 0);
-        int maxX = Mathf.Min(Mathf.Max(startTile.X, endTile.X), MapRenderer.MapWidth - 1);
-        int minY = Mathf.Max(Mathf.Min(startTile.Y, endTile.Y), 0);
-        int maxY = Mathf.Min(Mathf.Max(startTile.Y, endTile.Y), MapRenderer.MapHeight - 1);
-        if (minX > maxX || minY > maxY)
-            return;
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 250_000) return;
 
         _cellBuffer.Clear();
 
@@ -79,9 +73,13 @@ public class TreeFellingTool : ITool
             {
                 for (int y = minY; y <= maxY; y++)
                 {
-                    if (_mapData != null && _mapData.TreeOnGrass[x, y])
+                    if (_mapData != null && (uint)x < (uint)_mapData.Width && (uint)y < (uint)_mapData.Height && _mapData.TreeOnGrass[x, y])
                     {
                         _cellBuffer.Add((x, y));
+                    }
+                    else if (WorldPlacement != null && !WorldPlacementPass.IsIslandCell(x, y))
+                    {
+                        WorldPlacement.TryCutTree(x, y);
                     }
                 }
             }
@@ -98,6 +96,10 @@ public class TreeFellingTool : ITool
                 for (int y = minY; y <= maxY; y++)
                 {
                     _cellBuffer.Add((x, y));
+                    if (WorldPlacement != null && !WorldPlacementPass.IsIslandCell(x, y))
+                    {
+                        WorldPlacement.TryCancelCutTree(x, y);
+                    }
                 }
             }
 

@@ -4,11 +4,29 @@ using System.Numerics;
 namespace Game.Core;
 
 /// <summary>
+/// §119 P2: два класса колонии. Laborer = прежнее поведение (универсальный
+/// разнорабочий, диспетчер пирамиды). Worker = привязан к ЗОНЕ работ: берёт
+/// ТОЛЬКО из очереди своей зоны (ZoneJobRouter.DequeueNearest), ближайшую
+/// к себе работу. По умолчанию все агенты — Laborer (легаси не ломается).
+/// </summary>
+public enum AgentClass
+{
+    Laborer = 0,
+    Worker = 1
+}
+
+/// <summary>
 /// SoA (Structure of Arrays) пул данных всех агентов с поддержкой универсальной системы задач.
 /// </summary>
 public sealed class AgentDataPool
 {
     public readonly int Capacity;
+
+    // §119 P2: класс агента + зона привязки (Worker).
+    /// <summary>Класс агента: Laborer (по умолчанию) или Worker (привязан к зоне).</summary>
+    public readonly AgentClass[] Classes;
+    /// <summary>Зона работ Worker'а (id зоны ZoneManager; -1 = не привязан / Laborer).</summary>
+    public readonly int[] AssignedZoneId;
 
     // Позиции и перемещение
     public readonly float[] PositionX;
@@ -109,6 +127,11 @@ public sealed class AgentDataPool
     public AgentDataPool(int capacity)
     {
         Capacity = capacity;
+
+        // §119 P2: все агенты стартуют Laborer'ами без привязки к зоне.
+        Classes = new AgentClass[capacity];
+        AssignedZoneId = new int[capacity];
+        Array.Fill(AssignedZoneId, -1);
 
         PositionX = new float[capacity];
         PositionY = new float[capacity];

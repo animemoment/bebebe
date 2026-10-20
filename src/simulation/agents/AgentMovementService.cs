@@ -112,13 +112,14 @@ public sealed class AgentMovementService
         // ---- Фаза 2: прямое движение (прежнее поведение) ----
         bool reached = MoveToPoint(agentIndex, target, reachDistance, deltaTime, pool, ctx);
 
-        // ---- Фаза 3: запрос иерархического пути для дальних маршрутов ----
+        // ---- Фаза 3: запрос иерархического пути для дальних маршрутов или при застревании ----
         if (!reached && pool.WaypointCount[agentIndex] == 0)
         {
             float dx = target.X - pool.PositionX[agentIndex];
             float dy = target.Y - pool.PositionY[agentIndex];
             float minDist = 4.0f * ctx.TileSize;
-            if (dx * dx + dy * dy >= minDist * minDist)
+            bool isStuck = pool.StuckTimer[agentIndex] >= 0.5f;
+            if (dx * dx + dy * dy >= minDist * minDist || isStuck)
             {
                 // P1 (Phase2-пик): stagger запросов — не все агенты в один тик.
                 // Кулдаун и так 1.5с, но тысячи агентов выходят из него синхронно
@@ -127,7 +128,7 @@ public sealed class AgentMovementService
                 // Джиттер кулдауна при спавне (0..1.5с) не даёт вечной фазовой
                 // синхронизации одних и тех же агентов.
                 uint gate = Game.Simulation.AgentSimTickGate.Current;
-                if ((((uint)agentIndex ^ ((uint)agentIndex >> 4)) & 3u) != (gate & 3u))
+                if (!isStuck && (((uint)agentIndex ^ ((uint)agentIndex >> 4)) & 3u) != (gate & 3u))
                     return reached;
                 RequestHierarchicalPath(agentIndex, target, pool, ctx);
             }
@@ -183,8 +184,9 @@ public sealed class AgentMovementService
         }
         else
         {
-            // Не удалось построить (изолированный регион и т.п.) — retry чаще.
-            pool.PathRequestCooldown[agentIndex] = 0.8f;
+            // Не удалось построить (изолированный регион/препятствие) — увеличиваем кулдаун с джиттером,
+            // чтобы не спамить A* на каждом тике при недостижимой цели
+            pool.PathRequestCooldown[agentIndex] = 3.0f + (float)ParallelRng.NextDouble() * 2.0f;
         }
     }
 
@@ -341,7 +343,27 @@ public sealed class AgentMovementService
 
         if (anyMoved)
         {
-            pool.StuckTimer[agentIndex] = 0f;
+            // Скольжение вдоль препятствия (ветки canX/canY выше) ДВИГАЕТ агента,
+            // но не обязательно ПРИБЛИЖАЕТ к цели: у берега крупной реки или
+            // стены агент едет вдоль препятствия и дистанцию не сокращает.
+            // Безусловный сброс StuckTimer здесь означал, что таймер
+            // застревания не набирается НИКОГДА, и штатный вотчдог хендлеров
+            // (StuckTimer >= 3.0f: TreeChoppingJobHandler.cs:72,
+            // ConstructionJobHandler.cs:97, MiningJobHandler.cs:79, ...) не
+            // срабатывал — агент бесконечно шёл «прямо» к недостижимой цели
+            // за рекой (баг #3). Теперь сбрасываем таймер только при РЕАЛЬНОМ
+            // прогрессе — сокращении дистанции до цели относительно значения
+            // на входе в метод (distSq, строка 204); иначе копим время, и
+            // хендлер снимает задачу с кулдауном недостижимости.
+            // Ветка «3. Локальный обход углов» ниже (StuckTimer += deltaTime) в
+            // этом вызове НЕ выполняется — здесь return, двойного инкремента нет.
+            float ndx = target.X - pool.PositionX[agentIndex];
+            float ndy = target.Y - pool.PositionY[agentIndex];
+            float afterSq = ndx * ndx + ndy * ndy;
+            if (afterSq < distSq)
+                pool.StuckTimer[agentIndex] = 0f;
+            else
+                pool.StuckTimer[agentIndex] += deltaTime;
             return false;
         }
 
@@ -382,9 +404,23 @@ public sealed class AgentMovementService
         int tx = (int)worldX >> TileShift;
         int ty = (int)worldY >> TileShift;
 
-        // Быстрая проверка границ карты через беззнаковый int (отсекает < 0 и >= MapSize в одну инструкцию)
+        // Проверка границ: внутри карты колонии проверяем сетку cost/arrays,
+        // за пределами — проверяем террейн стримингового мира
         if ((uint)tx >= (uint)ctx.MapWidth || (uint)ty >= (uint)ctx.MapHeight)
+        {
+            ulong seed = Game.Core.WorldStreaming.UnifiedWorldGenerator.ActiveWorldSeed;
+            if (seed != 0)
+            {
+                long wx = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX + tx;
+                long wy = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY + ty;
+                var terrain = Game.Core.WorldStreaming.Integration.WorldCellQuery.TerrainAt(seed, Game.Core.WorldStreaming.UnifiedWorldGenerator.DefaultGeneratorVersion, wx, wy);
+                if (terrain == Game.Core.WorldStreaming.BaseTerrainKind.Water ||
+                    terrain == Game.Core.WorldStreaming.BaseTerrainKind.Mountain)
+                    return true;
+                return false;
+            }
             return true;
+        }
 
         byte[] cost = HierarchicalPathfinder.Instance.Cost;
         if (cost != null && HierarchicalPathfinder.Instance.MapWidth == ctx.MapWidth)
@@ -434,6 +470,11 @@ public sealed class AgentMovementService
             pool.PositionY[agentIndex] = py;
             pool.TargetPositionX[agentIndex] = px;
             pool.TargetPositionY[agentIndex] = py;
+            pool.CurrentCellX[agentIndex] = freeTile.X;
+            pool.CurrentCellY[agentIndex] = freeTile.Y;
+            pool.WaypointCount[agentIndex] = 0;
+            pool.WaypointIndex[agentIndex] = 0;
+            pool.StuckTimer[agentIndex] = 0f;
         }
     }
 
@@ -447,8 +488,9 @@ public sealed class AgentMovementService
             if ((uint)nx < (uint)ctx.MapWidth && (uint)ny < (uint)ctx.MapHeight)
             {
                 if (!ctx.SolidWalls[nx, ny] &&
-                    !BlueprintManager.Instance.IsBlueprintAt(nx, ny) &&
-                    !FarmJobManager.Instance.IsPlotMarked(nx, ny) &&
+                    (ctx.TreeOnGrass == null || !ctx.TreeOnGrass[nx, ny]) &&
+                    (ctx.StoneOnGrass == null || !ctx.StoneOnGrass[nx, ny]) &&
+                    ctx.Ground[nx, ny] == TileType.Grass &&
                     !ctx.SpatialGrid.IsCellOvercrowded(nx, ny, 5, pool))
                 {
                     pool.States[agentIndex] = AgentState.Evacuating;

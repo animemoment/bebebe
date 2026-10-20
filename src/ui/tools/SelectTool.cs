@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using Game.Simulation;
 using Game.UI;
 
@@ -15,6 +15,14 @@ public class SelectTool : ITool
         _selectionBox = selectionBox;
     }
 
+    private ICellProbeOverlay _probe;
+
+    /// <summary>
+    /// Источник подсказок клетки (влажность/плодородие). Узкий интерфейс вместо
+    /// HUDController.Instance — иначе цикл SelectTool → HUDController → PIM → SelectTool.
+    /// </summary>
+    public void BindCellProbe(ICellProbeOverlay probe) => _probe = probe;
+
     private int _lastHumidityX = int.MinValue;
     private int _lastHumidityY = int.MinValue;
 
@@ -28,19 +36,22 @@ public class SelectTool : ITool
             return;
         _lastHumidityX = tilePos.X;
         _lastHumidityY = tilePos.Y;
-        var hud = HUDController.Instance;
-        hud?.ShowHumidityAt(tilePos.X, tilePos.Y);
-        hud?.ShowFertilityAt(tilePos.X, tilePos.Y);
+        _probe?.ShowHumidityAt(tilePos.X, tilePos.Y);
+        _probe?.ShowFertilityAt(tilePos.X, tilePos.Y);
     }
+
+    // §113.5/B2: ПКМ в дефолтном инструменте ничего не делает — удаление
+    // чертежей живёт только в окнах стройки (BuildTool/ZoneDraftTool и т.п.).
 
     public void OnClick(Vector2I tilePos, Vector2 worldPos, bool isLeftClick)
     {
-        if (isLeftClick)
-        {
-            _startMousePos = worldPos;
-            _hasDragged = false;
-            _selectionBox?.StartSelection(worldPos);
-        }
+        if (!isLeftClick)
+            return;
+
+        _startMousePos = worldPos;
+        _hasDragged = false;
+        _selectionBox?.ResetDefaultStyle();
+        _selectionBox?.StartSelection(worldPos);
     }
 
     public void OnDrag(Vector2I startTile, Vector2I currentTile, Vector2 currentWorldPos)
@@ -57,26 +68,30 @@ public class SelectTool : ITool
 
     public void OnRelease(Vector2I startTile, Vector2I endTile, Vector2 worldPos, bool isLeftClick)
     {
-        if (isLeftClick)
-        {
-            if (_selectionBox != null && _selectionBox.IsSelecting)
-            {
-                _selectionBox.EndSelection();
-            }
+        // §113.5/B2: ПКМ-рамка дефолтного инструмента больше ничего не сносит
+        // (раньше удаляла чертежи И построенное через WorldPlacement.TryRemove*).
+        if (!isLeftClick)
+            return;
 
-            if (!_hasDragged)
-            {
-                // Единый ZoneManager: один выбор на все виды зон.
-                // SelectZoneAt сам снимает выбор при промахе; контроллеры
-                // открывают окно по OnZoneSelected (Garden — Farm, WorkZone — Work).
-                ZoneManager.Instance.SelectZoneAt(endTile.X, endTile.Y);
-            }
+        if (_selectionBox != null && _selectionBox.IsSelecting)
+        {
+            _selectionBox.EndSelection();
+            _selectionBox.ResetDefaultStyle();
+        }
+
+        if (!_hasDragged)
+        {
+            // Единый ZoneManager: один выбор на все виды зон.
+            // SelectZoneAt сам снимает выбор при промахе; контроллеры
+            // открывают окно по OnZoneSelected (Garden — Farm, WorkZone — Work).
+            ZoneManager.Instance.SelectZoneAt(endTile.X, endTile.Y);
         }
     }
 
     public void Cancel()
     {
         _selectionBox?.CancelSelection();
+        _selectionBox?.ResetDefaultStyle();
         ZoneManager.Instance.SetHoveredTile(-1, -1);
         ZoneManager.Instance.DeselectZone();
     }

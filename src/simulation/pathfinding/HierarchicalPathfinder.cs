@@ -50,6 +50,12 @@ public sealed class HierarchicalPathfinder
 
 	// Детальное окно: до 3x3 регионов = (3*16)^2 = 2304 клетки.
 	private const int LocalCapacity = (3 * RegionSize) * (3 * RegionSize);
+	// §118 фаза 5: предел роста окна локального A*. Якоря порталов лежат на границе
+	// ДВУХ регионов, поэтому сегмент «якорь→якорь» требует окна 4x4 региона
+	// (4096 клеток). Раньше окно жёстко ограничивалось 2304 и всё, что больше,
+	// отбраковывалось — ИЕРАРХИЧЕСКАЯ СБОРКА ПУТИ ЛОМАЛАСЬ НА КАЖДОМ СЕГМЕНТЕ
+	// МЕЖДУ РЕГИОНАМИ (обход воды, стен, гор). Буферы теперь растут по требованию.
+	private const int LocalCapacityMax = (5 * RegionSize) * (5 * RegionSize);
 
 	private int _mapWidth;
 	private int _mapHeight;
@@ -57,17 +63,137 @@ public sealed class HierarchicalPathfinder
 	private int _regionDimY;
 
 	private byte[] _cost;              // [mapWidth*mapHeight]
-	public byte[] Cost => _cost;
-	public int MapWidth => _mapWidth;
-	public int MapHeight => _mapHeight;
+	// §118 фаза 5 (восстановлено после потери рабочей копии): публикуемый СНИМОК
+	// графа. Оверлей перестраивается в локальных массивах и публикуется одной
+	// записью Volatile — читатели (16 потоков симуляции + FlowField) никогда не видят
+	// полуобновлённый граф (порталы, обрезанные на середине построения).
+	private NavGridState _state;
+	public NavGridState State => Volatile.Read(ref _state);
+	public byte[] Cost => State?.Cost ?? _cost;
+	public int MapWidth => State?.MapWidth ?? _mapWidth;
+	public int MapHeight => State?.MapHeight ?? _mapHeight;
 
 	private int[] _edgeStart;          // [regions*4] стартовый индекс в _portals
 	private int[] _edgeCount;          // [regions*4] число порталов у (регион, направление)
 	private int[] _portals;            // плоский массив якорей порталов (packed cell)
 	private int _portalCount;
 	private int _buildVersion;
+	private volatile bool _dirty = true;
 
 	private SimulationContext _ctx;
+
+	// §118 фаза 5: оверлей можно строить не только из SimulationContext, но и из
+	// ВНЕШНЕЙ сетки стоимостей (остров 1024² из ActiveArea, бенчмарки, будущий
+	// единый мир §118.1 «одинаковые функции везде»). null → строим из _ctx.
+	private byte[] _externalCost;
+	private int _externalWidth;
+	private int _externalHeight;
+
+	/// <summary>
+	/// §118.5: допустимое отношение «длина найденного пути / чебышёвское расстояние».
+	/// Чебышёв — математическая нижняя граница числа шагов (диагональ = 1 шаг),
+	/// поэтому путь длиннее k·L означает «цель фактически недостижима» (обход реки
+	/// вокруг света), а НЕ «далеко идти». Дальность не режем — решаем по математике
+	/// и отдаём задачу кулдауну вызывающего (JobValidator/AgentMovementService).
+	/// </summary>
+	public const int MaxDetourRatio = 6;
+
+	/// <summary>Короче этого чебышёва пути не судим: у малых L отношение шумное (обход стены 3x3).</summary>
+	private const int MinDetourJudgeCells = 48;
+
+	private long _detourRejects;
+	/// <summary>Сколько путей отвергнуто как абсурдный обход (наблюдаемость, §118.5).</summary>
+	public long DetourRejects => Interlocked.Read(ref _detourRejects);
+
+	// §118 фаза 5: счётчики причин отказа — чтобы «путь не найден» не был чёрным ящиком.
+	private long _failNoRegionPath;
+	private long _failNoSegment;
+	private long _failDetour;
+	private long _failPortal;
+	private long _failOverflow;
+
+	/// <summary>Диагностика отказов: regionPath=N segment=N detour=N portal=N overflow=N.</summary>
+	public string FailureStats =>
+		$"regionPath={Interlocked.Read(ref _failNoRegionPath)} segment={Interlocked.Read(ref _failNoSegment)} detour={Interlocked.Read(ref _failDetour)} portal={Interlocked.Read(ref _failPortal)} overflow={Interlocked.Read(ref _failOverflow)}";
+
+	// §118.5: профилировка «куда уходит время» — тики Stopwatch по фазам.
+	private long _profileRegionPathTicks;
+	private long _profileSegmentTicks;
+	private long _profileLocalSearches;
+	private long _profileSegmentCacheHits;
+
+	/// <summary>Профиль: время в регион-A* и в локальных сегментах (мс) + число поисков.</summary>
+	public string Profile
+	{
+		get
+		{
+			double f = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+			return $"regionPath={Interlocked.Read(ref _profileRegionPathTicks) * f:F0}мс " +
+				$"segments={Interlocked.Read(ref _profileSegmentTicks) * f:F0}мс " +
+				$"localSearches={Interlocked.Read(ref _profileLocalSearches)} " +
+				$"segCacheHits={Interlocked.Read(ref _profileSegmentCacheHits)}";
+		}
+	}
+
+	public void ResetProfile()
+	{
+		Interlocked.Exchange(ref _profileRegionPathTicks, 0);
+		Interlocked.Exchange(ref _profileSegmentTicks, 0);
+		Interlocked.Exchange(ref _profileLocalSearches, 0);
+		Interlocked.Exchange(ref _profileSegmentCacheHits, 0);
+	}
+
+	// ------------------------------------------------------------------
+	// Бюджетный гейт (§118.5): амортизация вместо обрезания функциональности
+	// ------------------------------------------------------------------
+
+	/// <summary>
+	/// Сколько поисков пути разрешено запускать за окно кадра. Юзер: минимум 50
+	/// на кадр, затем «в 3 раза меньше» → 17 за кадр при 60 FPS ≈ 1000 поисков/с.
+	/// </summary>
+	public int SearchesPerFrame { get; set; } = 17;
+
+	/// <summary>Длина окна бюджета в тиках Stopwatch (по умолчанию 1 кадр при 60 FPS).</summary>
+	private long _budgetWindowTicks = System.Diagnostics.Stopwatch.Frequency / 60;
+
+	private long _budgetWindowStart;
+	private int _budgetUsed;
+	private long _budgetDeferred;
+
+	/// <summary>Сколько запросов отложено бюджетом (наблюдаемость).</summary>
+	public long BudgetDeferred => Interlocked.Read(ref _budgetDeferred);
+
+	public void ConfigureBudget(int searchesPerFrame, double frameSeconds = 1.0 / 60.0)
+	{
+		SearchesPerFrame = Math.Max(1, searchesPerFrame);
+		_budgetWindowTicks = Math.Max(1, (long)(System.Diagnostics.Stopwatch.Frequency * frameSeconds));
+		Interlocked.Exchange(ref _budgetWindowStart, System.Diagnostics.Stopwatch.GetTimestamp());
+		Interlocked.Exchange(ref _budgetUsed, 0);
+	}
+
+	/// <summary>
+	/// Пытается зарезервировать слот поиска в текущем кадровом окне.
+	/// false = бюджет исчерпан: вызывающий ОБЯЗАН перенести запрос на следующий
+	/// кадр (сохранив прогресс), а не считать цель недостижимой.
+	/// </summary>
+	public bool TryReserveSearch()
+	{
+		long now = System.Diagnostics.Stopwatch.GetTimestamp();
+		long start = Volatile.Read(ref _budgetWindowStart);
+		if (now - start >= _budgetWindowTicks)
+		{
+			// Новое окно: CAS, чтобы сбрасывал ровно один поток.
+			if (Interlocked.CompareExchange(ref _budgetWindowStart, now, start) == start)
+				Interlocked.Exchange(ref _budgetUsed, 0);
+		}
+
+		int used = Interlocked.Increment(ref _budgetUsed);
+		if (used <= SearchesPerFrame)
+			return true;
+
+		Interlocked.Increment(ref _budgetDeferred);
+		return false;
+	}
 
 	private readonly object _buildLock = new();
 	// P-баланс: кэши — ConcurrentDictionary вместо Dictionary+_cacheLock.
@@ -79,12 +205,27 @@ public sealed class HierarchicalPathfinder
 
 	private sealed class SearchBuffers
 	{
-		// Детальный A* (локальное окно).
-		public readonly int[] G = new int[LocalCapacity + 1];
-		public readonly int[] Parent = new int[LocalCapacity + 1];
-		public readonly int[] Open = new int[LocalCapacity + 1];
-		public readonly bool[] Closed = new bool[LocalCapacity + 1];
-		public readonly int[] Value = new int[LocalCapacity + 1];
+		// Детальный A* (локальное окно). §118 фаза 5: массивы НЕ readonly — окно
+		// растёт по требованию (LocalCapacityMax), иначе сегмент между якорями
+		// соседних регионов (окно 4x4 = 4096 клеток) не помещался и путь рвался.
+		public int[] G = new int[LocalCapacity + 1];
+		public int[] Parent = new int[LocalCapacity + 1];
+		public int[] Open = new int[LocalCapacity + 1];
+		public bool[] Closed = new bool[LocalCapacity + 1];
+		public int[] Value = new int[LocalCapacity + 1];
+
+		/// <summary>Гарантирует место под окно из cap клеток (растёт, не сжимается).</summary>
+		public void EnsureLocalCapacity(int cap)
+		{
+			int need = cap + 1;
+			if (need <= G.Length)
+				return;
+			G = new int[need];
+			Parent = new int[need];
+			Open = new int[need];
+			Closed = new bool[need];
+			Value = new int[need];
+		}
 
 		// Грубый A* (граф регионов).
 		public readonly int[] RG = new int[4096];
@@ -118,16 +259,64 @@ public sealed class HierarchicalPathfinder
 	// ------------------------------------------------------------------
 
 	/// <summary>
+	/// Безусловно сбрасывает все кэши, граф навигации и отметки грязных данных
+	/// (при смене сида мира или карты).
+	/// </summary>
+	public void Reset()
+	{
+		lock (_buildLock)
+		{
+			_state = null;
+			_cost = null;
+			_externalCost = null;
+			_edgeStart = null;
+			_edgeCount = null;
+			_portals = null;
+			_portalCount = 0;
+			_dirty = true;
+			_lastInvalidateMs = 0;
+			_regionPathCache.Clear();
+			_segmentCache.Clear();
+			_buildVersion++;
+		}
+	}
+
+	/// <summary>
 	/// Устанавливает контекст симуляции (источник данных карты). Вызывается
-	/// один раз при старте симуляции. Сброс оверлея — через Invalidate().
+	/// один раз при старте симуляции. Сброс оверлея — через Invalidate() или Reset().
 	/// </summary>
 	public void Initialize(SimulationContext ctx)
 	{
 		lock (_buildLock)
 		{
+			Reset();
 			_ctx = ctx;
-			_cost = null;
-			_buildVersion++;
+		}
+	}
+
+	/// <summary>
+	/// §118 фаза 5: инициализация оверлея из ГОТОВОЙ сетки стоимостей
+	/// (0 = блок, 1 = проходимо; вода помечается CostWater). Не требует
+	/// SimulationContext — это путь для острова (ActiveArea) и бенчмарков.
+	/// Массив НЕ копируется: владение переходит пасфайндеру до следующего вызова.
+	/// </summary>
+	public void InitializeCost(byte[] cost, int width, int height)
+	{
+		if (cost == null)
+			throw new ArgumentNullException(nameof(cost));
+		if (width <= 0 || height <= 0)
+			throw new ArgumentOutOfRangeException(nameof(width), "Размер сетки должен быть положительным.");
+		if ((long)width * height > cost.Length)
+			throw new ArgumentException(
+				$"Сетка {width}x{height} больше массива стоимостей ({cost.Length}).", nameof(cost));
+
+		lock (_buildLock)
+		{
+			Reset();
+			_ctx = null;
+			_externalCost = cost;
+			_externalWidth = width;
+			_externalHeight = height;
 		}
 	}
 
@@ -151,7 +340,7 @@ public sealed class HierarchicalPathfinder
 				return;
 			_lastInvalidateMs = now;
 			_buildVersion++;
-			_cost = null;
+			_dirty = true;
 			_regionPathCache.Clear();
 			_segmentCache.Clear();
 		}
@@ -172,11 +361,12 @@ public sealed class HierarchicalPathfinder
 		if (sx == tx && sy == ty)
 			return true;
 
-		// Деградация при «пустом» оверлее (симуляция не инициализирована).
-		if (_cost == null)
+		// Деградация при «пустом» оверлее (симуляция не инициализирована) или
+		// когда граф помечен грязным (стена/карта сменились) — перестраиваем.
+		if (_state == null || _dirty)
 		{
 			EnsureOverlay();
-			if (_cost == null)
+			if (_state == null)
 				return false;
 		}
 
@@ -197,7 +387,10 @@ public sealed class HierarchicalPathfinder
 
 		int[] regionPath = GetRegionPathCached(sr, tr);
 		if (regionPath == null || regionPath.Length < 2)
+		{
+			Interlocked.Increment(ref _failNoRegionPath);
 			return false;
+		}
 
 		int regionCount = regionPath.Length;
 
@@ -220,11 +413,12 @@ public sealed class HierarchicalPathfinder
 
 		for (int t = 0; t < regionCount - 1; t++)
 		{
-			if (!PickBestPortal(regionPath[t], regionPath[t + 1], sx, sy, tx, ty,
-				out anchorX[t], out anchorY[t]))
-			{
-				return false; // порталы между соседями исчезли — пересчёт на след. кадре
-			}
+					if (!PickBestPortal(regionPath[t], regionPath[t + 1], sx, sy, tx, ty,
+						out anchorX[t], out anchorY[t]))
+					{
+						Interlocked.Increment(ref _failPortal);
+						return false; // порталы между соседями исчезли — пересчёт на след. кадре
+					}
 		}
 
 		Span<int> path = scratch.PathScratch;
@@ -247,7 +441,10 @@ public sealed class HierarchicalPathfinder
 			// Копируем сегмент, исключая его первый элемент (либо это старт,
 			// либо якорь, уже добавленный предыдущим сегментом).
 			if (pathLen + seg.Length - 1 > path.Length)
+			{
+				Interlocked.Increment(ref _failOverflow);
 				return false; // путь длиннее scratch — retry (кэш сегментов цел)
+			}
 			for (int k = 1; k < seg.Length; k++)
 			{
 				path[pathLen++] = seg[k];
@@ -256,6 +453,16 @@ public sealed class HierarchicalPathfinder
 
 		if (pathLen == 0)
 			return true;
+
+		// §118.5: математическая отсечка абсурдного обхода (см. MaxDetourRatio).
+		// Цель достижима только «через полмира» → считаем недостижимой; вызывающий
+		// получит false и посадит задачу на свой кулдаун (дальность НЕ урезаем).
+		if (IsDetourAbsurd(PathCellLength(path[..pathLen], sx, sy), sx, sy, tx, ty))
+		{
+			Interlocked.Increment(ref _detourRejects);
+			Interlocked.Increment(ref _failDetour);
+			return false;
+		}
 
 		int smoothed = SmoothPath(sx, sy, tx, ty, path.Slice(0, pathLen), scratch.SmoothScratch);
 		if (smoothed <= 0)
@@ -284,10 +491,15 @@ public sealed class HierarchicalPathfinder
 		if (sx == tx && sy == ty)
 			return true;
 
-		if (_cost == null)
+		// §118 ф.5 (найдено destroyer'ом): ГОРЯЧИЙ путь обязан перестраивать оверлей
+		// и по флагу _dirty, а не только при пустом _cost. Иначе после постройки
+		// стены Invalidate() ставит _dirty, но симуляция (она ходит именно через
+		// TryFindPathScratch) продолжает пользоваться устаревшим графом и агенты
+		// ходят сквозь новые стены, пока кто-то не дёрнет TryFindPath.
+		if (_state == null || _dirty)
 		{
 			EnsureOverlay();
-			if (_cost == null)
+			if (_state == null)
 				return false;
 		}
 
@@ -300,7 +512,10 @@ public sealed class HierarchicalPathfinder
 
 		int[] regionPath = GetRegionPathCached(sr, tr);
 		if (regionPath == null || regionPath.Length < 2)
+		{
+			Interlocked.Increment(ref _failNoRegionPath);
 			return false;
+		}
 
 		int regionCount = regionPath.Length;
 		var scratch = _buffers.Value;
@@ -349,6 +564,16 @@ public sealed class HierarchicalPathfinder
 		if (pathLen == 0)
 			return true;
 
+		// §118.5: математическая отсечка абсурдного обхода (см. MaxDetourRatio).
+		// Цель достижима только «через полмира» → считаем недостижимой; вызывающий
+		// получит false и посадит задачу на свой кулдаун (дальность НЕ урезаем).
+		if (IsDetourAbsurd(PathCellLength(path[..pathLen], sx, sy), sx, sy, tx, ty))
+		{
+			Interlocked.Increment(ref _detourRejects);
+			Interlocked.Increment(ref _failDetour);
+			return false;
+		}
+
 		int smoothed = SmoothPath(sx, sy, tx, ty, path.Slice(0, pathLen), scratch.SmoothScratch);
 		if (smoothed <= 0)
 			return false;
@@ -367,31 +592,45 @@ public sealed class HierarchicalPathfinder
 	{
 		lock (_buildLock)
 		{
-			if (_cost != null)
+			if (_state != null && !_dirty)
 				return;
 
-			if (_ctx == null)
+			if (_ctx == null && _externalCost == null)
 			{
 				// Симуляция ещё не стартовала — оверлей недоступен.
 				return;
 			}
 
-			int w = _ctx.MapWidth;
-			int h = _ctx.MapHeight;
-			byte[] cost = new byte[w * h];
+			int w;
+			int h;
+			byte[] cost;
 
-			for (int y = 0; y < h; y++)
+			if (_externalCost != null)
 			{
-				int rowBase = y * w;
-				for (int x = 0; x < w; x++)
+				// §118 фаза 5: внешняя сетка стоимостей (остров/бенчмарк) — берём как есть.
+				w = _externalWidth;
+				h = _externalHeight;
+				cost = _externalCost;
+			}
+			else
+			{
+				w = _ctx.MapWidth;
+				h = _ctx.MapHeight;
+				cost = new byte[w * h];
+
+				for (int y = 0; y < h; y++)
 				{
-					byte c;
-					// Камень проходим (как трава): россыпь не блокирует путь. Вода и горы блокируют путь.
-					if (_ctx.SolidWalls[x, y] || _ctx.Ground[x, y] == TileType.Mountain || _ctx.Ground[x, y] == TileType.Water)
-						c = CostBlocked;
-					else
-						c = CostGrass;
-					cost[rowBase + x] = c;
+					int rowBase = y * w;
+					for (int x = 0; x < w; x++)
+					{
+						byte c;
+						// Камень проходим (как трава): россыпь не блокирует путь. Вода и горы блокируют путь.
+						if (_ctx.SolidWalls[x, y] || _ctx.Ground[x, y] == TileType.Mountain || _ctx.Ground[x, y] == TileType.Water)
+							c = CostBlocked;
+						else
+							c = CostGrass;
+						cost[rowBase + x] = c;
+					}
 				}
 			}
 
@@ -449,6 +688,13 @@ public sealed class HierarchicalPathfinder
 					}
 				}
 			}
+
+			// Публикуем снимок ОДНОЙ записью: читатели видят либо старый граф
+			// целиком, либо новый целиком (порталы не бывают «полупостроенными»).
+			var snapshot = new NavGridState(w, h, _regionDimX, _regionDimY,
+				cost, _edgeStart, _edgeCount, _portals, _portalCount);
+			Volatile.Write(ref _state, snapshot);
+			_dirty = false;
 		}
 	}
 
@@ -627,6 +873,47 @@ public sealed class HierarchicalPathfinder
 	// Грубый уровень: A* по графу регионов
 	// ------------------------------------------------------------------
 
+	/// <summary>
+	/// §118.5: абсурден ли найденный обход. L — чебышёвское расстояние (нижняя
+	/// граница числа шагов при диагональном движении). Путь длиннее MaxDetourRatio·L
+	/// означает, что цель достижима только «через полмира» — считаем её фактически
+	/// недостижимой и отдаём вызывающему его кулдаун. Малые расстояния не судим.
+	/// </summary>
+	/// <summary>
+	/// Истинная длина пути в КЛЕТКАХ. После сглаживания массив содержит опорные
+	/// точки, а не каждую клетку, поэтому длину считаем как сумму чебышёвых
+	/// расстояний между соседними опорами (они соединены прямой видимостью,
+	/// значит путь между ними ≈ этой длине). Без этого k·L «не видел» обходов.
+	/// </summary>
+	private int PathCellLength(ReadOnlySpan<int> path, int sx, int sy)
+	{
+		int width = _mapWidth;
+		int total = 0;
+		int px = sx;
+		int py = sy;
+		for (int i = 0; i < path.Length; i++)
+		{
+			int packed = path[i];
+			int cx = packed % width;
+			int cy = packed / width;
+			int dx = cx > px ? cx - px : px - cx;
+			int dy = cy > py ? cy - py : py - cy;
+			total += dx > dy ? dx : dy;
+			px = cx;
+			py = cy;
+		}
+		return total;
+	}
+
+	private static bool IsDetourAbsurd(int pathLen, int sx, int sy, int tx, int ty)	{
+		int dx = tx > sx ? tx - sx : sx - tx;
+		int dy = ty > sy ? ty - sy : sy - ty;
+		int chebyshev = dx > dy ? dx : dy;
+		if (chebyshev < MinDetourJudgeCells)
+			return false;
+		return (long)pathLen > (long)MaxDetourRatio * chebyshev;
+	}
+
 	private int[] GetRegionPathCached(int sr, int tr)
 	{
 		// P0-1: без счётчиков кэша — вызываются из тысяч A* в параллельных фазах.
@@ -636,10 +923,11 @@ public sealed class HierarchicalPathfinder
 			return cached;
 		}
 
+		long rpStart = System.Diagnostics.Stopwatch.GetTimestamp();
 		int[] path = ComputeRegionPath(sr, tr);
+		Interlocked.Add(ref _profileRegionPathTicks, System.Diagnostics.Stopwatch.GetTimestamp() - rpStart);
 		if (path == null)
 			return null;
-
 		// Переполнение: удаляем четверть старых записей вместо Clear всего кэша
 		// (Clear под нагрузкой = thundering herd: все потоки одновременно идут
 		// в ComputeRegionPath/ComputeLocalSegment).
@@ -788,12 +1076,41 @@ public sealed class HierarchicalPathfinder
 		// P0-1: без счётчиков кэша (горячий параллельный путь).
 		if (_segmentCache.TryGetValue(key, out int[] cached))
 		{
+			Interlocked.Increment(ref _profileSegmentCacheHits);
 			return cached;
 		}
 
-		int[] seg = ComputeLocalSegment(fx, fy, tx, ty);
-		if (seg == null)
+		// §118.5: профиль — сколько времени уходит на локальные A* (сегменты).
+		long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+		int[] raw = ComputeLocalSegment(fx, fy, tx, ty);
+		Interlocked.Add(ref _profileSegmentTicks, System.Diagnostics.Stopwatch.GetTimestamp() - t0);
+		Interlocked.Increment(ref _profileLocalSearches);
+		if (raw == null)
 			return null;
+
+		// §118 ф.5: СГЛАЖИВАЕМ СЕГМЕНТ ЗДЕСЬ, при кэшировании, а не весь путь на
+		// каждом запросе. Сегмент ≤ ~48 клеток, поэтому сглаживание дешёвое, а сборка
+		// пути из 3000 клеток превращается в сборку из ~50 опорных точек — цена
+		// запроса падает в разы при той же траектории.
+		var seg = raw;
+		var buffers = _buffers.Value;
+		int smoothed = SmoothPath(fx, fy, tx, ty, raw.AsSpan(), buffers.SmoothScratch);
+		if (smoothed > 0 && smoothed <= buffers.SmoothScratch.Length)
+		{
+			int lastPacked = buffers.SmoothScratch[smoothed - 1];
+			// Кэшируем сглаженный вариант только если он доводит до цели сегмента:
+			// иначе (излом коридора) оставляем сырой путь — он гарантированно валиден.
+			if (lastPacked == ty * _mapWidth + tx)
+			{
+				// КОНТРАКТ сборки пути: seg[0] — это НАЧАЛО сегмента (сборка его
+				// отбрасывает как уже добавленный якорь/старт). Поэтому сглаженный
+				// вариант обязан начинаться с (fx,fy), иначе путь «перепрыгивает»
+				// первую опорную точку каждого сегмента.
+				seg = new int[smoothed + 1];
+				seg[0] = fy * _mapWidth + fx;
+				Array.Copy(buffers.SmoothScratch, 0, seg, 1, smoothed);
+			}
+		}
 
 		// Переполнение: четверть вместо Clear (thundering herd).
 		if (_segmentCache.Count >= MaxSegmentCache)
@@ -911,10 +1228,17 @@ public sealed class HierarchicalPathfinder
 		int ww = maxX - minX + 1;
 		int hh = maxY - minY + 1;
 		int cap = ww * hh;
-		if (cap > LocalCapacity)
+		// §118 фаза 5: раньше здесь стояло cap > LocalCapacity → null, и сегмент
+		// «якорь→якорь» (якоря лежат на границе двух регионов → окно 4x4 региона)
+		// НИКОГДА не вычислялся: вода/стены/горы делали путь невосстановимым.
+		if (cap > LocalCapacityMax)
+		{
+			Interlocked.Increment(ref _failNoSegment);
 			return null;
+		}
 
 		var b = _buffers.Value;
+		b.EnsureLocalCapacity(cap);
 		int[] g = b.G;
 		int[] parent = b.Parent;
 		int[] open = b.Open;
@@ -1129,60 +1453,70 @@ public sealed class HierarchicalPathfinder
 	/// scratch вызывателя), возвращает число точек. Семантика 1-в-1 со старым
 	/// List-вариантом (включая финал и fallback на последнюю точку).
 	/// </summary>
+	// §118.5: максимальный шаг сглаживания. Ограничивает работу линейной величиной.
+	private const int MaxSmoothSpan = 48;
+
 	private int SmoothPath(int sx, int sy, int tx, int ty, Span<int> path, Span<int> destination)
 	{
+		// §118.5: РАНЬШЕ здесь на КАЖДУЮ клетку пути выполнялся Брезенхем от текущей
+		// опоры (O(N²)): обход реки длиной 3000 клеток = ~4,5 млн шагов Брезенхема,
+		// ~5 мс на ОДИН путь. Теперь окно просмотра ограничено MaxSmoothSpan, работа
+		// линейная, а траектория та же — опорные точки просто плотнее (все они лежат
+		// на одной прямой, агент идёт по той же линии).
 		int outLen = 0;
 		int curX = sx;
 		int curY = sy;
-		int lastX = -1;
-		int lastY = -1;
+		int idx = 0;
 
-		for (int i = 0; i < path.Length; i++)
+		while (idx < path.Length)
 		{
-			int packed = path[i];
-			int px = packed % _mapWidth;
-			int py = packed / _mapWidth;
+			int best = -1;
+			int bestX = curX;
+			int bestY = curY;
 
-			if (HasLineOfSight(curX, curY, px, py))
+			for (int j = idx; j < path.Length; j++)
 			{
-				lastX = px;
-				lastY = py;
-				continue;
+				int packed = path[j];
+				int px = packed % _mapWidth;
+				int py = packed / _mapWidth;
+				int dx = px > curX ? px - curX : curX - px;
+				int dy = py > curY ? py - curY : curY - py;
+				if ((dx > dy ? dx : dy) > MaxSmoothSpan)
+					break; // дальше окна не смотрим — фиксируем достигнутое
+				if (!HasLineOfSight(curX, curY, px, py))
+					break;
+				best = j;
+				bestX = px;
+				bestY = py;
 			}
 
-			if (lastX >= 0)
+			if (best < 0)
 			{
-				if ((uint)outLen >= (uint)destination.Length)
-					return 0; // scratch переполнен — вызыватель retry'ит
-				destination[outLen++] = lastY * _mapWidth + lastX;
-				curX = lastX;
-				curY = lastY;
+				// Из опоры не видно ни одной следующей клетки (излом коридора) —
+				// берём соседнюю как есть: путь собран по проходимым клеткам.
+				int packed = path[idx];
+				bestX = packed % _mapWidth;
+				bestY = packed / _mapWidth;
+				best = idx;
 			}
 
-			// Текущая точка обязана быть видимой из нового опорного положения
-			// (она — первая невидимая из предыдущего).
-			lastX = px;
-			lastY = py;
+			if ((uint)outLen >= (uint)destination.Length)
+				return 0; // scratch переполнен — вызывающй retry'ит
+			destination[outLen++] = bestY * _mapWidth + bestX;
+			curX = bestX;
+			curY = bestY;
+			idx = best + 1;
 		}
 
-		// Финал: марш мимо последней опорной к цели.
-		if (HasLineOfSight(curX, curY, tx, ty))
+		if (!(curX == tx && curY == ty))
 		{
 			if ((uint)outLen >= (uint)destination.Length)
 				return 0;
-			destination[outLen++] = ty * _mapWidth + tx;
-		}
-		else if (lastX >= 0 && !(lastX == tx && lastY == ty))
-		{
-			if ((uint)outLen >= (uint)destination.Length)
-				return 0;
-			destination[outLen++] = lastY * _mapWidth + lastX;
-		}
-		else if (outLen == 0)
-		{
-			if (path.Length == 0 || destination.Length == 0)
-				return 0;
-			destination[outLen++] = path[path.Length - 1];
+			// Цель видна — идём прямо к ней; иначе доводим до последней опоры.
+			if (HasLineOfSight(curX, curY, tx, ty))
+				destination[outLen++] = ty * _mapWidth + tx;
+			else if (path.Length > 0)
+				destination[outLen++] = path[path.Length - 1];
 		}
 
 		return outLen;

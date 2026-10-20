@@ -42,10 +42,14 @@ public partial class WorldMapOverlay : Node2D
 		public int Id;
 		public short[] Tiles;
 		public byte[] Pixels;
+		public int Width;
+		public int Height;
+		public bool IsPreview;
 	}
 
 	// --- Данные карты (заполняются фоновым потоком) ---
 	private short[] _tileData;                    // GridWidth * GridHeight, -1 = нет тайла
+	private bool _isTileDataPreview;              // true если сейчас отображается быстрый LOD0 (512x256)
 	private volatile GenResult _pendingResult;
 	private int _genId;
 	private byte[] _tileColors = CreateGrayColors(); // TileTypeCount * 3 (RGB)
@@ -279,14 +283,28 @@ public partial class WorldMapOverlay : Node2D
 
 			if (mouse.Pressed && mouse.ButtonIndex == MouseButton.Left)
 			{
-				Vector2 mouseWorld = _camera.GetGlobalMousePosition();
+				// §118: позиция из САМОГО события, а не из текущего положения мыши:
+				// GetGlobalMousePosition() читает «где мышь СЕЙЧАС», и при отстающем
+				// или синтетическом клике (тест-бридж, лаг события) выбор региона
+				// уезжал не туда, куда кликнули.
+				Vector2 mouseWorld = (Vector2)(GetViewport().GetCanvasTransform().AffineInverse() * mouse.Position);
 				int cellX = Mathf.FloorToInt(mouseWorld.X / TileSizePx);
 				int cellY = Mathf.FloorToInt(mouseWorld.Y / TileSizePx);
 				if (cellX >= 0 && cellX < GridWidth && cellY >= 0 && cellY < GridHeight)
 				{
 					if (_tileData != null)
 					{
-						int tileIdx = cellY * GridWidth + cellX;
+						int tileIdx;
+						if (_isTileDataPreview)
+						{
+							int pX = Math.Clamp(cellX / 4, 0, (GridWidth / 4) - 1);
+							int pY = Math.Clamp(cellY / 4, 0, (GridHeight / 4) - 1);
+							tileIdx = pY * (GridWidth / 4) + pX;
+						}
+						else
+						{
+							tileIdx = cellY * GridWidth + cellX;
+						}
 						short t = _tileData[tileIdx];
 						// DeepWater (6..8): нельзя основывать колонию в океане
 						if (t >= 6 && t <= 8)
@@ -366,7 +384,7 @@ public partial class WorldMapOverlay : Node2D
 		_seed = newSeed;
 		OnSeedRegenerated?.Invoke(newSeed);
 		StartGeneration();
-		GD.Print($"[WORLD MAP] Сгенерирован новый сид мира: 0x{newSeed:X16} (Архетип: {Game.Core.WorldClimate.WorldClimateParams.GetArchetype(newSeed)})");
+		GD.Print($"[WORLD MAP] Сгенерирован новый сид мира: 0x{newSeed:X16} (Архетип: {Game.Core.WorldClimate.WorldMacroClimateParams.GetArchetype(newSeed)})");
 	}
 
 	public override void _Draw()
@@ -513,6 +531,7 @@ public partial class WorldMapOverlay : Node2D
 		int id = Interlocked.Increment(ref _genId);
 		_pendingResult = null;
 		_tileData = null;
+		_isTileDataPreview = false;
 		ResetDetail();
 		if (_overviewSprite != null)
 			_overviewSprite.Texture = null;
@@ -526,11 +545,67 @@ public partial class WorldMapOverlay : Node2D
 		{
 			try
 			{
+				const int stride = 4;
+				int prevW = GridWidth / stride;   // 512
+				int prevH = GridHeight / stride; // 256
+
+				var prevTiles = new short[prevW * prevH];
+				var prevPixels = new byte[prevW * prevH * 4];
+
+				var popt = new ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount };
+
+				// --- ЭТАП 1: Мгновенный LOD 0 превью (512x256, 131K точек) ---
+				Parallel.For(0, prevH, popt, py =>
+				{
+					if (id != Volatile.Read(ref _genId))
+						return;
+
+					int y = py * stride;
+					for (int px = 0; px < prevW; px++)
+					{
+						int x = px * stride;
+						RegionKey r = new RegionKey(x, y);
+						WorldClimateParams climate = WorldClimateGenerator.SampleRegion(seed, version, r, in macroParams);
+						int i = py * prevW + px;
+
+						TilePick pick = BiomeMapper.PickFromClimate(seed, version, x, y, climate);
+						int t = WorldMapTileMapper.GetTileId(pick.Biome, pick.Variant);
+
+						if ((uint)t >= TileTypeCount)
+						{
+							prevTiles[i] = -1;
+							continue;
+						}
+
+						prevTiles[i] = (short)t;
+						int p = i * 4;
+						int c = t * 3;
+						prevPixels[p] = colors[c];
+						prevPixels[p + 1] = colors[c + 1];
+						prevPixels[p + 2] = colors[c + 2];
+						prevPixels[p + 3] = 255;
+					}
+				});
+
+				if (id != Volatile.Read(ref _genId))
+					return;
+
+				// Публикуем быстрый LOD0 превью сразу (100-150 мс)
+				_pendingResult = new GenResult
+				{
+					Id = id,
+					Tiles = prevTiles,
+					Pixels = prevPixels,
+					Width = prevW,
+					Height = prevH,
+					IsPreview = true
+				};
+
+				// --- ЭТАП 2: Полная детализация (2048x1024, 2.1M точек) + гидрология ---
 				var tiles = new short[GridWidth * GridHeight];
 				var pixels = new byte[GridWidth * GridHeight * 4];
 				var elevations = new ushort[GridWidth * GridHeight];
 
-				var popt = new ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount };
 				Parallel.For(0, GridHeight, popt, y =>
 				{
 					if (id != Volatile.Read(ref _genId))
@@ -570,7 +645,17 @@ public partial class WorldMapOverlay : Node2D
 					seed, version, GridWidth, GridHeight, elevations, tiles, pixels, colors);
 
 				if (id == Volatile.Read(ref _genId))
-					_pendingResult = new GenResult { Id = id, Tiles = tiles, Pixels = pixels };
+				{
+					_pendingResult = new GenResult
+					{
+						Id = id,
+						Tiles = tiles,
+						Pixels = pixels,
+						Width = GridWidth,
+						Height = GridHeight,
+						IsPreview = false
+					};
+				}
 			}
 			catch (Exception e)
 			{
@@ -589,17 +674,23 @@ public partial class WorldMapOverlay : Node2D
 			return;
 
 		_tileData = r.Tiles;
-		var img = Image.CreateFromData(GridWidth, GridHeight, false, Image.Format.Rgba8, r.Pixels);
+		_isTileDataPreview = r.IsPreview;
+
+		var img = Image.CreateFromData(r.Width, r.Height, false, Image.Format.Rgba8, r.Pixels);
 		_overviewSprite.Texture = ImageTexture.CreateFromImage(img);
 
-		_lastCameraPosition = new Vector2(float.NaN, float.NaN); // форсируем загрузку чанков
+		float scaleX = (float)(GridWidth * TileSizePx) / r.Width;
+		float scaleY = (float)(GridHeight * TileSizePx) / r.Height;
+		_overviewSprite.Scale = new Vector2(scaleX, scaleY);
+
+		_lastCameraPosition = new Vector2(float.NaN, float.NaN); // форсируем загрузку чанков при готовности полной карты
 	}
 
 	// ───────────────────────── Детальные чанки ─────────────────────────
 
 	private void UpdateDetailChunks(Vector2 viewportSize)
 	{
-		if (_tileData == null)
+		if (_tileData == null || _isTileDataPreview)
 			return;
 
 		// Мелкий масштаб: хватает overview, детальный слой не нужен

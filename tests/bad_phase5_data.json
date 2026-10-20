@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Adversarial test cases by @destroyer for Phase 5 Architecture fixes (F-010, S-033, F-009, F-011, F-005)",
+  "clearance_edge_cases": [
+    {
+      "id": "extreme_negative_coords",
+      "x": -2147483648,
+      "y": -2147483648,
+      "expected_obstacle": "None"
+    },
+    {
+      "id": "extreme_positive_coords",
+      "x": 2147483647,
+      "y": 2147483647,
+      "expected_obstacle": "None"
+    },
+    {
+      "id": "zero_boundary",
+      "x": 0,
+      "y": 0,
+      "expected_obstacle": "None"
+    }
+  ],
+  "pyramid_memo_edge_cases": [
+    {
+      "agent_id": -1,
+      "type_id": 0,
+      "should_throw": false
+    },
+    {
+      "agent_id": 0,
+      "type_id": -1,
+      "should_throw": false
+    },
+    {
+      "agent_id": 999999,
+      "type_id": 5,
+      "should_throw": false
+    },
+    {
+      "agent_id": 5,
+      "type_id": 999999,
+      "should_throw": false
+    }
+  ],
+  "block_replacement_edge_cases": [
+    {
+      "case": "unloaded_chunk",
+      "chunk_loaded": false,
+      "old_kind": 1,
+      "new_kind": 2,
+      "expected_success": false
+    },
+    {
+      "case": "missing_old_block",
+      "chunk_loaded": true,
+      "has_old_block": false,
+      "old_kind": 1,
+      "new_kind": 2,
+      "expected_success": false
+    },
+    {
+      "case": "blocked_by_wall",
+      "chunk_loaded": true,
+      "has_old_block": true,
+      "has_blocking_wall": true,
+      "old_kind": 1,
+      "new_kind": 2,
+      "expected_success": false
+    },
+    {
+      "case": "add_failure_rollback",
+      "chunk_loaded": true,
+      "has_old_block": true,
+      "simulate_add_failure": true,
+      "old_kind": 1,
+      "new_kind": 2,
+      "expected_success": false,
+      "old_block_preserved": true
+    }
+  ]
+}

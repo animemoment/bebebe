@@ -58,51 +58,6 @@ public static class WorldClimateGenerator
         WorldClimateParams se = SampleRegion(worldSeed, generatorVersion, new RegionKey(r.X + 1, r.Y + 1), in macroParams);
 
         WorldClimateParams blended = BlendBilinear(nw, ne, sw, se, u, v);
-
-        // Региональный макро-инвариант суши и океана:
-        long rx = WorldCoordinates.FloorDiv(wx, WorldRegions.RegionSize);
-        long ry = WorldCoordinates.FloorDiv(wy, WorldRegions.RegionSize);
-        WorldClimateParams cellRegion = SampleRegion(worldSeed, generatorVersion, new RegionKey(rx, ry), in macroParams);
-        bool isOceanRegion = cellRegion.ElevationQ16 < SeaLevelQ16;
-
-        int lx = (int)(wx - rx * WorldRegions.RegionSize);
-        int ly = (int)(wy - ry * WorldRegions.RegionSize);
-        int distToBorder = Math.Min(Math.Min(lx, WorldRegions.RegionSize - 1 - lx),
-                                    Math.Min(ly, WorldRegions.RegionSize - 1 - ly));
-
-        int borderJitter = ((int)CoordinateHash.ValueNoiseQ16(worldSeed + 6127ul, generatorVersion, GenerationDomain.CoastWarpMeso, wx, wy, 24) - Q16Half) * 20 / Q16Half;
-        int organicDist = distToBorder + borderJitter;
-
-        if (isOceanRegion)
-        {
-            // Океанический регион на мировой карте:
-            // 1. Никакая интерполяция с соседней сушей не имеет права поднять океан выше уровня моря!
-            if (blended.ElevationQ16 >= SeaLevelQ16)
-            {
-                blended = blended with { ElevationQ16 = (ushort)(SeaLevelQ16 - 1) };
-            }
-
-            // 2. В глубине океанического региона (вдали от границы суши) — гарантированный глубокий океан:
-            if (organicDist >= 44)
-            {
-                ushort maxElev = (ushort)Math.Min((int)blended.ElevationQ16, SeaLevelQ16 - 1500);
-                blended = blended with { ElevationQ16 = maxElev };
-            }
-        }
-        else
-        {
-            // Регион суши / острова на мировой карте:
-            // В центре острова (вдали от границы с окружающим океаном) суша гарантированно не тонет!
-            // Органическая граница естественным образом искривляет форму берегов острова.
-            if (organicDist >= 28)
-            {
-                if (blended.ElevationQ16 < SeaLevelQ16 + 200)
-                {
-                    blended = blended with { ElevationQ16 = (ushort)Math.Max((int)cellRegion.ElevationQ16, SeaLevelQ16 + 400) };
-                }
-            }
-        }
-
         return blended;
     }
 
@@ -119,7 +74,7 @@ public static class WorldClimateGenerator
     /// <summary>
     /// Прямой расчет 18 параметров в конкретной глобальной точке мира с предзагруженными macroParams.
     /// </summary>
-    public static WorldClimateParams SampleAtCell(ulong worldSeed, uint generatorVersion, long wx, long wy, in Game.Core.WorldClimate.WorldClimateParams macroParams)
+    public static WorldClimateParams SampleAtCell(ulong worldSeed, uint generatorVersion, long wx, long wy, in Game.Core.WorldClimate.WorldMacroClimateParams macroParams)
     {
         long rx = WorldCoordinates.FloorDiv(wx, WorldRegions.RegionSize);
         long ry = WorldCoordinates.FloorDiv(wy, WorldRegions.RegionSize);
@@ -129,10 +84,10 @@ public static class WorldClimateGenerator
     /// <summary>
     /// Высокопроизводительный кэшированный расчет 18 параметров региона (ThreadStatic direct-mapped L1 cache).
     /// </summary>
-    public static WorldClimateParams SampleRegion(ulong worldSeed, uint generatorVersion, RegionKey region, in Game.Core.WorldClimate.WorldClimateParams macroParams)
+    public static WorldClimateParams SampleRegion(ulong worldSeed, uint generatorVersion, RegionKey region, in Game.Core.WorldClimate.WorldMacroClimateParams macroParams)
     {
-        _regionCache ??= new RegionCacheEntry[64];
-        int idx = (int)((((ulong)region.X * 73856093ul) ^ ((ulong)region.Y * 19349663ul) ^ worldSeed) & 63);
+        _regionCache ??= new RegionCacheEntry[1024];
+        int idx = (int)((((ulong)region.X * 73856093ul) ^ ((ulong)region.Y * 19349663ul) ^ worldSeed) & 1023);
         ref var entry = ref _regionCache[idx];
         if (entry.Valid && entry.Seed == worldSeed && entry.Version == generatorVersion && entry.Rx == region.X && entry.Ry == region.Y)
         {
@@ -152,7 +107,7 @@ public static class WorldClimateGenerator
         return result;
     }
 
-    private static WorldClimateParams ComputeSampleRegion(ulong worldSeed, uint generatorVersion, RegionKey region, in Game.Core.WorldClimate.WorldClimateParams macroParams)
+    private static WorldClimateParams ComputeSampleRegion(ulong worldSeed, uint generatorVersion, RegionKey region, in Game.Core.WorldClimate.WorldMacroClimateParams macroParams)
     {
         // ---------------- 1. ШИРОТА (Latitude) ----------------
         // Мир: WorldRegions.WorldRegionsY (1024) регионов по Y. Экватор на 512.

@@ -2,12 +2,10 @@
 
 [ext_resource type="Texture2D" uid="uid://cj4xotk0mcyx4" path="res://ui/assets/textures/icons/ZonesIcon.png" id="1_3m0vb"]
 [ext_resource type="Texture2D" uid="uid://cla88bco32h8t" path="res://ui/assets/textures/icons/BuildIcon/maerialVariant.png" id="1_7y32b"]
+[ext_resource type="Texture2D" uid="uid://dsiddo1lt1scb" path="res://ui/assets/textures/objects/central.png" id="1_central"]
 [ext_resource type="Texture2D" uid="uid://bvpkdy03fk5sw" path="res://ui/assets/textures/icons/BuildIcon/door.png" id="1_ukacn"]
 [ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="2_4ascc"]
 [ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="3_5g1wv"]
-
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4pfqy"]
-bg_color = Color(0.0051989057, 0.005198907, 0.005198903, 1)
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4ascc"]
 bg_color = Color(0, 0, 0, 1)
@@ -21,7 +19,7 @@ bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_g8rbv"]
 bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
 
-[node name="Control" type="Control" unique_id=193924575]
+[node name="Control2" type="Control" unique_id=193924575]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -47,7 +45,21 @@ theme_override_constants/separation = 60
 
 [node name="HBoxContainer" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=997990025]
 layout_mode = 2
-theme_override_constants/separation = 164
+theme_override_constants/separation = 50
+
+[node name="CentralBlockButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=2013165887]
+layout_mode = 2
+icon = ExtResource("1_central")
+
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/CentralBlockButton" unique_id=2013165888]
+layout_mode = 0
+offset_top = 69.0
+offset_right = 108.0
+offset_bottom = 92.0
+text = "Центральный
+блок (10 дерева)"
+horizontal_alignment = 1
+vertical_alignment = 1
 
 [node name="DoorButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=1831715510]
 layout_mode = 2
@@ -100,6 +112,7 @@ horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="HBoxContainer2" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1143051463]
+visible = false
 layout_mode = 2
 theme_override_constants/separation = 63
 

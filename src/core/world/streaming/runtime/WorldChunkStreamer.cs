@@ -63,6 +63,13 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
     // Pulse-all condition variable. Every waiter observes the same current TCS; a producer
     // swaps it under _gate before completing the old one, so work cannot be lost.
     private TaskCompletionSource<bool> _workSignal = NewSignal();
+    // task-2/perf: число воркеров, реально ожидающих сигнала. Счётчик инкрементится
+    // под _gate в том же критическом участке, где воркер решает ждать (и снимает
+    // захваченный _workSignal), декрементится после await. Благодаря этому продюсер
+    // под _gate может пропустить pulse, когда ждущих нет (см. PulseWorkers_NoLock):
+    // воркер, который ещё не ждёт, при повторном входе под _gate сам увидит работу в
+    // очереди, а ждущий всегда виден продюсеру. Потерять пробуждение нельзя.
+    private int _waitingWorkers;
     private int _activeUnloadCount;
     private bool _hasVisibleBounds;
     private bool _disposeRequested;
@@ -384,18 +391,35 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
                 {
                     if (_activeUnloadCount == 0)
                         return;
+                    _waitingWorkers++;
                     waitTask = _workSignal.Task;
                 }
                 else if (_workQueue.TryDequeue(out key, out _))
                 {
-                    if (!_pending.Remove(key) || !_desired.Contains(key) || !_reserved.Contains(key))
+                    if (!_pending.Remove(key))
                         continue;
+                    if (!_desired.Contains(key) || !_reserved.Contains(key))
+                    {
+                        // Ключ выбыл из окна, но остался в очереди работ: Update с тем же
+                        // прямоугольником не вызывает RebuildPending, поэтому чистка здесь —
+                        // единственное место, где reservation и CTS освобождаются.
+                        // Без неё ключ навсегда залипает в _reserved (IsAlreadyTracked=true),
+                        // hard-cap MaxBufferedChunks выбирается целиком и FillPending
+                        // перестаёт наполнять окно — стриминг мёртв до DisposeAsync.
+                        _reserved.Remove(key);
+                        CancelAndDisposeRequest_NoLock(key);
+                        FillPending_NoLock();
+                        if (_pending.Count > 0)
+                            PulseWorkers_NoLock();
+                        continue;
+                    }
                     _inFlight.Add(key);
                     if (_requestCancellation.TryGetValue(key, out CancellationTokenSource? cancellation))
                         requestToken = cancellation.Token;
                 }
                 else
                 {
+                    _waitingWorkers++;
                     waitTask = _workSignal.Task;
                 }
             }
@@ -403,6 +427,7 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
             if (waitTask != null)
             {
                 await waitTask.ConfigureAwait(false);
+                Interlocked.Decrement(ref _waitingWorkers);
                 continue;
             }
 
@@ -430,14 +455,18 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
             ChunkSnapshot? snapshot = null;
             if (_store.ContainsChunk(key.X, key.Y))
             {
-                if (!_store.TryLoadChunk(key.X, key.Y, out ChunkSnapshot loadedSnapshot, out string? error))
-                    throw new InvalidDataException(error ?? $"Не удалось загрузить delta чанка {key}.");
-
-                if (loadedSnapshot.Metadata.Seed != _worldSeed
-                    || loadedSnapshot.Metadata.GeneratorVersion != _generatorVersion
-                    || loadedSnapshot.Metadata.FeatureSchemaVersion != UnifiedWorldGenerator.FeatureSchemaVersion)
-                    throw new InvalidDataException($"Delta чанка {key} относится к несовместимому seed/generator/feature schema.");
-                snapshot = loadedSnapshot;
+                // Graceful degradation: битая (CRC/обрыв записи) или несовместимая по
+                // seed/generator/feature-schema delta не должна превращать чанк в вечную
+                // дыру — иначе ретрай упирается в тот же файл, а после смены
+                // FeatureSchemaVersion дырявым становится весь сохранённый мир.
+                // Чанк в этом случае генерируется так, как если бы delta отсутствовала.
+                if (_store.TryLoadChunk(key.X, key.Y, out ChunkSnapshot loadedSnapshot, out _)
+                    && loadedSnapshot.Metadata.Seed == _worldSeed
+                    && loadedSnapshot.Metadata.GeneratorVersion == _generatorVersion
+                    && loadedSnapshot.Metadata.FeatureSchemaVersion == UnifiedWorldGenerator.FeatureSchemaVersion)
+                {
+                    snapshot = loadedSnapshot;
+                }
             }
 
             requestToken.ThrowIfCancellationRequested();
@@ -691,22 +720,44 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
         // Called after drain/failure/unload. The most recent Update already established priorities.
         if (_desired.Count == 0 || _disposeRequested)
             return;
+
+        // task-2/perf: раньше здесь собирался и сортировался ВЕСЬ желаемый набор окна
+        // (PriorityFor = 4 FloorDiv на ключ), а затем PriorityFor считался ПОВТОРНО при
+        // Enqueue каждого admitted-ключа. При этом admit-ится только неотслеженный ключ
+        // (иначе ветка IsAlreadyTracked_NoLock → continue). Метод вызывается на каждое
+        // завершение воркера и на каждый drain, всё под общим _gate: замер
+        // DependencyGraphVisualizer — ~1020 вызовов/с, 0.75 КБ аллокаций на вызов.
+        // Теперь: (1) границы окна в чанк-пространстве считаются ОДИН раз на вызов,
+        // (2) в буфер попадают только реально admit-able ключи, поэтому в устойчивом
+        // состоянии (все ключи окна уже tracked) сортировка не выполняется вообще.
+        // Набор и порядок admitted-ключей не меняются: отслеженные ключи и прежде
+        // отбрасывались на IsAlreadyTracked_NoLock, а сортировка задаёт лишь «ближайшие
+        // первые» среди неотслеженных.
+        ChunkBoundsOf(_lastVisibleBounds,
+            out long minChunkX, out long minChunkY, out long maxChunkX, out long maxChunkY);
+
         _orderedDesiredBuffer.Clear();
         foreach (ChunkKey key in _desired)
-            _orderedDesiredBuffer.Add((key, PriorityFor(key, _lastVisibleBounds)));
-        _orderedDesiredBuffer.Sort(static (a, b) => a.Priority.CompareTo(b.Priority));
+        {
+            if (IsAlreadyTracked_NoLock(key))
+                continue;
+            _orderedDesiredBuffer.Add((key, PriorityFor(key, minChunkX, minChunkY, maxChunkX, maxChunkY)));
+        }
+
+        if (_orderedDesiredBuffer.Count > 1)
+            _orderedDesiredBuffer.Sort(static (a, b) => a.Priority.CompareTo(b.Priority));
 
         for (int i = 0; i < _orderedDesiredBuffer.Count; i++)
         {
             if (_reserved.Count >= MaxBufferedChunks)
                 break;
-            ChunkKey key = _orderedDesiredBuffer[i].Key;
+            (ChunkKey key, WorkPriority priority) = _orderedDesiredBuffer[i];
             if (IsAlreadyTracked_NoLock(key))
                 continue;
             _reserved.Add(key);
             _pending.Add(key);
             _requestCancellation[key] = new CancellationTokenSource();
-            _workQueue.Enqueue(key, PriorityFor(key, _lastVisibleBounds));
+            _workQueue.Enqueue(key, priority);
         }
     }
 
@@ -723,12 +774,31 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
 
     private static WorkPriority PriorityFor(ChunkKey key, WorldRect visibleBounds)
     {
-        long minX = WorldCoordinates.FloorDiv(visibleBounds.MinX, WorldCoordinates.ChunkSize);
-        long minY = WorldCoordinates.FloorDiv(visibleBounds.MinY, WorldCoordinates.ChunkSize);
-        long maxX = WorldCoordinates.FloorDiv(checked(visibleBounds.MaxX - 1), WorldCoordinates.ChunkSize);
-        long maxY = WorldCoordinates.FloorDiv(checked(visibleBounds.MaxY - 1), WorldCoordinates.ChunkSize);
-        long dx = key.X < minX ? checked(minX - key.X) : key.X > maxX ? checked(key.X - maxX) : 0;
-        long dy = key.Y < minY ? checked(minY - key.Y) : key.Y > maxY ? checked(key.Y - maxY) : 0;
+        ChunkBoundsOf(visibleBounds,
+            out long minChunkX, out long minChunkY, out long maxChunkX, out long maxChunkY);
+        return PriorityFor(key, minChunkX, minChunkY, maxChunkX, maxChunkY);
+    }
+
+    /// <summary>
+    /// task-2/perf: границы видимого окна в чанк-пространстве. Вынесено из
+    /// <see cref="PriorityFor(ChunkKey, WorldRect)"/>, чтобы 4 FloorDiv считались один раз
+    /// на проход, а не на каждый ключ (и не по дважды на ключ при admission).
+    /// </summary>
+    private static void ChunkBoundsOf(
+        WorldRect visibleBounds,
+        out long minChunkX, out long minChunkY, out long maxChunkX, out long maxChunkY)
+    {
+        minChunkX = WorldCoordinates.FloorDiv(visibleBounds.MinX, WorldCoordinates.ChunkSize);
+        minChunkY = WorldCoordinates.FloorDiv(visibleBounds.MinY, WorldCoordinates.ChunkSize);
+        maxChunkX = WorldCoordinates.FloorDiv(checked(visibleBounds.MaxX - 1), WorldCoordinates.ChunkSize);
+        maxChunkY = WorldCoordinates.FloorDiv(checked(visibleBounds.MaxY - 1), WorldCoordinates.ChunkSize);
+    }
+
+    private static WorkPriority PriorityFor(
+        ChunkKey key, long minChunkX, long minChunkY, long maxChunkX, long maxChunkY)
+    {
+        long dx = key.X < minChunkX ? checked(minChunkX - key.X) : key.X > maxChunkX ? checked(key.X - maxChunkX) : 0;
+        long dy = key.Y < minChunkY ? checked(minChunkY - key.Y) : key.Y > maxChunkY ? checked(key.Y - maxChunkY) : 0;
         return new WorkPriority(checked(dx + dy), key.Y, key.X);
     }
 
@@ -740,6 +810,14 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
 
     private void PulseWorkers_NoLock()
     {
+        // task-2/perf: PulseWorkers вызывается на каждый новый pending-ключ, на каждое
+        // завершение воркера и из Update (замер: ~2760 вызовов/с). Если никто не ждёт,
+        // подмена + TrySetResult не нужны: воркер, ещё не вставший на ожидание, при
+        // следующем входе под _gate сам увидит работу. Это убирает ~2760 аллокаций
+        // TaskCompletionSource в секунду в горячем пути.
+        if (Volatile.Read(ref _waitingWorkers) <= 0)
+            return;
+
         TaskCompletionSource<bool> previous = _workSignal;
         _workSignal = NewSignal();
         previous.TrySetResult(true);

@@ -1,603 +1,325 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
-using System.Threading.Tasks;
 using Godot;
 using Game.Core;
 
 namespace Game.Simulation;
 
 /// <summary>
-/// Параллельный диспетчер задач на chunk-based batch assignment.
-/// Без глобальных lock'ов — использует CAS на AssignedWorkers.
+/// Высокопроизводительный диспетчер задач (Hierarchical Work Matcher).
+/// Способен распределять тысячи задач за доли миллисекунды без жестких капов (20/тик)
+/// и слепых зон на основе JobSpatialPyramid и FlatIdleWorkerPool.
 /// </summary>
 public sealed class JobDispatcher
 {
-	public static JobDispatcher Instance { get; } = new();
+    public static JobDispatcher Instance { get; } = new();
 
-	public GenericJobSpatialIndex JobIndex { get; } = new();
-	public IdleWorkerSpatialGrid IdleWorkers { get; } = new();
+    public JobSpatialPyramid JobIndex { get; } = new();
+    public FlatIdleWorkerPool IdleWorkers { get; } = new();
 
-	private const int ChunkDim = 32;
-	private const int ChunkCount = ChunkDim * ChunkDim;
-	private const int WorkersPerChunkBudget = 48;
-	private const int ChunksPerBatch = 512;
-	private const int MaxBatchScale = 8;
-	// Cap назначений на чанк за один проход: без него весь бюджет рабочих чанка
-	// (48) уходит в TryClaim по одной и той же переполненной чанк-очереди,
-	// остальные чанки диапазона голодают до следующего вызова.
-	private const int MaxAssignPerChunk = 8;
+    public const int MaxAssignmentsPerTick = 4096;
 
-	/// <summary>
-	/// Радиус кольца поиска работы для бездельника, которому не хватило своего
-	/// чанка (в чанках): 10 → охват ±160 тайлов. Стоимость на рабочего — до
-	/// (2r+1)² = 441 дешёвых чтения GetChunkJobCount (без локов; claim
-	/// пробуется только в непустых чанках), при бюджете 48 рабочих на вызов это
-	/// ~21k чтений, десятые доли миллисекунды. Именно это позволяет рабочей силе
-	/// «растекаться» по большой стройке/ферме, а не стоять без дела там, где
-	/// работа уже кончилась.
-	/// </summary>
-	private const int MaxSpillRing = 10;
+    /// <summary>Резерв-маркер CAS клейма агента (диспатчер + Worker-выдача).</summary>
+    public const int AgentReservedMarker = -2;
 
-	// Буферы для per-chunk сбора (переиспользуемые)
-	// Marker used to atomically reserve an idle worker (CurrentJobId = -2)
-	// before a job claim in the parallel dispatcher.
-	private const int AgentReservedMarker = -2;
+    // Пакетный буфер свободных агентов на один проход диспетчеризации
+    private const int MaxBatchWorkers = 4096;
+    private readonly int[] _workerBatchBuffer = new int[MaxBatchWorkers];
 
-	// Per-thread buffers for collecting idle workers. A shared buffer would
-	// cause a data race inside Parallel.ForEach.
-	private readonly ThreadLocal<int[]> _workerBuffer = new(() => new int[WorkersPerChunkBudget]);
-	// Отдельный буфер для Global-прохода: CollectIdleWorkers возвращает 0,
-	// если destination.Length < maxCount, поэтому общий буфер на 48 сюда нельзя.
-	// P0-перф: 32 вместо 128 — O(W×J) в TryClaimFromCandidateList режется в 4 раза.
-	private const int MaxGlobalWorkers = 32;
-	private readonly ThreadLocal<int[]> _globalWorkerBuffer = new(() => new int[MaxGlobalWorkers]);
- 	// P1 (Dispatch-спайк): кап сканирования global-прохода.
- 	// Старый проход: ≤32 рабочих × до 512 кандидатов = до 16k итераций
- 	// TryClaimFromCandidateList с CanAgentExecute/memo на каждую — весь спайк
- 	// 14.2 мс сидел здесь, а не в Fill. Теперь: первые 128 кандидатов
- 	// (топ приоритета — Fill уже отсортировал) + не более 8 claim-успехов:
- 	// global — добивка fallback, хвост дождётся chunk/spill следующего тика.
- 	private const int MaxGlobalClaimScan = 128;
- 	private const int MaxGlobalAssign = 8;
- 	// Переиспользуемый список кандидатов global-прохода (без new List каждый тик).
- 	// DispatchPendingJobs вызывается из одного sim-потока — гонки нет.
- 	private readonly List<int> _globalCandidates = new(512);
-	// Троттлинг global-прохода по РЕАЛЬНОМУ времени: Fill O(N) + Sort O(N log N)
-	// + O(W×J) claim-сканов однопоточно — при 200k задач каждый вызов кладёт
-	// симуляцию. Не чаще раза в 2 реальные секунды, остальное покрывают chunk+spill.
-	private long _lastGlobalPassTicks;
-	private static readonly TimeSpan GlobalPassMinInterval = TimeSpan.FromSeconds(2);
+    // task-2/perf: курсор ротации стартового индекса батча свободных агентов.
+    // См. комментарий в DispatchPendingJobs: без ротации «необслуживаемые» агенты в
+    // голове FlatIdleWorkerPool выжигали квант 0.8 мс каждый диспатч, а хвост батча
+    // не осматривался никогда. Доступ только из sim-потока (диспетчер) — volatile не нужен.
+    private int _dispatchScanCursor;
 
-	// Round-robin счётчик для равномерной обработки чанков
-	private int _chunkScanIndex;
-	// P0-1: гейт секундных рядов очереди (Series = lock, вызовов сотни/с).
-	private long _queueSeriesWallTicks;
+    // Квант максимального времени на один тик диспетчеризации (0.8 мс)
+    private const double MaxDispatchBudgetMs = 0.8;
 
-	/// <summary>
-	/// Диспетчеризация задач. <paramref name="chunkBatchScale"/> увеличивает
-	/// объём скана чанков за вызов на высоких скоростях симуляции (там частота
-	/// вызовов урезана масштабированием интервала), чтобы назначение работы не
-	/// задерживалось. Потолок — <see cref="MaxBatchScale"/>.
-	/// </summary>
-	public void DispatchPendingJobs(AgentDataPool pool, SimulationContext ctx, int chunkBatchScale = 1)
-	{
-		using (GameProfiler.Scope())
-		{
-			// P0-1: ряды очереди — раз в секунду wall-clock, не на каждый вызов
-			// (Dispatch идёт сотни раз/с, каждый Series = lock(_cLock)).
-			long nowSweepTicks = DateTime.UtcNow.Ticks;
-			if (nowSweepTicks - _queueSeriesWallTicks >= 10000000L)
-			{
-				_queueSeriesWallTicks = nowSweepTicks;
-				SimEvents.Series("job.unclaimed", JobIndex.UnclaimedCount);
-				SimEvents.Series("job.total", JobIndex.TotalCount);
-				SimEvents.Series("job.idle", IdleWorkers.TotalIdleCount);
-			}
-			if (JobIndex.UnclaimedCount <= 0 || IdleWorkers.TotalIdleCount <= 0)
-				return;
+    public void TriggerImmediateDispatch()
+    {
+    }
 
-			// Новая эпоха memo CanAgentExecute: состояние менеджеров заморожено
-			// на время этого вызова — повторы одного jobId идут из кэша.
-			JobIndex.BeginClaimEpoch();
+    /// <summary>
+    /// Главная точка входа: пакетное распределение задач свободным агентам.
+    /// Больше никаких 20 назначений за тик — распределяет весь доступный пул
+    /// в пределах кванта времени (< 0.8 мс).
+    /// </summary>
+    public void DispatchPendingJobs(AgentDataPool pool, SimulationContext ctx, int chunkBatchScale = 1)
+    {
+        int unclaimed = JobIndex.UnclaimedCount;
+        int idleCount = IdleWorkers.TotalIdleCount;
+        if (unclaimed <= 0 || idleCount <= 0)
+            return;
 
-			int totalChunks = ChunkCount;
-			int batchScale = Math.Clamp(chunkBatchScale, 1, MaxBatchScale);
-			int chunksToProcess = Math.Min(ChunksPerBatch * batchScale, totalChunks);
+        using (GameProfiler.ScopeCustom("Simulation.JobDispatch"))
+        {
+            long startTicks = Stopwatch.GetTimestamp();
+            double ticksToMs = 1000.0 / Stopwatch.Frequency;
 
-			// Атомарно резервируем непрерывный диапазон чанков — без дублей/пропусков
-			// между потоками (раньше был Interlocked.Increment на каждый offset).
-			// Без Math.Abs: Math.Abs(int.MinValue) кидает OverflowException при
-			// переполнении счётчика — вместо этого двойной mod в [0, totalChunks).
-		int oldScan = Interlocked.Add(ref _chunkScanIndex, chunksToProcess) - chunksToProcess;
-		int baseChunk = ((oldScan % totalChunks) + totalChunks) % totalChunks;
+            bool hasStockpileSpace = StockpileManager.Instance.HasFreeSpace;
+            bool hasAvailableLogs = GroundItemManager.Instance.HasAvailableLogs;
 
-		int totalAssigned = 0;
+            int toCollect = Math.Min(idleCount, MaxBatchWorkers);
+            int collected = IdleWorkers.CollectIdleWorkers(toCollect, _workerBatchBuffer, pool);
+            if (collected <= 0)
+                return;
 
-		// P0-1: без Stopwatch/Record/Count на проход — Dispatch вызывается сотни
-		// раз/с, каждый Record = Interlocked + строковый ключ.
-		// Динамика вместо статического Partitioner: чанк с «тяжёлыми»
-		// OnStart-резервами (TryReserve под lock) больше не сталлит соседей —
-		// свободные потоки разбирают остаток очереди батчами.
-		DynamicWorkBalancer.ForEachRange(chunksToProcess, (start, end) =>
-		{
-			int local = 0;
-			for (int offset = start; offset < end; offset++)
-			{
-				int chunkIndex = (baseChunk + offset) % totalChunks;
-				local += DispatchChunk(chunkIndex, pool, ctx);
-			}
-			if (local > 0)
-				Interlocked.Add(ref totalAssigned, local);
-		}, "Dispatcher.Balance");
-			// totalAssigned больше не гейтит spill/global (см. ниже) — оставлен
-			// для профайлинга/диагностики.
+            JobIndex.BeginClaimEpoch();
 
-	// Spill-over: бездельники, которым не нашлось работы в СВОЁМ чанке, ищут её
-	// в расширяющемся кольце соседних чанков (то есть идут к ближайшей свободной
-	// работе). Раньше гейт был `totalAssigned <= 0` — то есть спилл запускался,
-	// только если чанк-проход не назначил НИЧЕГО на всей карте. Из-за этого
-	// работа шла только там, где физически стоят бездельники: у фермы в 100k+
-	// клеток дальние чанки (531 из 542 в замере!) не получали ни одного рабочего
-	// и не обрабатывались НИКОГДА — визуально «полосы».
-	// ВАЖНО: новая эпоха memo перед spill — chunk-проход уже выполнил
-	// OnStart для назначенных (TryReserve/ReleaseReservation мутируют
-	// тоталы Ground._totalAvailableByType и свободные слоты склада),
-	// memo CanAgentExecute от параллельного прохода после этого stale.
-	if (IdleWorkers.TotalIdleCount > 0 && JobIndex.UnclaimedCount > 0)
-	{
-			// P0-1: без замера — дешёвый проход, Record дороже него.
-			JobIndex.BeginClaimEpoch();
-			SpillOverPass(pool, ctx);
-		}
+            // task-2/perf: ротация стартового индекса пакета idle-агентов.
+            // Батч обрабатывается до исчерпания кванта (MaxDispatchBudgetMs), а
+            // CollectIdleWorkers всегда копирует пул с нулевого индекса и swap-and-pop
+            // не двигает агентов, которым работа не подошла. Поэтому при фиксированном
+            // старте одни и те же «необслуживаемые» агенты в голове массива выжигали
+            // весь квант каждый диспатч, а агенты в хвосте батча не осматривались
+            // НИКОГДА — визуально «работу распределяют очень медленно». Тот же приём
+            // уже применён в ZoneManager (_zoneScanIndex) и FillPrioritizedUnclaimed.
+            // Первый диспатч стартует с 0 — поведение не меняется.
+            int scanStart = _dispatchScanCursor % collected;
+            if (scanStart < 0)
+                scanStart = 0;
 
-		// Global: fallback для дальних задач. Дорогой проход (Fill O(N) + Sort
-		// O(N log N) + O(W×J) однопоточно с lock'ами в CanAgentExecute) — при
-		// больших объёмах каждый вызов кладёт симуляцию: sim-цикл ждёт
-		// DispatchPendingJobs, шаги не идут, 100x превращается в слайд-шоу при
-		// низкой загрузке CPU. Поэтому троттлинг по реальному времени:
-		// не чаще раза в 2с, остальное покрывают chunk+spill.
-		if (IdleWorkers.TotalIdleCount > 0 && JobIndex.UnclaimedCount > 0)
-		{
-			long now = DateTime.UtcNow.Ticks;
-			// P0-1: без замеров/счётчиков — проход раз в 2с, Record/Count дороже пользы.
-			if (now - _lastGlobalPassTicks >= GlobalPassMinInterval.Ticks)
-			{
-				_lastGlobalPassTicks = now;
-				// Та же причина, что у spill выше: spill-проход мутирует резервы
-				// через OnStart — memo от chunk/spill stale, открываем эпоху.
-				JobIndex.BeginClaimEpoch();
-				GlobalRedistributePass(pool, ctx);
-			}
-		}
-		}
-	}
+            int assigned = 0;
+            int examined = 0;
+            for (int n = 0; n < collected; n++)
+            {
+                // Проверка бюджета времени каждые 64 назначения
+                if ((n & 63) == 0 && n > 0)
+                {
+                    double elapsedMs = (Stopwatch.GetTimestamp() - startTicks) * ticksToMs;
+                    if (elapsedMs >= MaxDispatchBudgetMs)
+                        break;
+                }
 
-	/// <summary>
-	/// Processes one chunk: collects idle workers and assigns them jobs.
-	/// </summary>
-	private int DispatchChunk(int chunkIndex, AgentDataPool pool, SimulationContext ctx)
-	{
-		// Сначала дешёвая проверка работ: пустой чанк — два volatile-read,
-		// сбор воркеров (проход linked-списка) не нужен вообще.
-		if (JobIndex.GetChunkJobCount(chunkIndex) == 0)
-			return 0;
+                examined = n + 1;
+                int i = scanStart + n;
+                if (i >= collected)
+                    i -= collected;
 
-		int workerCount = IdleWorkers.CollectIdleWorkersInChunk(
-			chunkIndex, WorkersPerChunkBudget, _workerBuffer.Value, pool);
-		if (workerCount == 0) return 0;
+                int agentIndex = _workerBatchBuffer[i];
+                if (agentIndex < 0 || agentIndex >= pool.Capacity || pool.States[agentIndex] != AgentState.Idle)
+                    continue;
 
-		int assigned = 0;
+                // Атомарно резервируем агента
+                if (Interlocked.CompareExchange(ref pool.CurrentJobId[agentIndex], AgentReservedMarker, -1) != -1)
+                    continue;
 
-		for (int wi = 0; wi < workerCount; wi++)
-		{
-			// Cap на чанк: остальные рабочие остаются idle и их подберут
-			// соседние чанки (spill) / global — вместо 48 claim-попыток в один чанк.
-			if (assigned >= MaxAssignPerChunk)
-				break;
+                try
+                {
+                    int ax = pool.CurrentCellX[agentIndex];
+                    int ay = pool.CurrentCellY[agentIndex];
 
-			int agentIndex = _workerBuffer.Value[wi];
-			if (agentIndex < 0 || agentIndex >= pool.Capacity)
-				continue;
-			if (pool.States[agentIndex] != AgentState.Idle)
-				continue;
+                    if (JobIndex.TryClaimJobForAgent(
+                        ax, ay,
+                        pool.EquippedTools[agentIndex],
+                        pool, agentIndex, ctx,
+                        hasStockpileSpace, hasAvailableLogs,
+                        out var activeJob))
+                    {
+                        IdleWorkers.RemoveIdleWorker(agentIndex, pool);
+                        pool.CurrentJobId[agentIndex] = activeJob.Id;
+                        pool.CurrentJobType[agentIndex] = activeJob.TypeId;
 
-			// Atomically capture the idle worker: only one dispatch thread can
-			// move CurrentJobId from -1 to the reserved marker.
-			// P0-1: без счётчика коллизий (горячий параллельный путь).
-			if (Interlocked.CompareExchange(ref pool.CurrentJobId[agentIndex], AgentReservedMarker, -1) != -1)
-			{
-				continue;
-			}
+                        if (JobRegistry.TryGetHandler(activeJob.TypeId, out var handler))
+                        {
+                            try
+                            {
+                                handler.OnStart(agentIndex, activeJob, pool, ctx);
+                                pool.LastJobCategory[agentIndex] = (int)JobPriorityManager.Instance.GetCategory(activeJob.TypeId);
 
-			try
-			{
-				int workerTx = pool.CurrentCellX[agentIndex];
-				int workerTy = pool.CurrentCellY[agentIndex];
+                                if (pool.States[agentIndex] == AgentState.Idle)
+                                {
+                                    // Откат при отказе OnStart
+                                    int rollbackId = pool.CurrentJobId[agentIndex];
+                                    if (rollbackId != -1)
+                                    {
+                                        JobIndex.ReleaseWorkerClaim(rollbackId);
+                                        pool.CurrentJobId[agentIndex] = -1;
+                                        pool.CurrentJobType[agentIndex] = JobTypeId.None;
+                                    }
+                                    IdleWorkers.AddIdleWorker(agentIndex, pool);
+                                }
+                                else
+                                {
+                                    assigned++;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                GD.PrintErr($"[JobDispatcher] OnStart ошибка: {ex.Message}");
+                                JobIndex.ReleaseWorkerClaim(activeJob.Id);
+                                pool.CurrentJobId[agentIndex] = -1;
+                                pool.CurrentJobType[agentIndex] = JobTypeId.None;
+                                pool.States[agentIndex] = AgentState.Idle;
+                                IdleWorkers.AddIdleWorker(agentIndex, pool);
+                            }
+                        }
+                        else
+                        {
+                            JobIndex.ReleaseWorkerClaim(activeJob.Id);
+                            pool.CurrentJobId[agentIndex] = -1;
+                            pool.CurrentJobType[agentIndex] = JobTypeId.None;
+                            IdleWorkers.AddIdleWorker(agentIndex, pool);
+                        }
+                    }
+                    else
+                    {
+                        // Работа не найдена — возвращаем агента
+                        pool.CurrentJobId[agentIndex] = -1;
+                    }
+                }
+                catch
+                {
+                    pool.CurrentJobId[agentIndex] = -1;
+                    throw;
+                }
+            }
 
-				if (JobIndex.TryClaimForWorkerInChunk(
-					chunkIndex, workerTx, workerTy,
-					pool.EquippedTools[agentIndex],
-					pool, agentIndex, ctx,
-					out var activeJob))
-				{
-					IdleWorkers.RemoveIdleWorker(agentIndex, pool);
-					pool.CurrentJobId[agentIndex] = activeJob.Id;
-					pool.CurrentJobType[agentIndex] = activeJob.TypeId;
+            // Курсор остаётся в [0, collected): следующий диспатч продолжит с того места,
+            // на котором оборвался квант (при полном проходе — с прежней позиции).
+            _dispatchScanCursor = (_dispatchScanCursor + examined) % collected;
+        }
+    }
 
-					if (JobRegistry.TryGetHandler(activeJob.TypeId, out var handler))
-					{
-						try
-						{
-							// P0-1: без счётчиков onstart (ToString+lock на каждое назначение).
-							handler.OnStart(agentIndex, activeJob, pool, ctx);
-							pool.LastJobCategory[agentIndex] = (int)JobPriorityManager.Instance.GetCategory(activeJob.TypeId);
-							if (pool.States[agentIndex] == AgentState.Idle)
-							{
-								// OnStart тихо вернул агента в Idle (транзиентный фейл
-								// резерва): claim уже удерживается, агент уже удалён
-								// из idle-сетки. Без явного отката агент потерян:
-								// State==Idle, но не в сетке, CurrentJobId != -1,
-								// claim висит. Откатываем полностью.
-								// (Часть хендлеров уже сами делают Release+AddIdle
-								// в fail-ветке — тогда CurrentJobId==-1 и обе ветки
-								// ниже no-op: ReleaseWorkerClaim(-1) early-out,
-								// AddIdleWorker дедуплицируется по _inGrid.)
-								int rollbackId = pool.CurrentJobId[agentIndex];
-								if (rollbackId != -1)
-								{
-									JobIndex.ReleaseWorkerClaim(rollbackId);
-									pool.CurrentJobId[agentIndex] = -1;
-									pool.CurrentJobType[agentIndex] = JobTypeId.None;
-								}
-								IdleWorkers.AddIdleWorker(agentIndex, pool);
-							}
-							else
-							{
-								assigned++;
-							}
-						}
-						catch (Exception ex)
-						{
-							GD.PrintErr($"[JobDispatcher] OnStart error {activeJob.TypeId} (agent #{agentIndex}): {ex.Message}\n{ex.StackTrace}");
-							JobIndex.ReleaseWorkerClaim(activeJob.Id);
-							pool.CurrentJobId[agentIndex] = -1;
-							pool.CurrentJobType[agentIndex] = JobTypeId.None;
-							pool.States[agentIndex] = AgentState.Idle;
-							IdleWorkers.AddIdleWorker(agentIndex, pool);
-						}
-					}
-					else
-					{
-						JobIndex.ReleaseWorkerClaim(activeJob.Id);
-						pool.CurrentJobId[agentIndex] = -1;
-						pool.CurrentJobType[agentIndex] = JobTypeId.None;
-						IdleWorkers.AddIdleWorker(agentIndex, pool);
-					}
-				}
-				else
-				{
-					// No job claimed - release the reserved worker back to the idle pool.
-					pool.CurrentJobId[agentIndex] = -1;
-				}
-			}
-			catch
-			{
-				// Never leave an agent stuck in the reserved state.
-				pool.CurrentJobId[agentIndex] = -1;
-				throw;
-			}
-		}
+    public int RegisterJob(JobData job) => JobIndex.RegisterJob(job);
+    public void RegisterBatch(List<JobData> jobs) => JobIndex.RegisterBatch(jobs);
+    public void UnregisterJob(int jobId) => JobIndex.RemoveJob(jobId, out _);
+    public bool TryUnregisterJob(int jobId) => JobIndex.RemoveJob(jobId, out _);
+    public void UnregisterJobByPos(int x, int y, JobTypeId type) => JobIndex.RemoveJobByPos(x, y, type, out _);
+    public void UnregisterBatchByPositions(List<(int X, int Y)> positions, JobTypeId type) => JobIndex.RemoveBatchByPositions(positions, type);
 
-		return assigned;
-	}
+    public void ReleaseJobWorker(int agentIndex, AgentDataPool pool, SimulationContext ctx)
+    {
+        int jobId = pool.CurrentJobId[agentIndex];
+        if (jobId == AgentReservedMarker)
+        {
+            pool.CurrentJobId[agentIndex] = -1;
+            pool.CurrentJobType[agentIndex] = JobTypeId.None;
+            return;
+        }
 
-	/// <summary>
-	/// Spill-over pass: для оставшихся без работы агентов ищем задачи в соседних чанках.
-	/// </summary>
-	private void SpillOverPass(AgentDataPool pool, SimulationContext ctx)
-	{
-		int remaining = IdleWorkers.CollectIdleWorkers(WorkersPerChunkBudget, _workerBuffer.Value, pool);
-		if (remaining == 0) return;
+        if (jobId != -1)
+        {
+            if (JobRegistry.TryGetHandler(pool.CurrentJobType[agentIndex], out var handler))
+            {
+                try
+                {
+                    handler.OnCancel(agentIndex, pool, ctx);
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr($"[JobDispatcher] OnCancel error #{agentIndex}: {ex.Message}");
+                }
+            }
 
-		// Cap spill-прохода: раньше перебирал всех собранных idle (до 48) с кольцом
-		// 3x3 чанка и TryClaim в каждом — до 48*9 claim-сканов за вызов.
-		// Бюджет рабочих — как у чанк-прохода: спилл теперь основной путь для
-		// «работы есть, а рядом рабочих нет», а не добивка.
-		int spillBudget = Math.Min(remaining, WorkersPerChunkBudget);
+            // §119 P2: Worker'а прервали (нужды/watchdog/отмена) — работа
+            // возвращается в ОЧЕРЕДЬ ЕГО ЗОНЫ (прогресс в клетке уже сохранён
+            // хендлером через CellProgressStore/WorkProgressTracker). Клейм
+            // пирамиды тоже снимается: работа снова unclaimed — следующий
+            // Worker зоны может её заклеймить, а после 60с она доступна и
+            // Laborer'ам. Laborer'у — легаси: только ReleaseWorkerClaim.
+            if (pool.Classes[agentIndex] == AgentClass.Worker)
+            {
+                JobIndex.ReleaseWorkerClaim(jobId);
+                ZoneJobRouter.Instance.Unassign(jobId);
+            }
+            else
+                JobIndex.ReleaseWorkerClaim(jobId);
+            pool.CurrentJobId[agentIndex] = -1;
+            pool.CurrentJobType[agentIndex] = JobTypeId.None;
+        }
 
-		for (int wi = 0; wi < spillBudget; wi++)
-		{
-			int agentIndex = _workerBuffer.Value[wi];
-			if (agentIndex < 0 || agentIndex >= pool.Capacity || pool.States[agentIndex] != AgentState.Idle)
-				continue;
+        pool.WaypointCount[agentIndex] = 0;
+        pool.WaypointIndex[agentIndex] = 0;
+        pool.States[agentIndex] = AgentState.Idle;
+        pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
+        // §119 P2: Worker НЕ возвращается в общий пул бездельников — его
+        // выдаёт только его зона (WorkerZoneJobSystem). Laborer — как раньше.
+        if (pool.Classes[agentIndex] != AgentClass.Worker)
+            IdleWorkers.AddIdleWorker(agentIndex, pool);
+    }
 
-			// Та же CAS-защита, что в DispatchChunk: spill/global идут после
-			// параллельного прохода и могут увидеть stale idle-снимок.
-			if (Interlocked.CompareExchange(ref pool.CurrentJobId[agentIndex], AgentReservedMarker, -1) != -1)
-				continue;
+    public void ReleaseJobWorkerForStuck(int agentIndex, AgentDataPool pool, SimulationContext ctx, int cooldownMs = 5000)
+    {
+        int jobId = pool.CurrentJobId[agentIndex];
+        if (jobId != -1 && jobId != AgentReservedMarker)
+        {
+            // §119 P2: Worker'у «упёрся в стену» кулдаун недостижимости НЕ ставим —
+            // работа возвращается в очередь его зоны (ReleaseJobWorker ниже),
+            // где её подберёт следующий Worker этой зоны. Laborer — как раньше.
+            if (pool.Classes[agentIndex] != AgentClass.Worker)
+                JobIndex.MarkJobUnreachable(jobId, cooldownMs);
+        }
+        ReleaseJobWorker(agentIndex, pool, ctx);
+    }
 
-			try
-			{
-			int workerTx = pool.CurrentCellX[agentIndex];
-			int workerTy = pool.CurrentCellY[agentIndex];
-			int centerChunk = GenericJobSpatialIndex.GetChunkIndexStatic(workerTx, workerTy);
+    /// <summary>
+    /// §119 P2: клейм РАБОТЫ ЗОНЫ для Worker'а (роутер уже выдал ZoneJob).
+    /// Фиксирует клейм в реестре по id и инициализирует состояние агента
+    /// хендлером (OnStart). Вызывается ТОЛЬКО из WorkerZoneJobSystem; валидацию
+    /// работы вызывающий уже провёл — здесь чистая фиксация.
+    /// </summary>
+    public bool TryAssignWorkerToZoneJob(int agentIndex, int jobId, AgentDataPool pool, SimulationContext ctx)
+    {
+        // Атомарный резерв агента (тот же маркер, что в DispatchPendingJobs).
+        if (Interlocked.CompareExchange(ref pool.CurrentJobId[agentIndex], AgentReservedMarker, -1) != -1)
+            return false;
+        try
+        {
+            if (!JobIndex.TryClaimJobById(jobId, out var activeJob))
+            {
+                pool.CurrentJobId[agentIndex] = -1;
+                return false;
+            }
 
-			bool found = false;
-			int centerCx = centerChunk % ChunkDim;
-			int centerCy = centerChunk / ChunkDim;
+            IdleWorkers.RemoveIdleWorker(agentIndex, pool);
+            pool.CurrentJobId[agentIndex] = activeJob.Id;
+            pool.CurrentJobType[agentIndex] = activeJob.TypeId;
 
-			for (int r = 0; r <= MaxSpillRing && !found; r++)
-			{
-				int minCx = Math.Max(0, centerCx - r);
-				int maxCx = Math.Min(ChunkDim - 1, centerCx + r);
-				int minCy = Math.Max(0, centerCy - r);
-				int maxCy = Math.Min(ChunkDim - 1, centerCy + r);
+            if (JobRegistry.TryGetHandler(activeJob.TypeId, out var handler))
+            {
+                try
+                {
+                    handler.OnStart(agentIndex, activeJob, pool, ctx);
+                    pool.LastJobCategory[agentIndex] = (int)JobPriorityManager.Instance.GetCategory(activeJob.TypeId);
+                    if (pool.States[agentIndex] == AgentState.Idle)
+                    {
+                        // OnStart отказал: откат по легаси-сценарию диспатчера.
+                        JobIndex.ReleaseWorkerClaim(activeJob.Id);
+                        ZoneJobRouter.Instance.Unassign(activeJob.Id);
+                        pool.CurrentJobId[agentIndex] = -1;
+                        pool.CurrentJobType[agentIndex] = JobTypeId.None;
+                        IdleWorkers.AddIdleWorker(agentIndex, pool);
+                        return false;
+                    }
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr($"[JobDispatcher] Worker OnStart ошибка: {ex.Message}");
+                    JobIndex.ReleaseWorkerClaim(activeJob.Id);
+                    ZoneJobRouter.Instance.Unassign(activeJob.Id);
+                    pool.CurrentJobId[agentIndex] = -1;
+                    pool.CurrentJobType[agentIndex] = JobTypeId.None;
+                    pool.States[agentIndex] = AgentState.Idle;
+                    IdleWorkers.AddIdleWorker(agentIndex, pool);
+                    return false;
+                }
+            }
 
-				for (int cx = minCx; cx <= maxCx && !found; cx++)
-				{
-					for (int cy = minCy; cy <= maxCy && !found; cy++)
-					{
-						if (r > 0 && cx > minCx && cx < maxCx && cy > minCy && cy < maxCy)
-							continue;
-
-						int chunkIdx = cy * ChunkDim + cx;
-						if (JobIndex.GetChunkJobCount(chunkIdx) == 0)
-							continue;
-
-						if (JobIndex.TryClaimForWorkerInChunk(
-							chunkIdx, workerTx, workerTy,
-							pool.EquippedTools[agentIndex],
-							pool, agentIndex, ctx,
-							out var spillJob))
-						{
-							IdleWorkers.RemoveIdleWorker(agentIndex, pool);
-							pool.CurrentJobId[agentIndex] = spillJob.Id;
-							pool.CurrentJobType[agentIndex] = spillJob.TypeId;
-
-							if (JobRegistry.TryGetHandler(spillJob.TypeId, out var handler))
-							{
-								try
-								{
-									handler.OnStart(agentIndex, spillJob, pool, ctx);
-									pool.LastJobCategory[agentIndex] = (int)JobPriorityManager.Instance.GetCategory(spillJob.TypeId);
-									if (pool.States[agentIndex] == AgentState.Idle)
-									{
-										// Тот же откат что в DispatchChunk: OnStart вернул
-										// в Idle — освобождаем claim, возвращаем в сетку.
-										int rollbackId = pool.CurrentJobId[agentIndex];
-										if (rollbackId != -1)
-										{
-											JobIndex.ReleaseWorkerClaim(rollbackId);
-											pool.CurrentJobId[agentIndex] = -1;
-											pool.CurrentJobType[agentIndex] = JobTypeId.None;
-										}
-										IdleWorkers.AddIdleWorker(agentIndex, pool);
-									}
-									found = true;
-								}
-								catch (Exception ex)
-								{
-									GD.PrintErr($"[JobDispatcher] Spill-over ошибка OnStart: {ex.Message}");
-									JobIndex.ReleaseWorkerClaim(spillJob.Id);
-									pool.CurrentJobId[agentIndex] = -1;
-									pool.CurrentJobType[agentIndex] = JobTypeId.None;
-									pool.States[agentIndex] = AgentState.Idle;
-									IdleWorkers.AddIdleWorker(agentIndex, pool);
-								}
-							}
-							else
-							{
-								JobIndex.ReleaseWorkerClaim(spillJob.Id);
-								pool.CurrentJobId[agentIndex] = -1;
-								pool.CurrentJobType[agentIndex] = JobTypeId.None;
-								pool.States[agentIndex] = AgentState.Idle;
-								IdleWorkers.AddIdleWorker(agentIndex, pool);
-							}
-							// Нет хендлера или OnStart упал — агент снова idle,
-							// дальше по кольцу искать ему нечего.
-							if (pool.States[agentIndex] == AgentState.Idle)
-								found = true;
-						}
-					}
-				}
-			}
-			if (!found)
-			{
-				// Работы рядом нет — снять резерв, вернуть в idle-сетку.
-				pool.CurrentJobId[agentIndex] = -1;
-			}
-			}
-			catch
-			{
-				pool.CurrentJobId[agentIndex] = -1;
-				throw;
-			}
-		}
-	}
-
-	/// <summary>
-	/// Глобальный fallback-распределитель работы.
-	/// После локального/чанкового прохода собирает простаивающих работников по всей
-	/// карте и назначает им ближайшие незахваченные задачи из глобального
-	/// приоритизированного списка. Исправляет ситуацию, когда работа распределялась
-	/// только в пределах нескольких чанков рядом с целью.
-	/// </summary>
-	private void GlobalRedistributePass(AgentDataPool pool, SimulationContext ctx)
-	{
-		var buf = _globalWorkerBuffer.Value;
-		int remaining = IdleWorkers.CollectIdleWorkers(MaxGlobalWorkers, buf, pool);
-		if (remaining == 0)
-			return;
-
-		// Переиспользуемый буфер вместо new List каждый тик (меньше GC-давления).
-		// P1: Fill уже отдаёт топ приоритета отсортированным — режем хвост:
-		// скан ≤ MaxGlobalClaimScan вместо всех 512 (O(W×128) вместо O(W×512)).
-		var candidates = _globalCandidates;
-		JobIndex.FillPrioritizedUnclaimed(candidates);
-		if (candidates.Count == 0)
-			return;
-		if (candidates.Count > MaxGlobalClaimScan)
-			candidates.RemoveRange(MaxGlobalClaimScan, candidates.Count - MaxGlobalClaimScan);
-
-		int globalAssigned = 0;
-		for (int wi = 0; wi < remaining; wi++)
-		{
-			// P1: global — добивка, не второй диспетчер: хватит MaxGlobalAssign
-			// назначений за проход (остальные — chunk/spill следующих тиков).
-			if (globalAssigned >= MaxGlobalAssign)
-				break;
-			int agentIndex = buf[wi];
-			if (agentIndex < 0 || agentIndex >= pool.Capacity || pool.States[agentIndex] != AgentState.Idle)
-				continue;
-
-			if (Interlocked.CompareExchange(ref pool.CurrentJobId[agentIndex], AgentReservedMarker, -1) != -1)
-				continue;
-
-			try
-			{
-			int workerTx = pool.CurrentCellX[agentIndex];
-			int workerTy = pool.CurrentCellY[agentIndex];
-
-			if (JobIndex.TryClaimFromCandidateList(
-				candidates, workerTx, workerTy,
-				pool.EquippedTools[agentIndex],
-				pool, agentIndex, ctx,
-				out var claimedJob))
-			{
-				IdleWorkers.RemoveIdleWorker(agentIndex, pool);
-				pool.CurrentJobId[agentIndex] = claimedJob.Id;
-				pool.CurrentJobType[agentIndex] = claimedJob.TypeId;
-
-				if (JobRegistry.TryGetHandler(claimedJob.TypeId, out var handler))
-				{
-					try
-					{
-						handler.OnStart(agentIndex, claimedJob, pool, ctx);
-						pool.LastJobCategory[agentIndex] = (int)JobPriorityManager.Instance.GetCategory(claimedJob.TypeId);
-						if (pool.States[agentIndex] == AgentState.Idle)
-						{
-							// Тот же откат что в DispatchChunk: OnStart вернул
-							// в Idle — освобождаем claim, возвращаем в сетку.
-							int rollbackId = pool.CurrentJobId[agentIndex];
-							if (rollbackId != -1)
-							{
-								JobIndex.ReleaseWorkerClaim(rollbackId);
-								pool.CurrentJobId[agentIndex] = -1;
-								pool.CurrentJobType[agentIndex] = JobTypeId.None;
-							}
-							IdleWorkers.AddIdleWorker(agentIndex, pool);
-						}
-						else
-						{
-							globalAssigned++;
-						}
-					}
-					catch (Exception ex)
-					{
-						GD.PrintErr($"[JobDispatcher] Global-распределитель ошибка OnStart: {ex.Message}");
-						JobIndex.ReleaseWorkerClaim(claimedJob.Id);
-						pool.CurrentJobId[agentIndex] = -1;
-						pool.CurrentJobType[agentIndex] = JobTypeId.None;
-						pool.States[agentIndex] = AgentState.Idle;
-						IdleWorkers.AddIdleWorker(agentIndex, pool);
-					}
-				}
-				else
-				{
-					JobIndex.ReleaseWorkerClaim(claimedJob.Id);
-					pool.CurrentJobId[agentIndex] = -1;
-					pool.CurrentJobType[agentIndex] = JobTypeId.None;
-					pool.States[agentIndex] = AgentState.Idle;
-					IdleWorkers.AddIdleWorker(agentIndex, pool);
-				}
-			}
-			else
-			{
-				pool.CurrentJobId[agentIndex] = -1;
-			}
-			}
-			catch
-			{
-				pool.CurrentJobId[agentIndex] = -1;
-				throw;
-			}
-		}
-	}
-
-	public int RegisterJob(JobData job) => JobIndex.RegisterJob(job);
-	public void RegisterBatch(List<JobData> jobs) => JobIndex.RegisterBatch(jobs);
-	public void UnregisterJob(int jobId) => JobIndex.RemoveJob(jobId, out _);
-	/// <summary>Unregister с результатом: true — работа реально удалена (счётчик
-	/// _unclaimedCount уже поправлен внутри RemoveJob), false — её уже не было
-	/// (stale(holder после stuck-релиза/переиспользования id): тогда вызывающий
-	/// должен сам освободить claim через ReleaseWorkerClaim.</summary>
-	public bool TryUnregisterJob(int jobId) => JobIndex.RemoveJob(jobId, out _);
-	public void UnregisterJobByPos(int x, int y, JobTypeId type) => JobIndex.RemoveJobByPos(x, y, type, out _);
-	public void UnregisterBatchByPositions(List<(int X, int Y)> positions, JobTypeId type) => JobIndex.RemoveBatchByPositions(positions, type);
-
-	public void ReleaseJobWorker(int agentIndex, AgentDataPool pool, SimulationContext ctx)
-	{
-		// PERF F2: Scope убран — ReleaseJobWorker вызывается до 30k раз/кадр
-		// (шаттл-цикл 5–6 суб-степов на 100x): каждый Scope = GetOrAdd +
-		// Interlocked.Add + CAS-цикл MaxTicks в GameProfiler. Замер остаётся
-		// на верхнем уровне (Dispatcher.Balance / Phase3b_Balance).
-		{
-			int jobId = pool.CurrentJobId[agentIndex];
-			// Агент зарезервирован диспетчером (CAS-маркер), но claim ещё не взят:
-			// OnCancel/ReleaseWorkerClaim/MarkJobUnreachable для -2 недопустимы.
-			// Просто снимаем резерв — агент остаётся в текущем состоянии,
-			// диспетчер сам вернёт его в оборот (ветки отката) или он уже в сетке.
-			if (jobId == AgentReservedMarker)
-			{
-				pool.CurrentJobId[agentIndex] = -1;
-				pool.CurrentJobType[agentIndex] = JobTypeId.None;
-				return;
-			}
-			if (jobId != -1)
-			{
-				if (JobRegistry.TryGetHandler(pool.CurrentJobType[agentIndex], out var handler))
-				{
-					try
-					{
-						handler.OnCancel(agentIndex, pool, ctx);
-					}
-					catch (Exception ex)
-					{
-						GD.PrintErr($"[JobDispatcher] Ошибка OnCancel для агента #{agentIndex}: {ex.Message}");
-					}
-				}
-
-				JobIndex.ReleaseWorkerClaim(jobId);
-				pool.CurrentJobId[agentIndex] = -1;
-				pool.CurrentJobType[agentIndex] = JobTypeId.None;
-			}
-
-			// AddIdleWorker дедуплицируется по _inGrid (повторный вызов no-op),
-			// поэтому явной проверки «уже idle» здесь не нужно.
-			// ParallelRng вместо Random.Shared — ReleaseJobWorker вызывается из
-			// Commit-путей, которые теперь тоже параллельны (балансер Phase3b).
-			pool.States[agentIndex] = AgentState.Idle;
-			pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
-			IdleWorkers.AddIdleWorker(agentIndex, pool);
-		}
-	}
-
-	/// <summary>
-	/// Освобождение работника, который НЕ ДОБРАЛСЯ до работы (StuckTimer истёк).
-	/// Дополнительно помечает работу на короткий кулдаун «недостижимости»,
-	/// чтобы ближний бездельник не висел на ней вечно, а дальний (способный
-	/// обойти стену) успел её забрать через глобальный проход.
-	/// </summary>
-	public void ReleaseJobWorkerForStuck(int agentIndex, AgentDataPool pool, SimulationContext ctx, int cooldownMs = 5000)
-	{
-		int jobId = pool.CurrentJobId[agentIndex];
-		// -2 (резерв диспетчера) и -1 (нет работы) — кулдаун ставить не на что.
-		if (jobId != -1 && jobId != AgentReservedMarker)
-		{
-			JobIndex.MarkJobUnreachable(jobId, cooldownMs);
-		}
-		ReleaseJobWorker(agentIndex, pool, ctx);
-	}
+            JobIndex.ReleaseWorkerClaim(activeJob.Id);
+            ZoneJobRouter.Instance.Unassign(activeJob.Id);
+            pool.CurrentJobId[agentIndex] = -1;
+            pool.CurrentJobType[agentIndex] = JobTypeId.None;
+            IdleWorkers.AddIdleWorker(agentIndex, pool);
+            return false;
+        }
+        catch
+        {
+            pool.CurrentJobId[agentIndex] = -1;
+            throw;
+        }
+    }
 }

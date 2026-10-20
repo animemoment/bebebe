@@ -1,9 +1,76 @@
-# PLAN.md — Динамическая балансировка нагрузки между ядрами (straggler / long-tail mitigation)
+# PLAN.md — Унификация рендера ландшафта, устранение багов генерации чанков, очистка сущностей и аудит текстур
 
-> Godot 4.7 / C# / .NET 8. Язык плана — русский. Код проекта НЕ менялся, это только проектный документ для `@developer`.
-> Источник истины — `src/`. `project_code.txt` устарел, игнорировать (см. `AI_PROJECT_MAP.md`).
+> Godot 4.7 / C# / .NET 8. Язык плана — русский.
+> Источник истины — `src/` и `.tscn` сцены.
 
 ---
+
+## 99. План комплексного решения текущих задач
+
+### 99.1. Устранение обрывов чанков в воду и аномалий генерации мира
+- **Проблема**: В `WorldClimateGenerator.SampleBlendedCell` присутствовали жесткие скачки `if (isOceanRegion && blended.ElevationQ16 >= SeaLevelQ16) blended = blended with { ElevationQ16 = SeaLevelQ16 - 1 }` и дискретные скачки `organicDist >= 28` и `>= 44`. Это создавало ступенчатый разрыв (discontinuous cliff) на границах регионов (каждые 512 клеток), из-за чего целые чанки резко обрывались и превращались в воду с ровными искусственными краями.
+- **Решение**:
+  - `WorldClimateGenerator.SampleBlendedCell`: устранить дискретные ступенчатые срезы высоты. Использовать чистую непрерывную билинейную интерполяцию с мягким естественным уклоном в сторону океана.
+  - `UnifiedWorldGenerator.SampleCell`: сделать `mountainLift` непрерывным через плавное затухание к уровню моря (`shoreFade = Math.Clamp((elevation - SeaLevel) / 2000f, 0, 1)`), исключив прыжок в 10,000 единиц высоты при пересечении уровня моря.
+  - Сгладить переход `coastalMod` через непрерывное окно `1.0 - abs(distToSeaLevel) / 4000f`.
+
+### 99.2. Повсеместное отображение шейдера сглаживания границ тайлов (`terrain_blend.gdshader`)
+- **Проблема**: `MapRenderer._groundSurface` был жестко привязан к размеру 512×512 тайлов колонии и координатам `(0, 0)`. За пределами колонии работал `StreamingWorldView._groundLayer` со старым шейдером `streaming_ground.gdshader`, который не имел алгоритма сглаживания берегов (Hermite-интерполяции весов биомов и FBM-шума береговой линии).
+- **Решение**:
+  - Перевести `MapRenderer._groundSurface` на динамическое позиционирование вокруг камеры игрока (окно 512×512 тайлов со сдвигом сетки кратно 64 тайлам / 1 чанку).
+  - Динамически обновлять текстуру `terrain_map` (R8 Image): для клеток внутри `[0, MapWidth) x [0, MapHeight)` брать тип из `MapData.Ground` и `GetBiome()`, для клеток за пределами — брать тип из `WorldCellQuery.TerrainAt`.
+  - Устанавливать `uniform vec2 map_origin` в `terrain_blend.gdshader` в соответствии с положением окна.
+  - В `StreamingWorldView`: сделать `_groundLayer.Visible = false` при активной поверхности `_groundSurface`, чтобы не возникало артефактов двойного наложения тайлов.
+  - Обеспечить 0 GC аллокаций: переиспользуемый статический массив `byte[] _terrainBuffer`.
+
+### 99.3. Устранение белых кругов / псевдо-поселенцев
+- **Проблема**: В `scenes/main/Main.cs` создавался узел `WorldAgentRenderer`, который рисовал белые круги (`IdleColor = new Color(0.8f, 0.8f, 0.85f)`) через метод `DrawCircle`. Игрок видел белые круги вместо поселенцев. Также в `hud.tscn`, `JobDisplay.tscn` и `Prioritet.tscn` кнопка фермерства использовала пиктограмму белого силуэта человека с вилами (`farming.png`).
+- **Решение**:
+  - В `Main.cs`: удалить создание и отрисовку `WorldAgentRenderer`, так как все колонисты симулируются основным потоком `AgentSimulationThread` и отображаются `AgentRenderer` со спрайтами `people.png`.
+  - В `scenes/ui/hud.tscn`, `scenes/ui/JobDisplay.tscn`, `scenes/ui/Prioritet.tscn`: заменить `farming.png` на `Wheat.png` (`uid://bwtxffukyyje0`), красивую и понятную пиктограмму снопа пшеницы.
+
+### 99.4. Исправление текстур грядок (устранение кукурузы вместо грядок)
+- **Проблема**:
+  1. В `scenes/main/Main.tscn` в `TileSetAtlasSource_sjxhf` для `GardenBeds` были прописаны тайлы `0:1`, `1:1`, `2:1`, `3:1`, `0:2`. Тайл `0:2` — это ярко-желтая спелая кукуруза из атласа `GardenBeds.png`. Автотайлинг Godot выбирал его при размещении грядок.
+  2. В `src/ui/streaming/StreamingWorldView.cs` в строках 1594 и 1612 вызывались `_markLayer.SetCell(pos, SrcCrop, Vector2I.Zero);` и `_planLayer?.SetCell(pos, SrcCrop, Vector2I.Zero);`, где `SrcCrop = 8` (`food/corn.png`). Это принудительно рисовало иконку кукурузы на каждой клетке фермы.
+- **Решение**:
+  - В `Main.tscn`: удалить из `TileSetAtlasSource_sjxhf` тайлы роста и желтой кукурузы (`0:1`, `1:1`, `2:1`, `3:1`, `0:2`), оставив только 4 базовых тайла вспаханной земли первого ряда (`0:0`, `1:0`, `2:0`, `3:0`).
+  - В `StreamingWorldView.cs`: удалить принудительную установку `SrcCrop` в `_markLayer` и `_planLayer`. Слой `_farmTerrain` корректно отрисует автотайлинговые грядки без наложения кукурузы.
+
+### 99.5. Аудит текстур PNG и TileMapLayers
+- Проверить наличие и валидность всех текстур в проекте.
+- Убедиться, что `AgentRenderer` корректно использует `people.png` (`uid://clysp24n2dgat`).
+- Проверить, что все слои `TileMapLayer` очищаются и обновляются без утечек памяти и 0 аллокаций в per-frame тиках.
+
+---
+
+## 100. Комплексное устранение фризов при движении камеры и исправление критических геймплейных механик
+
+### 100.1. Устранение спайков и фризов при движении камеры (UpdateTerrainWindow)
+- **Проблема**: При перемещении камеры (`W/A/S/D`) на 64 тайла в `MapRenderer._Process` синхронно вызывался `UpdateTerrainWindow(originX, originY)`. Внутри `Parallel.For` вызывал `WorldCellQuery.CellAt` 262 144 раза (512x512) с полным расчетом мультифракталов, шумов и деформаций. На 4 ядрах CPU это блокировало весь ThreadPool на 500-990 мс, вызывая голодание потока симуляции колонистов (пики в `Phase2`, `Phase3a`, `Phase3b`), а также Stop-The-World паузы GC Gen2.
+- **Решение**:
+  - В пределах колонии `[0..MapWidth, 0..MapHeight]` данные берутся моментально из `mapData.Ground` и `mapData.GetBiome` (O(1), <0.5 мс на все 262k клеток).
+  - Вычисление внешнего мира `WorldCellQuery.CellAt` выносится в фоновый `Task.Run` с двойным буфером, чтобы главный поток рендера никогда не блокировался. В `_Process` применяется уже готовый буфер `_terrainBuffer` через `_terrainTypeTexture.Update`.
+  - Применен дебаунс/троттлинг: не запускать новое фоновое обновление чаще, чем раз в 500 мс, если предыдущий таск еще работает.
+
+### 100.2. Ликвидация аллокаций в снапшотах (Gen2 Stop-The-World)
+- **Проблема**: В `AgentSimulationThread.PushSnapshot` на каждый снапшот (30-60 Гц) аллоцировался новый `Vector2[10000]` (~80 КБ), генерируя мегабайты мусора в секунду и провоцируя Full GC Gen2 (паузы >100 мс).
+- **Решение**:
+  - Реализован ring-буфер из 3 предварительно выделенных массивов `Vector2[capacity]` в `AgentSimulationThread`.
+  - `PositionQueue` оперирует переиспользуемыми массивами, исключая GC аллокации.
+
+### 100.3. Ресурсы склада и стройка/посадка (Stockpile Integration)
+- **Проблема**: В `StockpileHaulingJobHandler` и `StockpileManager`:
+  - `BlueprintDeliveryJobHandler` и `PlantingJobHandler` забирали ресурсы, но при отмене резерва или списании требовалось гарантировать возврат `ItemId.None` при опустошении слота склада, а также корректное падение в `GroundItemManager.TrySpillItemsAdjacent` при отсутствии склада.
+- **Решение**:
+  - В `StockpileManager.CancelReservation`: если слот пуст (`Count == 0 && ReservedIncoming == 0 && ReservedOutgoing == 0`), тип предмета сбрасывается в `ItemId.None`.
+  - В `StockpileHaulingJobHandler.CanAgentExecute`: если для стройки требуется расчистить клетку (`ConstructionManager.IsSiteAt`), но свободных мест на складе нет (`!StockpileManager.Instance.HasFreeSpace`), расчистка не зависает — предметы смещаются в соседнюю клетку через `TrySpillItemsAdjacent`.
+  - Проверено удаление грядок в `FarmJobManager.UnmarkPlotsBatch`: клетки удаляются из `_completedBeds` и `_markedPlots`, обновляя `ObstacleMask`.
+  - Устранена lock-инверсия в `GroundItemManager.TrySpillItemsAdjacent`: оповещения `FarmJobManager.NotifyItemCleared` и `ConstructionManager.NotifyHaulCleared` вызываются строго вне критической секции `_lock`.
+
+---
+
+# PLAN.md — Динамическая балансировка нагрузки между ядрами (straggler / long-tail mitigation)
 
 ## 0. Аудит текущего состояния (что найдено в корне `C:\s\bebebe-main`)
 
@@ -4367,8 +4434,2785 @@ $$T_{\text{hungry}} = T_{\text{current}} + \frac{70 - \text{CurrentHunger}}{\tex
    - `WanderJobSystem.cs`: проверка `ctx.Ground[tx, ty] != TileType.Water` при выборе случайной цели блуждания.
    - `HierarchicalPathfinder.cs`: тайлы воды получают `CostBlocked`, пути A* огибают водоемы.
    - `AgentMovementService.cs`: вода добавлена в фоллбек коллизий как блокирующий тайл.
-4. **Поворот агентов по ходу движения**:
-   - `AgentRenderer.cs`: добавлен массив `_facingAngles`, обновляющийся по $\Delta \vec{p} = \text{target} - \text{prev}$ при движении и сохраняющий угол при остановке.
-   - `AgentLerpBatch.cs`: буфер инстансов расширен до 16 float (Transform2D + COLOR с $(\cos, \sin)$ + INSTANCE_CUSTOM), `UseColors = _gpuInterpolationEnabled`.
-   - `AgentInterpolation.gdshader`: квад спрайта вращается в вертексном шейдере вокруг своего центра $(0, 0)$ перед трансляцией.
 
+---
+
+## 54. Адаптивная верстка нижнего бара HUD и оконный Clamping профайлера (@architect)
+
+### 54.1. Проблема и аудит
+1. **Нижний бар HUD уходит под экран**:
+   - Метод `AnchorToBottom(ctrl, bottomOffset, height)` в `HUDController.cs` рассчитывал:
+     `ctrl.OffsetTop = -bottomOffset; ctrl.OffsetBottom = -bottomOffset + height;`
+   - Для `_selectionContainer`: при `bottomOffset = 101f` и `height = 100f` `OffsetBottom` составлял `-1px`. При стандартных размерах кнопок (100x100) и масштабировании окна нижняя граница кнопок уходила в край экрана или скрывалась за панелью задач Windows.
+   - У контейнеров `_selectionContainer`, `_buildContainer`, `_orderContainer`, `_wallContainer`, `_zoneContainer`, `_industrialContainer` отсутствовали адаптивные горизонтальные якоря (`AnchorLeft`/`AnchorRight`), из-за чего кнопки прижаты к левому краю без безопасных отступов.
+2. **Окно профайлера F3**:
+   - При перетаскивании мышью отсутствовал clamping к границам экрана вьюпорта, что позволяло случайно утащить заголовок за пределы экрана.
+
+### 54.2. Архитектурное решение (@architect)
+1. **Безопасная высота и отступы в `AnchorToBottom`**:
+   - Добавить безопасный отступ снизу: `MarginBottom = 16px`.
+   - Для нижнего ряда `_selectionContainer`: `bottomOffset = 116px`, `height = 100px` -> `OffsetTop = -116px`, `OffsetBottom = -16px`.
+   - Для 2-го яруса (`_buildContainer`, `_orderContainer`): `bottomOffset = 224px`, `height = 100px` -> `OffsetTop = -224px`, `OffsetBottom = -124px`.
+   - Для 3-го яруса (`_wallContainer`, `_zoneContainer`, `_industrialContainer`): `bottomOffset = 332px`, `height = 100px` -> `OffsetTop = -332px`, `OffsetBottom = -232px`.
+   - Задать горизонтальный отступ: `OffsetLeft = 20px` от левого края (чтобы не упиралось в угол).
+2. **Clamping окна профайлера**:
+   - В `PerformanceOverlay.cs` ограничить позицию `_panel.Position` в пределах `[0, ViewportSize - PanelSize]`.
+
+---
+
+## 55. Полная перезагрузка и унификация системы строительства (С нуля) (@architect)
+
+### 55.1. Анализ первопричин текущих поломок и «костылей»
+
+Текущая реализация строительства страдала от фрагментации ответственности и рассинхронизации состояния:
+1. **Фрагментация объектов на разные менеджеры**:
+   - Деревянные стены жили изолированно в `WallBuildManager`, который создавался внутри `MapRenderer` (привязка логики симуляции к рендеру UI!).
+   - Мебель и станки жили в `BuildingManager.Instance` (синглтон).
+   - Чертежи и доставка ресурсов жили в `BlueprintManager.Instance`, где для стен были отдельные методы `IsWallBlueprintAt`, `GetWallBlueprints`.
+   - Жизненный цикл стройки пытался разруливать `ConstructionPipeline.Instance`, который был жестко завязан на стены (`site.WallType`), а для мебели вообще не вызывал завершение сайта.
+2. **Конфликты между системами и фазами (Race Conditions)**:
+   - `JobBroker.DeliverLogsToBlueprint` по завершении подноса брёвен СРАЗУ регистрировал работу `Construction`, минуя гейт готовности сайта `WaitForAllSiteResources`.
+   - `ConstructionPipeline.ReconcileTick` параллельно пытался удалить преждевременно созданные работы `Construction`.
+   - `ConstructionJobHandler.CanAgentExecute` глушил агентов проверкой `!IsStageAllowed`, вызывая циклический спавн/отмену работ и подвисание агентов.
+3. **Невозможность расширения без поломки существующих механик**:
+   - Добавление любого нового типа постройки (каменная стена, дверь, сундук, забор, многоклеточные постройки 2×2) требовало изменения switch/case в 10+ файлах (`MapRenderer`, `BuildObstacles`, `ConstructionPipeline`, `ConstructionJobHandler`, `BuildTool`, `ZoneDraftTool`).
+   - Коллизии (`ctx.SolidWalls`) проставлялись точечно вручную только для `WoodWall` внутри хендлера.
+
+---
+
+### 55.2. Новая архитектурная концепция: Unified Construction & Structure Engine
+
+Вся логика строительства и построенных структур переписывается **с нуля** вокруг 4 базовых китов:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        StructureDefinition                             │
+│   (Id, Name, Category, Size, RequiredMaterials, Flags: Solid/Shadow)  │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+           ┌────────────────────────┴─────────────────────────┐
+           ▼                                                  ▼
+┌──────────────────────────────────────┐  ┌──────────────────────────────┐
+│        ConstructionManager           │  │       StructureManager       │
+│  (Чертежи, этапы, ресурсы, работы)   │  │ (Все возведенные структуры)  │
+│                                      │  │ (Стены, мебель, двери и пр.) │
+│  Этапы:                              │  └──────────────┬───────────────┘
+│  1. Расчистка (Clearance)            │                 │
+│  2. Снабжение (Supplying)            │                 │ Обновление
+│  3. Постройка (Assembling)           │                 ▼
+│  4. Завершение ──────────────────────┼──► SolidWalls / FlowField
+└──────────────────────────────────────┘    ShadowCaster / MapRenderer
+```
+
+#### 1. Декларативное описание: `StructureDefinition` (`BuildingDef`)
+Каждый тип структуры описывается объектом данных (Data-Driven):
+- `string Id`: уникальный идентификатор (`"wall_wood"`, `"wall_stone"`, `"door_wood"`, `"workbench"`, `"bed"` и др.).
+- `StructureCategory`: `Wall` (автотайлинг), `Furniture` (одиночный спрайт), `Door` (проходимый с состоянием), `Production` (верстаки), `Structure` (многоклеточные).
+- `Vector2I Size`: размер занимаемой площади (по умолчанию 1×1, с поддержкой NxM).
+- `IReadOnlyList<MaterialCost> Costs`: список требуемых ресурсов (любые `ItemId`: бревна, камни, доски, а не только бревна).
+- `float BuildWorkDuration`: требуемый объем работы в секундах.
+- `bool BlocksMovement`: блокирует ли проходимость (`SolidWalls` / `HierarchicalPathfinder`).
+- `bool CastsShadow`: отбрасывает ли тень (`ShadowRenderer`).
+- `int VisualSourceId` / `VisualLayer`: правила привязки к слоям тайлмапа.
+
+#### 2. Единое хранилище возведенных объектов: `StructureManager`
+Полная замена `WallBuildManager` и старого `BuildingManager`.
+- Хранит сетку структур `StructureInstance` (координаты, состояние, прочность, ссылка на `StructureDefinition`).
+- Единый контракт событий:
+  - `event Action<StructureInstance> OnStructureAdded;`
+  - `event Action<StructureInstance> OnStructureRemoved;`
+- Автоматически синхронизирует проходимость (`SolidWalls`) и навигацию при изменении структуры.
+- Потокобезопасен (reader-writer lock или lock-free spatial grid).
+
+#### 3. Единый контроллер стройплощадок: `ConstructionManager`
+Полная замена `BlueprintManager`, `ConstructionPipeline` и `WorkProgressTracker`.
+- Управляет жизненным циклом строительной площадки (`ConstructionSite` / `BlueprintCell`):
+  1. **Phase 1: Clearance (Расчистка)**:
+     - Очистка площади стройки от деревьев, камней и лежащих предметов (`GroundItem`).
+     - Создание и отслеживание задач `TreeChopping`, `Mining`, `Hauling`.
+  2. **Phase 2: Delivery (Снабжение)**:
+     - Активация задач `SupplyJob` под конкретные материалы из рецепта.
+     - Корректная доставка без потери или испарения излишков ресурсов.
+  3. **Phase 3: Assembly (Сборка / Монтаж)**:
+     - Создание задачи `AssembleStructureJob`.
+     - Прогресс сборки (0..100%) передается в единый визуальный канал для эффекта строительства.
+  4. **Phase 4: Completion (Сдача объекта)**:
+     - Создание готовой структуры в `StructureManager`.
+     - Автоматическое выселение агентов из возведенной стены/препятствия (`EjectFromWall`).
+     - Очистка чертежа и освобождение клетки.
+
+#### 4. Чистое разделение со смежными системами (Separation of Concerns)
+- **Рендеринг (`MapRenderer`)**:
+  - Больше НЕ управляет логикой стен или чертежей!
+  - `MapRenderer` становится чистым подписчиком: слушает события `StructureManager` и `ConstructionManager` и отображает тайлы в соответствующие `TileMapLayer` (`_wallLayer`, `_buildingLayer`, `_blueprintLayer`, `_progressLayer`).
+- **Стриминг мира (`StreamingWorldManager`)**:
+  - Работает через абстракцию `IStructureWorld` вместо разрозненных `IWallWorld` и `IBlockWorld`.
+- **Инструменты игрока (`BuildTool`, `ZoneDraftTool`)**:
+  - Обращаются только к высокоуровневому методу `ConstructionManager.CreateSite(...)` или `CancelSite(...)`.
+
+---
+
+### 55.3. Пошаговый план внедрения (для перехода к фазе реализации)
+
+1. **Этап 1: Создание базовых структур данных и реестра**:
+   - `src/simulation/structures/StructureDefinition.cs`
+   - `src/simulation/structures/StructureRegistry.cs`
+   - `src/simulation/structures/StructureInstance.cs`
+2. **Этап 2: Создание `StructureManager`**:
+   - Хранение установленных структур, потокобезопасные методы `TryGetStructure`, `HasStructureAt`, `AddStructure`, `RemoveStructure`.
+   - Автоматическая интеграция с `SolidWalls` и оповещение инвалидации путей.
+3. **Этап 3: Создание унифицированного `ConstructionManager`**:
+   - Четкий конечный автомат площадки: `Clearance` -> `Delivery` -> `Assembly` -> `Done`.
+   - Управление чертежами, доставкой любых ресурсов и назначением работ.
+4. **Этап 4: Рефакторинг хендлеров задач (`IJobHandler`)**:
+   - Замена `BlueprintDeliveryJobHandler` и `ConstructionJobHandler` на чистые хендлеры, синхронизированные с `ConstructionManager`.
+5. **Этап 5: Адаптация рендеринга и UI (`MapRenderer`, `BuildTool`, `ZoneDraftTool`)**:
+   - Перевод рендереров и инструментов на новый `StructureManager` и `ConstructionManager`.
+   - Удаление устаревших файлов: `WallBuildManager.cs`, старого `BuildingManager.cs`, старого `BlueprintManager.cs`, `ConstructionPipeline.cs`.
+6. **Этап 6: Тестирование и верификация (@destroyer)**:
+   - Состязательные тесты на одновременную стройку стен и мебели, отмену строек, нехватку ресурсов, очистку препятствий, корректность коллизий и сохранений.
+
+### 55.4. Статус реализации (ВЫПОЛНЕНО)
+1. **Созданы новые сущности с нуля**:
+   - `StructureCategory.cs`, `StructureDefinition.cs`, `StructureInstance.cs`, `StructureRegistry.cs`.
+   - `StructureManager.cs` — единый потокобезопасный менеджер возведенных объектов с автоматическим выселением агентов, обновлением `SolidWalls` и инвалидацией путей.
+   - `ConstructionSite.cs`, `ConstructionManager.cs` — строгий конечный автомат: `Clearance` -> `Supplying` -> `Assembling` -> `Completed`.
+2. **Оптимизация рендера чертежей (ликвидация лагов при 500×500 = 250,000 чертежей)**:
+   - Устранен метод `RefreshAllBlueprints()`, вызывавший `_blueprintLayer.Clear()` и заново перебиравший сотни тысяч тайлов в UI потоке каждые 200мс.
+   - Все добавления/удаления чертежей (постройки и грядки ферм) переведены на **инкрементальные диффы** через очередь `_pendingCells`.
+   - Внедрен адаптивный бюджет обработки очереди клеток: при скоплении пачки клеток бюджет динамически увеличивается до 16,384 тайлов/кадр без фризов.
+3. **Обновление смежных подсистем**:
+   - `ConstructionJobHandler` и `BlueprintDeliveryJobHandler` подключены к `ConstructionManager` и `StructureManager`.
+   - `JobBroker.DeliverLogsToBlueprint` больше не создает преждевременные задачи `Construction` при включенном `WaitForAllSiteResources`.
+   - `BuildTool` и `ZoneDraftTool` переведены на `ConstructionManager` и `StructureRegistry`.
+   - `BuildingManager`, `WallBuildManager`, `BlueprintManager`, `ConstructionPipeline` переписаны как легкие адаптеры обратной совместимости.
+4. **Состязательное тестирование (@destroyer)**:
+   - Создан тест `tests/TestAdversarialConstruction.cs`: проверены граничные случаи, null-значения, стресс-тест создания/отмены 250,000 чертежей, защита от переполнения ресурсов, жизненный цикл и коллизии.
+   - `dotnet build`: **0 ошибок, 0 предупреждений**.
+
+---
+
+## 56. АРХИТЕКТУРА ИСПРАВЛЕНИЯ СТРОИТЕЛЬСТВА, СТРИМИНГ-МИРА И ГЕЙТИНГА ЭКСПЛУАТАЦИИ
+
+### 56.1. Анализ корневых причин выявленных проблем
+1. **Исчезновение чертежей после ConfirmDraft и отсутствие работ**:
+   - В `WorldPlacementPass.cs` и `StreamingToolPlacement.cs` метод `IsIslandCell` был ошибочно захардкожен на `return false;`.
+   - Из-за этого клетки колонии $[0, MapWidth) \times [0, MapHeight)$ определялись как «клетки бесконечного мира».
+   - В `ZoneDraftTool` островные множества `_zoneCells` и `_wallCells` оставались пустыми, а все клетки направлялись в `_worldZoneCells` и `_worldWallCells`.
+   - На этапе `Commit()` в `ConstructionManager.StartSitesBatch` передавался пустой список стен! Вызов `ClearGhost()` стирал призрачный слой, на слое чертежей ничего не создавалось, задачи колонии не создавались.
+2. **Пустоты/зазоры при разметке квадрата 100x100 на обычной траве**:
+   - В `WorldGameRules.CanPlantAt` присутствовало жесткое условие `cell.MoistureQ16 >= FarmMoistureMin && cell.MoistureQ16 <= FarmMoistureMax` (28000–56000), фильтровавшее нормальные тайлы травы на основе шума влажности.
+   - Из-за ложного `IsIslandCell == false` этот гейт применялся ко всем клеткам колонии.
+   - Кроме того, гейт блокировал клетки с метками вырубки/камня.
+3. **Преждевременное использование строящихся объектов (склад / верстак)**:
+   - При разметке склада со стенами `StockpileManager.Instance.AddZoneTilesBatch(zoneList)` вызывался мгновенно на `Commit()`, хотя стены еще не были построены. Пешки сразу начинали носить предметы в недостроенное здание.
+   - В `StockpileManager.TryReserveStockpileSlot` отсутствовала проверка `ConstructionManager.Instance.IsSiteAt`, разрешая складирование на стройплощадки.
+   - Отсутствовал контракт эксплуатационной готовности (`IsOperational`) для производственных станков и зданий.
+4. **Проседание FPS на CPU при зажатом драге больших областей (100x100, 500x500)**:
+   - В `ZoneDraftTool.OnDrag` на КАЖДЫЙ пиксель движения мыши (до 100+ раз/сек) выполнялся `RepaintGhost()`.
+   - При 100x100 (10 000 клеток) или 500x500 (250 000 клеток) каждый тик вызывал:
+     - 250 000 вызовов `_ghostLayer.EraseCell`;
+     - 250 000 семплов шума генератора в `PaintWorldDragPreview`;
+     - 250 000 вызовов `_ghostLayer.SetCell`;
+     - вызовы `SetCellsTerrainConnect` на массиве из тысяч клеток.
+   - Это вызывало десятки миллионов C++/C# межъязыковых вызовов в секунду на главном потоке.
+5. **Работоспособность StreamingWorld**:
+   - `WorldJobTicker` и `WorldAgentRenderer` не были подключены в `scenes/main/Main.cs` внутри `InitStreamingWorld`. В результате чертежи в стриминговом мире оставались без активных рабочих.
+
+### 56.2. Проект изменений
+1. **Восстановление границ острова колонии**:
+   - `WorldPlacementPass.IsIslandCell(x, y)`: `x >= 0 && y >= 0 && x < MapRenderer.MapWidth && y < MapRenderer.MapHeight`.
+   - `StreamingToolPlacement.IsIslandCell(x, y)`: `x >= 0 && y >= 0 && x < _islandWidth && y < _islandHeight`.
+   - Снятие искусственного зажима влажности в `WorldGameRules.CanPlantAt` (трава в загруженном чанке без препятствий всегда пригодна под посев).
+2. **Гейтинг готовности зданий и складов (`ConstructionManager`, `StockpileManager`, `StructureManager`)**:
+   - В `ConstructionManager`: поддержка отложенных зон склада (`pendingWarehouseZones`). Если склад строится со стенами, клетки зоны регистрируются за группой стройки и активируются в `StockpileManager` только после завершения всех стен группы.
+   - В `StockpileManager.TryReserveStockpileSlot`: запрет резервации, если на клетке находится `ConstructionManager.Instance.IsSiteAt`.
+   - В `StructureInstance` / `StructureManager`: введение `IsOperational` и методов `IsStructureOperational(x, y)`, `TryGetOperationalStructure(x, y, out structure)`.
+3. **Оптимизация рендера драга (Zero-CPU Drag)**:
+   - В `ZoneDraftTool.OnDrag`: пропуск вызова, если `currentTile == _dragCurrent`.
+   - Для больших областей ($> 2500$ клеток) драг отображается через GPU `SelectionBox`, а поклеточная заливка `TileMapLayer` выполняется при отпускании мыши (`OnRelease`) или только по периметру, исключая миллионы вызовов `SetCell` во время движения.
+4. **Интеграция StreamingWorld**:
+   - Очистка: удаление `WorldJobTicker` и `WorldAgentRenderer` по требованию пользователя.
+
+---
+
+## 57. АРХИТЕКТУРА ИСПРАВЛЕНИЯ ЗОН СКЛАДОВ, УСТРАНЕНИЯ РАБОЧИХ СТРИМИНГА, ЗУМА И ИЕРАРХИИ СТРОЙКИ
+
+### 57.1. Удаление рабочих стримингового мира
+- Полное и безвозвратное удаление `WorldJobTicker.cs`, `WorldAgentRenderer.cs`, `WorldJobBoard.cs`, `WorldPathFinder.cs` и их `.uid` файлов.
+- Удаление полей `_worldJobTicker` и `_worldAgentRenderer` из `scenes/main/Main.cs` и их регистрации в `InitStreamingWorld`.
+
+### 57.2. Визуализация и жизненный цикл зон склада (Pending Warehouse Zone)
+1. **Проблема**:
+   - При черчении склада (`ZoneDraftTool`) использовался `GhostGrassSource` на слое с белым цветом (трава на траве), поэтому цвет склада не был виден.
+   - В стриминговом мире `SrcStockpile` рисовал `icons/logistic_zone.png` (иконки вместо цветовой заливки).
+   - После подтверждения склада со стенами тайлы зоны вообще не отправлялись в рендер до конца стройки ("где зона склада? ее нет тупо").
+2. **Решение**:
+   - В `MapRenderer`: генерация фиолетовой текстуры складской зоны для `GhostStockpileSource = 106`, использование её в `GhostSourceForZone("warehouse")`.
+   - В `StreamingWorldView`: замена `icons/logistic_zone.png` на процедурный тайл складской зоны (фиолетовый с рамкой).
+   - В `StockpileManager`: метод `AddPendingZoneTilesBatch(tiles)`. Он регистрирует тайлы в `_pendingZones` и рассылает `OnZoneTilesBatchAdded`, благодаря чему складской фиолетовый слой виден игроку сразу, но `_storage` не активируется для складирования вещей до завершения стен.
+   - По завершении стен `ConstructionManager` вызывает `StockpileManager.Instance.ActivatePendingZone(tiles)`.
+
+### 57.3. Исчезновение чертежей при макро-зуме (LOD culling)
+- В `MapRenderer.cs:546-551` удалено скрытие `_ghostLayer.Visible = (zoom >= 0.20f)`. Черновики и чертежи должны быть видны при любом отдалении камеры.
+- В `StreamingWorldView.cs:637` скорректировано окно чанков при зуме, чтобы чертежи не отсекались за краем 8 чанков.
+
+### 57.4. Очистка внутренних препятствий в зданиях
+- В `ConstructionManager.StartSitesBatch`: клетки пола здания (`pendingWarehouseZone`) сканируются на деревья, камни и предметы, создавая задачи `TreeJobManager.MarkTreesBatch`, `StoneJobManager.MarkStonesBatch` и расчистки пола, гарантируя чистый пол внутри здания.
+
+### 57.5. Использование срубленных брёвен для стройки и устранение зависания агентов
+1. **Причина**:
+   - `TreeChoppingJobHandler` спавнил брёвна ровно на клетке срубленного дерева (`(tx, ty)`).
+   - Из-за этого на клетке стены лежали брёвна, а в `BlueprintDeliveryJobHandler.CanAgentExecute` стояла проверка `if (GroundItemManager.Instance.HasItemsAt) return false;` — поднос блокировался.
+   - В `BlueprintDeliveryJobHandler.Commit` цель движения выставлялась в центр клетки стены без `FindStandPosition`, и агент упирался в коллизию стены на расстоянии 32px при `ReachDist = 20px`, зависал и бросал работу.
+2. **Решение**:
+   - При срубе дерева на клетке стройки или грядки: часть брёвен сразу направляется в удовлетворение потребности площадки (`JobBroker.DeliverLogsToBlueprint`), а излишек выгружается на соседнюю свободную клетку (`SpawnAdjacentItems`), не захламляя чертёж стены.
+   - В `BlueprintDeliveryJobHandler`: использование `JobBroker.FindStandPosition` для стен, снятие запрета подноса из-за лежащих на клетке брёвен (если это требуемый стройматериал), допуск радиуса сдачи материалов.
+
+### 57.6. Строгая иерархия создания фермы
+1. Расчистка препятствий (деревья, камни, мусор).
+2. Вскопка грядки (`FarmJobManager` регистрирует задачу `Farming` только после устранения препятствий на клетке).
+3. Посадка (`PlantingJobHandler` строго проверяет `FarmJobManager.Instance.IsGardenBed(x, y)`).
+
+---
+
+## 58. АРХИТЕКТУРА РЕАКТИВНОЙ МОДЕЛИ РЕСУРСОВ, СТЕКИНГА И ЕДИНОЙ СИСТЕМЫ ПРЕПЯТСТВИЙ
+
+### 58.1. Реактивная модель ресурсов (Двусторонняя шина Push-Pull)
+1. **Проблема**:
+   - Заказ создан ДО появления ресурса: при создании чертежа ресурс отсутствует на карте (`HasAvailableLogs == false`), задача переходит в невостребованное состояние и зависает, так как поллинг диспетчера для дальних чанков задушен до 1 раза в 2с или отсекается радиусом.
+   - Заказ создан ПОСЛЕ добычи ресурса: ресурс лежит на карте, но разрозненные проверки не могут быстро и атомарно выделить квоту на чертёж.
+2. **Архитектура**:
+   - `DemandRegistry`: реестр заказов/потребителей ресурсов (чертежи, стройки, крафт).
+   - `FreeResourceSpatialIndex`: реестр свободных доступных ресурсов по типам и координатам.
+   - **Случай А (Push при добыче)**:
+     - При рубке/добыче/разгрузке публикуется событие `ResourceBroker.NotifyAvailable(ItemId, X, Y, Count)`.
+     - Диспетчер проверяет ожидающие заявки в `DemandRegistry` по приоритету (наибольшая степень готовности, близость).
+     - Выделяется бронь (`ClaimTicket`), и задача немедленно назначается свободному или попутному агенту (wake-up idle worker).
+   - **Случай Б (Pull при создании чертежа)**:
+     - При создании чертежа вызывается `ResourceBroker.TryReserveNearest(ItemId, RequiredCount, TargetPos)`.
+     - Запрос забирает ресурсы из `FreeResourceSpatialIndex` и сразу переводит чертёж в стадию доставки.
+
+### 58.2. Группировка ресурсов на клетке (Item Stacking / Piles)
+1. **Проблема**:
+   - Хранение единичных предметов (1 объект = 1 бревно) приводит к деградации производительности, аллокациям памяти и гонкам при попытке параллельного разбора кучи.
+2. **Решение**:
+   - Хранение ресурсов на клетке в виде стека:
+     ```csharp
+     public struct ItemStack
+     {
+         public ItemId Item;
+         public int TotalCount;      // количество на клетке (до 100+)
+         public int ReservedCount;   // забронировано носильщиками
+         public int AvailableCount => TotalCount - ReservedCount;
+     }
+     ```
+   - Забор ресурсов агентом: атомарный вызов `TakeUpTo(capacity)` с инкрементом `ReservedCount` без создания десятков мелких сущностей.
+
+### 58.3. Унифицированная система препятствий (Universal Obstacle & Clearance System)
+1. **Проблема**:
+   - Повсеместный хардкод проверок: `TreeOnGrass`, `StoneOnGrass`, `SolidWalls`, `GroundItemManager.HasItemsAt`.
+   - Фермы и стройки пытаются обрабатывать клетки, на которых лежат неучтенные предметы или мешающие объекты других типов.
+2. **Решение**:
+   - Битовая маска препятствий `ObstacleMask`:
+     `Tree | Stone | LooseItems | Debris | HandmadeStructure | ImpassableTerrain | OccupiedByWork`.
+   - Зоны объявляют `ClearancePolicy` (например, `ClearancePolicy.FarmPlot` требует чистоты от `Tree | Stone | LooseItems | Debris` и запрещает `HandmadeStructure | ImpassableTerrain`).
+   - Единый сервис расчистки `TileClearanceService.GetObstacles(x, y)`:
+     - Гард в `CanAgentExecute` всех строительных и фермерских работ: если на клетке есть препятствия по политике зоны, работа НЕ может быть взята агентом.
+     - Автоматическая генерация подзадач расчистки по строгому приоритету: Дерево (`Chop`) $\to$ Камень (`Mine`) $\to$ Предметы (`Haul`) $\to$ Мусор/сорняки (`Clear`).
+
+### 58.4. Анализ переноса на C++ (GDExtension)
+- **Прирост производительности в игровой логике**: 0–15% (незначителен по сравнению с оптимизацией алгоритмов).
+- **Риски**: усложнение кроссплатформенной сборки, ручное управление памятью с риском падения движка (Crash / UB), долгая итерация разработки.
+- **Вывод**: переписывать проект на C++ не требуется. Ядро .NET 8 с SIMD и struct/Span обеспечивает достаточную производительность. При экстремальных нагрузках (50k+ агентов) на C++ может быть вынесен только изолированный алгоритм A*/FlowField.
+
+### 58.5. Сценарии отказа (Edge Cases) и их предотвращение
+1. **Thundering Herd**: атомарное выделение квоты через `ReservationTicket`.
+2. **Ресурсный дедлок (голодание строек)**: приоритет отдается чертежам с наибольшим процентом уже доставленных ресурсов.
+3. **Stale Clearance (появление мусора в процессе)**: двойная валидация чистоты клетки — при выдаче работы и в момент `OnStart`.
+4. **Отмена заказа / гибель агента**: механизм `Lease Timeout` — возврат зарезервированного ресурса в свободный пул.
+
+### 58.6. Ограничение распределения работ: максимум 20 назначений за кадр (Assignment Budget Cap)
+1. **Проблема**:
+   - При массовом появлении ресурсов (например, срубили 5 деревьев подряд или игрок подтвердил поле/склад 500x500) сотни свободных агентов одновременно бросаются брать работу.
+   - Это вызывает пиковый спайк CPU (thundering herd): одновременные тяжелые расчеты путей (`Pathfinding`), шторм блокировок в складах/инвентаре и просадку FPS в конкретном кадре.
+2. **Решение**:
+   - Вводится глобальный счетчик назначений на тик симуляции: `MaxAssignmentsPerTick = 20`.
+   - Если за текущий кадр уже выдано 20 новых задач суммарно (через локальные чанки, спилл или пуш-уведомления), диспетчер мягко завершает проход выдачи.
+   - Оставшиеся заявки и свободные агенты равномерно разбирают задачи в следующих кадрах (сглаживание нагрузки / time-slicing). Симуляция не зависает, а FPS остается стабильным.
+
+---
+
+## 59. АРХИТЕКТУРА ЭКСТРЕМАЛЬНОЙ ОПТИМИЗАЦИИ ЗАГРУЗКИ ИГРЫ И ГЕНЕРАЦИИ МИРОВОЙ КАРТЫ (С 15–20 С ДО 1–2 С)
+
+> Роль: `@architect` (с синтезом `@researcher`). Код проекта НЕ менялся, это проектный документ для `@developer`.
+
+### 59.1. Аудит узких мест текущей загрузки (Root Cause Analysis)
+
+Текущий тайминг холодного старта:
+1. `dotnet build` + запуск процесса Godot: **~2.5–3.5 с**.
+2. Переход `MainMenuController` -> `Main.tscn`: **~0.2 с**.
+3. **Генерация мировой карты `WorldMapOverlay.StartGeneration()`: 14–18 с (ГЛАВНОЕ УЗКОЕ МЕСТО)**.
+4. Выбор региона -> `GenerateColonyWindow` + `MapRenderer.ApplyMap()`: **~2–4 с**.
+**Итого:** до первого интерактивного действия проходит **~18–25 секунд**.
+
+#### Детальный разбор генерации мировой карты (2048 × 1024 = 2 097 152 региона):
+1. **Zero-Hit L1 Cache (`_regionCache`)**:
+   - Массив `RegionCacheEntry[64]` при проходе строки 2048 элементов перетирает свои слоты каждые 64 шага. Hit-rate при сканировании планеты равен **0%**.
+2. **Вычислительная избыточность `CoordinateHash.ValueNoiseQ16`**:
+   - `GetDomainPrefix(worldSeed, generatorVersion, domain)` вызывается внутри каждого семпла шума (более 20 раз на клетку $\times$ 2.1 млн ячеек = **120+ млн вызовов `GetDomainPrefix`**). Внутри каждого — 3 вызова `Mix` (64-битные умножения `MixA`/`MixB` и битовые сдвиги).
+   - В `SmoothStepQ16`: операция `/ 65535` транслируется в ассемблерную инструкцию 64-битного деления `idiv` (~30–40 тактов процессора).
+3. **Катастрофическая избыточность орографии (`RainShadow`)**:
+   - В `WorldClimateGenerator.ComputeSampleRegion`:
+     Для любой клетки суши с высотой ниже горного порога вызывается `ContinentShaper.Shape` повторно для наветренной точки `safeRx - windDirX * 3`! Это удваивает расчет Voronoi (9 соседей) и 6 октав fBm для более чем 60% ячеек планеты.
+4. **Однопоточный сток гидрологии (`PlanetaryHydrology`)**:
+   - 6300 истоков рек рассчитываются в 1 поток.
+   - Использование `HashSet<int> pathVisited` с постоянными аллокациями и боксингом при D8-сканировании соседей.
+5. **Избыточные вызовы `TileMapLayer.SetCell` в `MapRenderer.ApplyMap()`**:
+   - 262 144 клетки (512×512) последовательно вызывают `_groundLayer.SetCell`, хотя земля рендерится через шейдер `ColorRect` + `terrain_blend.gdshader`, а сам `_groundLayer.Visible = false`. 260+ тысяч межъязыковых вызовов C# -> GDExtension тратят ~1.5 с главного потока.
+
+---
+
+### 59.2. Двухуровневая стратегия ускорения
+
+Для снижения времени загрузки до **1–2 секунд** применяются две синергичные стратегии:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                          КЛИК «ИГРАТЬ» В МЕНЮ                          │
+└────────────────────────────────────┬───────────────────────────────────┘
+                                     │
+                 ┌───────────────────┴───────────────────┐
+                 ▼                                       ▼
+  [Стратегия A: Progressive LOD]          [Стратегия B: Core Math Speedup]
+  - Мгновенная генерация LOD 0             - Precomputed Domain Prefixes
+    (512×256 = 131k ячеек)                 - Fast Bitmath (замена idiv)
+  - Готово за ~150-250 мс!                 - Row Scanline Cache для RainShadow
+  - Мгновенный показ планеты               - Plate Voronoi Centroids Flat Table
+                 │                         - Parallel Hydrology (D8 Fast Basin)
+                 ▼                         - Снижение 2048x1024 с 16с до 1.2с!
+  [Игрок уже видит карту и выбирает спавн]               │
+                 │                                       ▼
+                 └───────────────────► Фоновая подгрузка полного 2K-LOD
+```
+
+---
+
+### 59.3. Математические и алгоритмические оптимизации ядра
+
+#### 1. Предвычисление доменных префиксов (`PrecomputedDomainTable`)
+Все 16 префиксов доменов `GenerationDomain` предвычисляются 1 раз при установке сида мира:
+```csharp
+public static class FastCoordinateHash
+{
+    private static readonly ulong[] _domainPrefixes = new ulong[32];
+
+    public static void Initialize(ulong worldSeed, uint generatorVersion)
+    {
+        foreach (GenerationDomain domain in Enum.GetValues<GenerationDomain>())
+        {
+            int domainIdx = GetDomainIndex(domain);
+            _domainPrefixes[domainIdx] = CoordinateHash.GetDomainPrefix(worldSeed, generatorVersion, domain);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ushort ValueNoiseQ16Fast(int domainIndex, long worldX, long worldY, int latticeScale)
+    {
+        // Использует _domainPrefixes[domainIndex] напрямую без Mix
+    }
+}
+```
+**Эффект**: устранение ~120 000 000 тяжелых 64-битных умножений `Mix`.
+
+#### 2. Быстрая арифметика Q16 без `idiv` (Fast Bitmath)
+Деление на `65535` заменяется на инвариантный сдвиг или инвариантное умножение:
+```csharp
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public static uint Div65535(ulong value) => (uint)((value * 0x80018002ul) >> 47); // Точно для uint16/uint32
+
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+private static uint SmoothStepQ16Fast(uint t)
+{
+    // (t * t * (3 * 65535 - 2 * t)) >> 32 аппроксимация
+    ulong t2 = (t * t + 32768u) >> 16;
+    ulong shaped = t2 * (196605ul - (t << 1)) + 32768u;
+    return (uint)Math.Min(65535u, shaped >> 16);
+}
+```
+**Эффект**: ускорение каждой интерполяции шума в ~3–4 раза на уровне ассемблерных инструкций.
+
+#### 3. Устранение двойного прохода тектоники (RainShadow Scanline Cache)
+Вместо рекурсивного вызова `ContinentShaper.Shape` внутри `SampleRegion`:
+- Базовая высота `ContinentShaper.Shape` рассчитывается и сохраняется в плоский массив `elevations[i]`.
+- Орографический расчет дождевой тени (`RainShadow`) вычисляется вторым быстрым параллельным проходом по готовому массиву высот:
+  `int upwindElev = elevations[safeRy * GridWidth + upwindRx];`
+**Эффект**: минус 50% вычислений тектоники и плит Вороного для всей планеты!
+
+#### 4. Таблица центров плит Вороного (`PlateCentroidTable`)
+Вместо прохода по 9 окрестным решеткам со случайным хэшированием для каждого из 2.1 млн пикселей:
+- Все 64 центра плит планеты предрассчитываются один раз:
+  ```csharp
+  public readonly struct PlateCentroid
+  {
+      public readonly int Id;
+      public readonly long X;
+      public readonly long Y;
+  }
+  ```
+- Для любого пикселя поиск ближайшей плиты сводится к просмотру компактного списка плит в локальном радиусе.
+
+#### 5. Параллельная гидрология без аллокаций (`FastPlanetaryHydrology`)
+- Замена `HashSet<int> pathVisited` на битовый массив `BitArray` или версионированный массив меток `int[] _stepStamp` (zero-alloc).
+- Разделение 6300 истоков по параллельным батчам (`Parallel.ForEach`) с потокобезопасной фиксацией русел.
+
+---
+
+### 59.4. Прогрессивная загрузка (Progressive LOD Preview)
+
+При открытии мировой карты в режиме выбора спавна:
+1. **LOD 0 (Overview Thumbnail 512 × 256)**:
+   - Шаг семплирования: $4 \times 4$ региона.
+   - Объем: 131 072 точки вместо 2 097 152 (в 16 раз меньше!).
+   - С учетом Fast Bitmath время генерации: **~120–200 мс**.
+   - Текстура 512×256 мгновенно загружается в `_overviewSprite` с билинейным сглаживанием.
+   - Игрок видит готовую планету за десятые доли секунды!
+2. **LOD 1 (Full 2048 × 1024)**:
+   - В фоновом потоке достраивается полное разрешение (занимает ~1.0–1.4 с).
+   - При завершении текстура плавно подменяется на детальную. Если игрок кликает на регион на этапе LOD 0 — координаты регионов $X \times 4, Y \times 4$ масштабируются точно, игра не заставляет ждать 2K-текстуру.
+
+---
+
+### 59.5. Оптимизация локального окна колонии (`GenerateColonyWindow` & `MapRenderer`)
+
+1. **Исключение мертвого рендера земли**:
+   - В `MapRenderer.ApplyMap()` полностью убрать 262 144 вызова `_groundLayer.SetCell(pos, SourceGrass/SourceWater, ...)`.
+   - Шейдер земли `_groundSurface` (`ColorRect` 512×512) уже рендерит гладкую траву, песок и воду через R8-текстуру `terrain_map`.
+   - В TileMapLayer отправляются **только горы, деревья и камни** (их суммарно < 15% от площади, ~30 000 вызовов вместо 262 000).
+2. **Параллельная инициализация почвенных слоев**:
+   - `Humidity.Initialize` и `Fertility.Initialize` вычисляются в пуле потоков через `Task.WhenAll`.
+3. **Warmup ThreadPool**:
+   - В `MainMenuController._Ready()` вызывать `ThreadPool.SetMinThreads(Environment.ProcessorCount, Environment.ProcessorCount)`. Это устраняет задержку старта фоновых рабочих потоков .NET.
+
+---
+
+### 59.6. Оптимизация сборки `dotnet build` (`Game.csproj`)
+
+В `Game.csproj` добавляются флаги для ускорения инкрементальной компиляции:
+```xml
+<PropertyGroup>
+  <!-- Быстрая компиляция и мгновенный JIT старт -->
+  <AccelerateBuildsInVisualStudio>true</AccelerateBuildsInVisualStudio>
+  <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+  <TieredCompilation>true</TieredCompilation>
+  <TieredCompilationQuickJit>true</TieredCompilationQuickJit>
+  <TieredCompilationQuickJitForLoops>true</TieredCompilationQuickJitForLoops>
+  <ServerGarbageCollection>true</ServerGarbageCollection>
+</PropertyGroup>
+```
+
+---
+
+### 59.7. Спецификация интерфейсов и типов (Architecture Contract)
+
+```csharp
+namespace Game.Core.WorldStreaming;
+
+/// <summary>
+/// Предвычисленная таблица доменных хешей и геометрии плит для zero-alloc генерации.
+/// </summary>
+public static class WorldGenerationPrecomputation
+{
+    public static void Warmup(ulong seed, uint version, in WorldClimateParams macroParams);
+    public static ushort FastNoise(GenerationDomain domain, long x, long y, int scale);
+    public static (int PlateId, ushort Boundary, float Compression) FastVoronoi(long x, long y, int lattice);
+}
+
+/// <summary>
+/// Прогрессивный генератор мировой карты (двухфазный: LOD0 512x256 за 150мс, LOD1 2048x1024 в фоне).
+/// </summary>
+public sealed class ProgressiveWorldMapGenerator
+{
+    public static Task<GenResult> GenerateLOD0Async(ulong seed, uint version, byte[] colors, CancellationToken ct);
+    public static Task<GenResult> GenerateLOD1Async(ulong seed, uint version, byte[] colors, CancellationToken ct);
+}
+```
+
+---
+
+### 59.8. Порядок внедрения для `@developer`
+
+1. **Шаг 1 — Оптимизация `Game.csproj` и ThreadPool Warmup**:
+   - Добавить флаги быстрой сборки и JIT.
+   - В `MainMenuController._Ready` добавить прогрев пула потоков.
+2. **Шаг 2 — Precomputed Domain Prefixes & Fast Bitmath**:
+   - Создать `FastCoordinateHash` с предвычисленными префиксами и быстрой Q16-математикой без 64-битных делений.
+   - Перевести `WorldClimateGenerator` на быстрый хэш.
+3. **Шаг 3 — Scanline Row Cache для орографии**:
+   - Разделить генерацию мировой карты на проход базовой высоты и проход климата с чтением наветренной высоты из массива. Устранить повторный `ContinentShaper.Shape`.
+4. **Шаг 4 — Двухфазный Progressive LOD в `WorldMapOverlay`**:
+   - Реализовать мгновенный расчет LOD 0 (512×256) -> показ игроку через 150–200 мс.
+   - Запуск фонового расчета LOD 1 (2048×1024) с плавной заменой текстуры.
+5. **Шаг 5 — Чистка `MapRenderer.ApplyMap`**:
+   - Убрать 260k вызовов `_groundLayer.SetCell`, оставив шейдерный ColorRect.
+   - Заполнять TileMapLayer только для реальных препятствий (горы, деревья, камни).
+6. **Шаг 6 — Верификация `@destroyer`**:
+   - Прогон тестов `TestWorldGen.cs` и `TestWorldMapRealismAudit.cs` — сохранение 100% реализма планеты, биомов, рек и пляжей.
+
+---
+
+### 59.9. Критерии приёмки (Benchmark Targets)
+
+| Метрика | До оптимизации | Цель оптимизации |
+|---|---|---|
+| `dotnet build` (инкрементальный) | ~1.8–2.5 с | **< 1.0 с** |
+| Запуск меню игры | ~1.0 с | **< 0.5 с** |
+| **Появление интерактивной мировой карты** | **14–18 с** | **< 0.3 с (LOD 0) / < 1.5 с (полный LOD 1)** |
+| Выбор спавна $\to$ вход в колонию | ~3–4 с | **< 0.6 с** |
+| **Суммарное время от запуска до игры** | **18–25 с** | **1.5–2.5 с** |
+| Аллокации GC в горячем цикле карты | Сотни МБ | **0 байт на клетку** |
+| Регрессии генерации | — | **0 (все тесты Realism Audit зелёные)** |
+
+---
+
+## 60. ПОЛНЫЙ РЕДИЗАЙН СИСТЕМЫ РАСПРЕДЕЛЕНИЯ ЗАДАЧ: ИЕРАРХИЧЕСКИЙ SIMD-МАТЧЕР (HSWM) НА 1 000 000 АГЕНТОВ (< 1 МС / ТИК)
+
+> Роль: `@architect` (с синтезом `@researcher`). Код проекта НЕ менялся, это проектный документ для `@developer`.
+
+### 60.1. Аудит причин краха распределения на 65k клетках (Root Cause Analysis)
+
+1. **Искусственный барьер пропускной способности (`MaxAssignmentsPerTick = 20`)**:
+   - В [JobDispatcher.cs#L80](file:///d:/bebebe-main%20%281%29/bebebe-main/src/simulation/jobs/JobDispatcher.cs#L80) был захардкожен лимит в 20 назначений на тик симуляции.
+   - При 65 000 задач для их раздачи требуется минимум **3 250 тиков симуляции**. При частоте вызова диспетчера 4–10 раз в секунду это занимало от **5 до 15 минут реального времени**.
+2. **Радиусные «слепые зоны» и локальная изоляция**:
+   - `DispatchChunk` сопоставлял задачи и свободных агентов **исключительно внутри одного чанка 16×16 тайлов**.
+   - `SpillOverPass` охватывал только кольцо радиусом 10 чанков (160 тайлов) и брал не более 48 свободных агентов.
+   - `GlobalRedistributePass` был искусственно заблокирован таймером реального времени: запускался **не чаще 1 раза в 2 секунды**, сканировал всего 128 задач и выдавал **не более 8 назначений**.
+3. **Бесцельное блуждание агентов (Wander по невыполненным тайлам)**:
+   - Свободные агенты, не получившие задачу из-за лимитов диспетчера, в `AgentSimulationThread` отправлялись в `_wanderSystem.ExecuteParallel`.
+   - В результате сотни свободных агентов бесцельно топтали клетки с разметкой вырубки/стройки/фермы, пока игрок наблюдал застывшую симуляцию.
+4. **Алгоритмический взрыв `RebuildChunkBuckets` в `GenericJobSpatialIndex`**:
+   - Базовая емкость чанка составляла `JobsPerChunk = 256`.
+   - Чанк 16×16 тайлов вмещает ровно 256 клеток. При выделении сплошной зоны 65k задач каждый чанк переполнялся и вызывал `RebuildChunkBuckets()`, блокируя регистрацию через `lock (_registerLock)` и выполняя $O(N)$ перебор всех элементов `_posMap.Values`.
+5. **Pointer-chasing в `IdleWorkerSpatialGrid`**:
+   - Хранение свободных агентов в интрузивных односвязных списках (`NextInIdleCell`/`PrevInIdleCell`) разрушало L1/L2 кэш процессора при сборе агентов и вызывало контеншн шардированных локов (`_stripes`).
+
+---
+
+### 60.2. Математическая модель масштабирования: 1 000 000 агентов за 10 секунд с бюджетом < 1 мс
+
+1. **Целевая пропускная способность**:
+   - Время распределения: 10 секунд.
+   - Количество тиков симуляции: 600 тиков (при 60 FPS) или 200 тиков (при 20 FPS).
+   - Необходимый темп назначений: от **1 667 до 5 000 назначений за один тик**.
+2. **Бюджет времени**:
+   - Допустимое время на тик: **< 1.0 мс** (оптимум: 0.3–0.6 мс).
+   - Лимит времени на одно назначение: $1\,000\,\mu s / 5\,000 = \mathbf{200\text{ наносекунд}}$.
+   - На современном CPU (3.5–4.5 ГГц) 200 нс соответствует **~700–900 тактам**.
+3. **Выводы для архитектуры**:
+   - Никаких динамических аллокаций (`new`, `List<T>`, boxing).
+   - Никаких связных списков и проходов по указателям.
+   - Никаких блокировок (`Monitor.Enter`, `lock`) в цикле назначения. Только плоские SoA-массивы, побитовые маски и SIMD-векторизация (`Vector256<T>`, `Lzcnt`, `Bmi1`).
+
+---
+
+### 60.3. Архитектура Hierarchical Spatial Work Matcher (HSWM)
+
+Система строится на трёх фундаментальных компонентах:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                   JobSpatialPyramid (Пирамида плотностей)              │
+│  L2 (128x128): 1 int = счетчик доступных работ в макро-секторе         │
+│  L1 (32x32):   1 int = счетчик доступных работ в секторе (16x16 тайлов)│
+│  L0 (Плоский битсет): 1 бит на тайл (Job Present & Unclaimed)          │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ SIMD битовый поиск ближайшей работы
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                  Flat Idle Agent Buffer (SoA, Continuous)              │
+│  [X: short[], Y: short[], Tools: byte[], State: byte[]]                │
+│  Свободные агенты лежат плотным линейным массивом без связных списков   │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ DynamicWorkScheduler (16-64 батчи)
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                 SIMD Push-Match Dispatcher                             │
+│  1. Агенты батчами по 64 забирают координаты ближайших работ из L1/L0  │
+│  2. Атомарный CAS-захват бита в 64-битном слове (Interlocked.And)      │
+│  3. Мгновенная выдача работы за 50-100 тактов CPU                      │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 1. Пространственная пирамида работ (`JobSpatialPyramid`)
+- **L0 (Тайловый слой)**: битовая маска `ulong[] _tileBitmask` (1 бит на тайл). Если бит = 1, на клетке есть нераспределенная работа. Размер для карты 512×512: всего $262\,144 / 64 = 4\,096$ слов `ulong` (32 КБ — помещается в L1 Data Cache процессора!).
+- **L1 (Секторный слой, 16×16 тайлов)**: массив `int[] _sectorJobCounts` (1024 сектора на 512×512). Хранит точное количество свободных задач в секторе.
+- **L2 (Макро-слой, 64×64 тайла)**: битовая маска `ulong _macroActiveMask` (64 макро-сектора). Позволяет за **1 процессорную инструкцию** `_tzcnt_u64` найти глобальное направление к ближайшей работе из любой точки мира.
+
+#### 2. Плотный массив свободных агентов (`FlatIdleWorkerPool`)
+- Отказ от связных списков:
+  ```csharp
+  int[] _idleAgentIds;       // Непрерывный массив ID свободных агентов: [0..TotalIdleCount-1]
+  int[] _agentToIdleIndex;   // Обратная таблица для удаления за O(1)
+  int _totalIdleCount;
+  ```
+- Добавление агента: `_idleAgentIds[_totalIdleCount++] = agentId;` ($O(1)$, 1 такт CPU).
+- Удаление агента: замена с последним элементом массива (Swap-and-Pop) ($O(1)$, 2 такта CPU).
+
+#### 3. Пакетная диспетчеризация с адаптивным квантом
+- Вместо жесткого капа 20 задач: диспетчер обрабатывает свободных агентов батчами по 64 через `DynamicWorkScheduler`.
+- Условие выхода из цикла: исчерпание свободных агентов/задач ИЛИ превышение кванта времени кадра (потолок 0.5–0.8 мс).
+
+---
+
+### 60.4. Интерфейсы новых классов и структур
+
+```csharp
+namespace Game.Simulation;
+
+/// <summary>
+/// Иерархическая пирамида плотности задач на битовых масках.
+/// Полностью потокобезопасна для lock-free claim через Interlocked.
+/// </summary>
+public sealed class JobSpatialPyramid
+{
+    public const int SectorShift = 4; // 16x16 тайлов на сектор
+    public const int MacroShift = 6;  // 64x64 тайла на макро-сектор
+    public const int SectorDim = 32;  // 32x32 сектора = 512x512 тайлов
+
+    public int TotalUnclaimedJobs => Volatile.Read(ref _totalUnclaimed);
+
+    public void RegisterJob(int jobId, int tx, int ty, JobTypeId typeId, JobPriorityTier priority);
+    public void UnregisterJob(int jobId, int tx, int ty);
+    
+    /// <summary>
+    /// Мгновенный поиск ближайшей доступной работы через битовую пирамиду.
+    /// Занимает от 20 до 80 наносекунд.
+    /// </summary>
+    public bool TryClaimNearestJob(int agentX, int agentY, ToolRequirement tools, out JobData claimedJob);
+
+    /// <summary>
+    /// Пакетный поиск работ для батча агентов (SIMD-векторизованный).
+    /// </summary>
+    public int ClaimBatch(ReadOnlySpan<int> agentIndices, AgentDataPool pool, Span<JobData> outJobs);
+}
+
+/// <summary>
+/// Плотный непрерывный пул свободных агентов без связных списков и lock contention.
+/// </summary>
+public sealed class FlatIdleWorkerPool
+{
+    public int Count => Volatile.Read(ref _count);
+
+    public void Add(int agentId);
+    public void Remove(int agentId);
+    public ReadOnlySpan<int> GetActiveSpan();
+}
+
+/// <summary>
+/// Высокопроизводительный диспетчер работ с ограничением по бюджету времени (кванту).
+/// </summary>
+public sealed class HierarchicalJobDispatcher
+{
+    public static HierarchicalJobDispatcher Instance { get; } = new();
+
+    public JobSpatialPyramid JobIndex { get; }
+    public FlatIdleWorkerPool IdleWorkers { get; }
+
+    /// <summary>
+    /// Главная точка входа: пакетное назначение задач свободным агентам.
+    /// Максимальный квант времени: 0.8 мс.
+    /// </summary>
+    public int Dispatch(AgentDataPool pool, SimulationContext ctx, double maxTimeBudgetMs = 0.8);
+    
+    public void ReleaseJobWorker(int agentIndex, AgentDataPool pool, SimulationContext ctx);
+    public void ReleaseJobWorkerForStuck(int agentIndex, AgentDataPool pool, SimulationContext ctx);
+}
+```
+
+---
+
+### 60.5. Порядок сноса и реализации для `@developer`
+
+1. **Шаг 1 — Создание `FlatIdleWorkerPool.cs`**:
+   - Реализация плоского массива `_idleAgentIds` со swap-and-pop.
+   - Замена `IdleWorkerSpatialGrid` во всех вызовах (`AddIdleWorker`, `RemoveIdleWorker`).
+   - Удаление устаревших полей `NextInIdleCell` и `PrevInIdleCell` из `AgentDataPool.cs`.
+2. **Шаг 2 — Создание `JobSpatialPyramid.cs`**:
+   - Реализация трехуровневой пирамиды: L0 (битсет 32 КБ) $\to$ L1 (сектора) $\to$ L2 (макро-маска 64 бита).
+   - Векторизованный поиск через `BitOperations.TrailingZeroCount`.
+   - Замена `GenericJobSpatialIndex.cs`.
+3. **Шаг 3 — Реализация `HierarchicalJobDispatcher.cs`**:
+   - Пакетная обработка через `DynamicWorkScheduler.Shared.ForEachRange`.
+   - Удаление старого `JobDispatcher.cs` и жестких капов (20 назначений, 2-секундный троттлинг).
+4. **Шаг 4 — Обновление `AgentSimulationThread.cs` и хендлеров**:
+   - Перевод вызовов `DispatchPendingJobs` на `HierarchicalJobDispatcher.Instance.Dispatch`.
+   - Устранение вызова `UpdateWorkerChunk` в `SimdNeedsBatch` (больше не требуется, так как сетка бездельников плоская).
+
+---
+
+### 60.6. Состязательные тест-сценарии для `@destroyer`
+
+1. **Стресс-тест «65 536 задач» (`Test65kMassiveJobSweep`)**:
+   - Создание сплошного квадрата вырубки/грядок $256 \times 256$ (65 536 клеток).
+   - Размещение 5 000 агентов в дальнем углу карты.
+   - **Критерий приемки**: 100% задач должны быть взяты в работу без остановки агентов в Wander; среднее время тика диспетчера < 0.6 мс.
+2. **Стресс-тест «1 000 000 агентов» (`Test1MJobAssignmentStress`)**:
+   - 1 000 000 свободных агентов в пуле, 100 000 задач на карте.
+   - Замер времени распределения за 10 секунд (600 тиков).
+   - **Критерий приемки**: пиковая нагрузка диспетчера < 1.0 мс на тик.
+
+---
+
+# 61. Архитектурный план: Оптимизация Phase 3a (Needs & Cell Tracking) до < 1.0 мс на 1 000 000 агентов
+
+## 61.1. Анализ проблемы и анатомия узкого места Phase 3a
+На текущий момент при 100 000+ агентах фаза `Phase3a_Fused` занимает до **50–54% времени симуляции**.
+Анализ кода (`AgentSimulationThread.cs`, `SimdNeedsBatch.cs`) выявил физические причины:
+
+1. **Memory Bandwidth Bottleneck (Пропускная способность шины памяти)**:
+   - В цикле `Phase3a` на каждого агента считываются и перезаписываются массивы: `States`, `Fatigue`, `Hunger`, `Sleep`, `EnvironmentSatisfaction`, `Mood`, `PositionX`, `PositionY`, `CurrentCellX`, `CurrentCellY`, `CellStayTime`.
+   - Это суммарно **48 байт на агента**.
+   - Для **1 000 000 агентов** один проход требует прокачки **~48 МБ памяти**. При 16 суб-степах на тик или даже при 60 Гц это **2.88 ГБ/с непрерывного трафика RAM**, выбивающего кэш L1/L2/L3 процессора. Достичь < 1.0 мс скалярным/SIMD полным обходом 1M агентов на CPU физически невозможно из-за задержек и пропускной способности памяти DDR.
+
+2. **Избыточная гранулярность (Cold Data vs Hot Data)**:
+   - Потребности (`Hunger`, `Sleep`) меняются со скоростью ~0.5 ед. в *игровую минуту* (0.0083 ед./сек). Обновлять float каждого агента 60–100 раз в секунду математически бессмысленно (приращение $0.00008f$).
+   - `CellStayTime` и `CurrentCellX/Y` имеют смысл только для агентов, которые реально перемещаются (`Working`, `Moving`, `Evacuating`). Для стоящих на месте бездельников координаты не меняются.
+
+3. **Скрытый скалярный overhead в `BookkeepSingleAgentRest`**:
+   - Следом за SIMD идет скалярный цикл по всем агентам: декремент таймеров, поиск работы, вызовы `TryAssignNeedsBehavior` со сканированием хранилищ и замками (`lock`).
+
+---
+
+## 61.2. Архитектура решения: 3-уровневый план для достижения < 1.0 мс на 1M
+
+```
+[1 000 000 Агентов]
+        │
+        ├── 1. Global Offset Model (Потребности O(1) вместо O(N))
+        │      └── Мировые счетчики _globalHungerDebt / _globalSleepDebt. 0 чтений массивов в тике!
+        │          Индивидуальные значения рассчитываются лениво O(1) только при чтении/UI.
+        │
+        ├── 2. Hierarchical Time Wheel (Колесо пробуждения)
+        │      └── Агент регистрирует время наступления голода T_starve в циклическое колесо бакетов.
+        │          В тике просыпается только ~0.01% агентов (~100-200 агентов вместо 1 000 000).
+        │
+        └── 3. Dirty Movement Bitset (Разреженный Cell Tracking)
+               └── В Phase 2 движущиеся агенты помечаются в битсет. В Phase 3a ячейки
+                   обновляются ТОЛЬКО для переместившихся агентов.
+```
+
+---
+
+## 61.3. Спецификация компонентов для `@developer`
+
+### 61.3.1. Модель глобального смещения потребностей (`GlobalOffsetNeeds`)
+- Мир хранит глобальные аккумуляторы:
+  ```csharp
+  _globalHungerDebt += deltaTime * AgentNeedsConfig.HungerPerGameSec;
+  _globalSleepDebt  += deltaTime * AgentNeedsConfig.SleepPerGameSec;
+  ```
+- У каждого агента хранится база: `HungerBase[i] = BaseValue - _globalHungerDebt`.
+- Текущий голод агента в любой момент (O(1)):
+  ```csharp
+  public static float GetHunger(AgentDataPool pool, int i) =>
+      Math.Clamp(pool.HungerBase[i] + _globalHungerDebt, 0f, 100f);
+  ```
+- **Эффект**: затраты на пересчет потребностей для 1 млн агентов в тике равны **0.0001 мс** (2 операции сложения float).
+
+### 61.3.2. Колесо пробуждения по порогам (`NeedsTimeWheel`)
+- Потребности влияют на симуляцию только при пересечении порогов (`Hunger > 70`, `Sleep > 80`).
+- В момент завершения трапезы рассчитывается:
+  $$T_{\text{starve}} = T_{\text{now}} + \frac{70 - \text{CurrentHunger}}{\text{HungerRate}}$$
+- Индекс агента регистрируется в кольцевой буфер `TimeWheel[bucket]`.
+- В каждом тике проверяется только текущий бакет (всего ~100–150 агентов из 1 000 000). Время обработки: **< 0.05 мс**.
+
+### 61.3.3. Разреженное отслеживание клеток (`DirtyMovementMask`)
+- Битсет `ulong[] _dirtyMovingAgents` выставляется в `Phase 2` только агентам с ненулевым смещением `(dx != 0 || dy != 0)`.
+- В `Phase 3a` обновление `CurrentCellX/Y` выполняется только для выставленных бит через `BitOperations.TrailingZeroCount`.
+
+---
+
+## 62. Архитектурный план: Оптимизация Phase 2 (Движение и поиск пути) и балансировщика DynamicWorkScheduler
+
+## 62.1. Анализ проблемы Phase 2 и узкие места
+На текущий момент в фазе `Phase 2` (`Phase2_ParallelUpdate` в `AgentSimulationThread.cs:673-752`) выполняются расчеты движения всех агентов через `ForEachSplittable`:
+1. **Накладные расходы кооперативного кванта**:
+   - `ShouldYieldCached` проверяется перед КАЖДЫМ агентом в цикле (`for (int i = s; i < e; i++)`), сбрасывая состояние каждые 8 итераций через `Stopwatch.GetTimestamp()`.
+   - При 10 000–100 000 агентов это создает миллионы лишних вызовов системного таймера, ломая предвыборку инструкций в конвейере CPU и блокируя авто-векторизацию цикла JIT-компилятором.
+2. **Абсолютная асимметрия нагрузки (Stragglers)**:
+   - 95%+ агентов совершают прямолинейное смещение (`MoveToPoint` -> чистая математика `PositionX += dx`).
+   - 5% агентов упираются в препятствия или запрашивают путь через `HierarchicalPathfinder.TryFindPathScratch` и `FlowFieldManager.GetDirection`.
+   - В текущей схеме `ForEachSplittable` запускается с флагом `WorkKind.Heavy` для ВСЕХ агентов, из-за чего размер батча сразу занижается до `MinBatchSize` (32 агента), что приводит к громадному числу атомарных операций (`Interlocked.Add` на центральном курсоре) даже для легких агентов.
+3. **Оптимизация проверки `ShouldYieldCached`**:
+   - При легких агентах проверка раз в 8 элементов избыточна (8 легких агентов выполняются за ~100 нс, в то время как квант прерывания составляет 2.0 мс = 2 000 000 нс!).
+   - Проверку кванта достаточно делать каждые 32–64 итерации, либо при выявлении реального признака тяжелой операции (запрос пути/обход).
+
+---
+
+## 62.2. Архитектура решения
+
+```
+Phase2_ParallelUpdate
+       │
+       ▼
+[DynamicWorkScheduler.ForEachSplittable]
+       ├── Батч агентов [s..e)
+       ├── Быстрый внутренний цикл с шагом проверки кванта каждые 32-64 агента
+       └── Немедленный yield только если агент реально выполнял A* или BFS (тяжелая работа)
+```
+
+1. **Разгрузка горячего цикла в `Phase2_ParallelUpdate`**:
+   - Изменить периодичность проверки `ShouldYieldCached` в `WorkQuantum`: увеличить `YieldEveryN` для `Phase 2` с 8 до 32 (или проверять по битовой маске `(sinceRefresh & 31) == 0`).
+   - Если агент не застрял и не вызывал поиск пути, счетчик инкрементируется без обращений к `Stopwatch`.
+   - Если произошел тяжелый вызов (поиск пути в `HierarchicalPathfinder`), флаг `cached = Stopwatch.GetTimestamp()` обновляется немедленно, предотвращая задержку передачи управления.
+
+2. **Адаптивный `WorkKind` и размер батчей**:
+   - Если среди агентов доля застрявших/ищущих путь мала, начинать распределение с более крупного батча (64..128), снижая нагрузку на `Interlocked.Add` в центральном курсоре планировщика.
+
+3. **Локализация и инлайнинг**:
+   - В `UpdateSingleAgentInner` оптимизировать ветвление по `state` (`Idle`, `Evacuating`, `Working`), обеспечивая плотное выполнение без лишних косвенных вызовов.
+
+---
+
+## 62.3. Спецификация для @developer
+1. В `src/simulation/scheduling/WorkQuantum.cs`:
+   - Добавить перегрузку или конструктор с настраиваемым `yieldEveryN` (например, `yieldEveryN = 32` для пакетных легких фаз).
+2. В `src/simulation/AgentSimulationThread.cs`:
+   - В `Phase2_ParallelUpdate` оптимизировать цикл обработки батча: проверку кванта делать блоками по 32 итерации, существенно снижая накладные расходы таймера на 10k–100k агентов.
+   - Использовать `WorkKind.Fast` или адаптивный батч, если процент тяжелых путей низок.
+
+---
+
+## 62.4. Тестирование для @destroyer
+1. Проверить корректность завершения батчей при срабатывании кванта.
+2. Убедиться, что при возникновении исключений в `UpdateSingleAgent` все оставшиеся агенты в батче гарантированно обрабатываются и счетчик ошибок не теряется.
+3. Замерить время `Phase2_Balance` до и после изменений при 10 000 и 100 000 агентах.
+
+---
+
+# 63. Архитектурный план: Комплексное устранение багов (ПКМ удаление чертежей, шов стриминга, стройка стен, голодание задач и обход воды)
+
+> **Роль**: Агент-Архитектор (`@architect`) совместно с `@developer` и `@destroyer`.  
+> **Цель**: Устранение критических дефектов симуляции, взаимодействия с чертежами и бесшовности мира.
+
+## 63.1. Анализ первопричин проблем
+
+1. **ПКМ удаление чертежей при планировании и после**:
+   - `SelectTool.cs`: В режиме выбора `OnClick` и `OnRelease` полностью игнорировали `!isLeftClick` (ПКМ не выполнял никаких действий). При клике ПКМ по чертежу или ПКМ-выделении рамкой чертежи не отменялись.
+   - `ZoneDraftTool.cs`: При `!isLeftClick` сбрасывался только активный драг `_dragging`, но накопившиеся клетки черновика `_zoneCells` / `_wallCells` и уже созданные на карте чертежи не удалялись.
+2. **Стирание шва и рассинхрона между картой 512×512 и стриминговым миром**:
+   - `scenes/main/Main.cs`: Метод `OnSeedRegenerated` передавал в `UnifiedWorldGenerator.GenerateColonyWindow` точечный `startClimate` в аргумент `explicitClimate`. Из-за этого вся область 0..512 генерировалась с искусственно сплюснутым равномерным климатом, а за границей $x \ge 512$ чанки генерировались по глобальным непрерывным формулам `SampleBlendedCell`, порождая жесткий вертикальный срез водоемов и биомов.
+   - `MapRenderer.cs`: Поверхность карты 0..512 покрывалась шейдерным `_groundSurface` с монолитным цветом воды (`use_solid_water = true`) и искусственным скруглением берегов (`shore_curvature = 0.45`), в то время как стриминговый мир рендерился плитками `TileMapLayer` с текстурой `water.png`.
+   - `AgentMovementService.cs`: Метод `IsTileBlocked` отсекал координаты по жесткой маске `(uint)tx >= (uint)ctx.MapWidth || (uint)ty >= (uint)ctx.MapHeight`, запрещая агентам ступать за границу 512×512 (клетка считалась стеной).
+3. **Агенты не строят стены и постройки, срыв подноса**:
+   - `JobValidator.cs` (строки 126–133): Проверка `HasItemsAt(job.SourceX, job.SourceY)` удаляла работы `BlueprintDelivery`, так как координаты источника назначаются динамически при резервации, а на целевой клетке ресурсов до доставки нет.
+   - `BuildConfig.cs`: Флаг `WaitForAllSiteResources = true` блокировал начало строительства (`Assembling`) любых стен батча до тех пор, пока 100% брёвен не подвезут ко всем сегментам.
+   - `JobBroker.cs`: В `DeliverLogsToBlueprint` происходил двойной вызов `DeliverMaterial` (`BlueprintManager.AddDeliveredLogs` уже вызывает `ConstructionManager.DeliverMaterial`).
+4. **Голодание распределения работ и застревание агентов в воде**:
+   - `JobSpatialPyramid.cs`: В `TryClaimInChunk` стоял лимит `int scanLimit = Math.Min(count, 32)`. Если в секторе скапливалось более 32 задач, все задачи с индексами $\ge 32$ никогда не проверялись и навсегда голодали.
+   - `FlowFieldManager.cs`: В `GetDirection` при дистанции $\le 5$ тайлов (`ddx*ddx + ddy*ddy <= 25`) возвращался прямой вектор к цели без обхода (`Vector2.Normalize(toTarget)`), направляя агента прямо в воду.
+   - `FlowFieldManager.cs`: В `CalculateLocalDetourDirection` проходимой считалась только трава `TileType.Grass`, а песок и другие поверхности отбрасывались.
+   - `AgentMovementService.cs`: При дистанции $< 4$ тайла путь A* не запрашивался вовсе, приводя к бесконечному утыканию в воду при близкой цели.
+
+---
+
+## 63.2. Архитектура исправлений
+
+### 63.2.1. Поддержка ПКМ в `SelectTool` и `ZoneDraftTool`
+- В `SelectTool.cs`:
+  - `OnClick` при `!isLeftClick`: Запоминаем стартовую позицию и активируем прямоугольник выделения.
+  - `OnRelease` при `!isLeftClick`: Для всех клеток прямоугольника $[minX..maxX, minY..maxY]$ вызываем:
+    - `ConstructionManager.Instance.CancelSite(x, y)` (или `CancelSitesBatch`),
+    - `WorldPlacement?.TryRemoveWall(x, y)` и `TryRemoveBuilding(x, y)`.
+- В `ZoneDraftTool.cs`:
+  - `OnClick` при `!isLeftClick`: Если клик совершен по клетке черновика (`_zoneCells`, `_wallCells`, `_worldZoneCells`, `_worldWallCells`) — удаляем клетку, вызываем `RecalcWalls()` и `RepaintGhost()`. Если на клетке уже есть готовый чертеж (`ConstructionManager.Instance.IsSiteAt`) — отменяем его.
+  - При протягивании ПКМ (drag) — удаляем все попавшие клетки из черновика и отменяем чертежи в выделенной области.
+
+### 63.2.2. Устранение шва и границ стримингового мира
+- В `scenes/main/Main.cs`:
+  - В методе `OnSeedRegenerated` передавать `null` в качестве `explicitClimate` в `UnifiedWorldGenerator.GenerateColonyWindow` (аналогично `OnRegionSelected`). Это обеспечивает строго непрерывный расчет климата по глобальным уравнениям без скачков на границе 512.
+- В `MapRenderer.cs`:
+  - Включить отображение `_groundLayer` с стандартным тайлсетом игры и отключить изолированный `_groundSurface`, обеспечивая единый визуал тайлов воды, песка и травы как внутри 0..512, так и в стриминговом мире.
+- В `AgentMovementService.cs`:
+  - В `IsTileBlocked` при выходе координат за пределы 0..512 вместо безусловного возврата `true` проверять проходимость стримингового мира через `WorldCellQuery.TerrainAt` (вода и горы блокируют, суша проходима) и `StreamingWorldManager.HasBlock`.
+
+### 63.2.3. Восстановление подноса и стройки стен
+- В `JobValidator.cs`:
+  - Исключить `JobTypeId.BlueprintDelivery` из проверки физического наличия предметов на клетках `SourceX/Y` и `TargetX/Y`.
+- В `BuildConfig.cs`:
+  - Выставить `WaitForAllSiteResources = false`, разрешая постройку каждого отдельного сегмента стены сразу по мере доставки требуемых для него материалов.
+- В `JobBroker.cs`:
+  - Устранить дублирующий вызов `DeliverMaterial` в `DeliverLogsToBlueprint`.
+
+### 63.2.4. Устранение голодания задач и застревания в воде
+- В `JobSpatialPyramid.cs`:
+  - Заменить `int scanLimit = Math.Min(count, 32);` на `int scanLimit = count;` в `TryClaimInChunk`.
+- В `FlowFieldManager.cs`:
+  - В `GetDirection` убрать безусловный возврат вектора в препятствие при дистанции $\le 5$ тайлов; вызывать `CalculateLocalDetourDirection`.
+  - В `CalculateLocalDetourDirection` проверять проходимость: `ctx.Ground[nx, ny] != TileType.Water && ctx.Ground[nx, ny] != TileType.Mountain && !ctx.SolidWalls[nx, ny]`.
+- В `AgentMovementService.cs`:
+  - Если агент застрял (`StuckTimer > 0.5f`), разрешить запрос пути `RequestHierarchicalPath` даже при дистанции $< 4$ тайла.
+
+---
+
+
+## 65. Полная унификация локальной карты (512×512) и стримингового мира в единую бесшовную систему (Unified World System)
+
+### 65.1. Анализ проблемы и цели унификации
+В текущей кодовой базе исторически сложились две независимые параллельные системы мира:
+1. **Локальная карта (512×512)**: использует `MapData`, `MapRenderer`, `_groundSurface` с шейдером `terrain_blend.gdshader`, изолированные слои `TileMapLayer` и менеджеры (`BuildingManager`, `FarmJobManager`, `StockpileManager`, `GroundItemManager`). Отличается высокой стабильностью, отлаженным автотайлингом стен и гор (`TerrainTileLayer`), красивой водой со спекулярными бликами и контактными тенями обрывов. Ограничена строго прямоугольником $[0..512) \times [0..512)$.
+2. **Стриминговый бесконечный мир**: использует `StreamingWorldView`, `WorldChunkStore`, `WorldChunkStreamer`, чанки 64×64, сжатие дельт через `WorldChunkDeltaCodec`. Находится под локальной картой (`ZIndex = -1`), не имеет красивого шейдера воды/берегов, инструменты за границей острова обрабатываются через отдельный костыльный проход `WorldPlacementPass`, а симуляция 10k агентов за пределы 512 не выходит.
+
+**Цель унификации:**
+Создать **единый бесшовный мир**, объединив надежность, шейдерную красоту и отсутствие багов карты 512×512 с бесконечным масштабированием и чанковой структурой стриминга. Устранить дублирующие слои, клампы координат, рассинхроны и изолированные ветки кода.
+
+---
+
+### 65.2. Архитектура единого мира
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Единый мир (Unified World)                      │
+│                                                                        │
+│   ┌──────────────────────────────────────────────────────────────┐     │
+│   │ Anchor Core Zone (Колония): 8x8 чанков (512x512 клеток)      │     │
+│   │ Помечена как AlwaysResident = true. Никогда не выгружается.   │     │
+│   │ Полная 60 Гц симуляция агентов, AI, работ, ферм и складов.   │     │
+│   └──────────────────────────────────────────────────────────────┘     │
+│                                  ▲                                     │
+│   ┌──────────────────────────────┴───────────────────────────────┐     │
+│   │ Streaming Outer Zone (Внешний мир): динамические чанки 64x64 │     │
+│   │ Подгружаются вокруг FOV камеры через ChunkWindowPlanner.    │     │
+│   │ Агенты и работы активны в resident-чанках. Дальние — оффлайн │     │
+│   └──────────────────────────────────────────────────────────────┘     │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 65.2.1. Единое координатное пространство
+- Все системы (симуляция, поиск пути, инструменты, рендер, HUD) переходят на единые глобальные клеточные координаты тайлов:
+  $$\text{CellX} = \text{WorldOriginX} + x, \quad \text{CellY} = \text{WorldOriginY} + y$$
+- Удаляются все искусственные ограничения и клампы вида `Mathf.Clamp(x, 0, MapWidth - 1)` в `BuildTool`, `FarmingTool`, `WarehouseTool`, `SelectTool`, `ZoneDraftTool`.
+
+#### 65.2.2. Единый графический конвейер (Unified Render Pipeline)
+1. **Шейдер террейна и красивая вода (`terrain_blend.gdshader`)**:
+   - Шейдер адаптируется для непрерывного покрытия всего экрана независимо от позиции камеры.
+   - Сэмплирование типов биомов (трава/песок/вода) осуществляется через виртуальную тороидальную текстуру (clipmap 2048×2048 текселей, охватывающую resident-чанки вокруг камеры).
+   - Сохраняются все визуальные эффекты: плавный FBM-контур береговой линии, волновые пиксельные зубцы, глубинная градация синевы, спекулярные солнечные блики ячеек 48×24 px, динамическая скорость анимации воды `water_time` из `TimeManager`.
+2. **Движковый автотайлинг через `TerrainTileLayer`**:
+   - Все автотайлящиеся поверхности (стены, горы, грядки) используют встроенный Godot `SetCellsTerrainConnect`.
+   - При подгрузке/выгрузке чанков вызывается частичный пересчет только граничных клеток чанка (1 клетка кольца `MarkTerrainRing`), предотвращая перестроение всей карты.
+3. **Единый композитный слой объектов (`CompositeObjectLayer`)**:
+   - Деревья (4 варианта) и камни (4 варианта квадрантов) рендерятся в едином `TileMapLayer` с объединенным атласом `SourceObjectComposite` (1 DrawCall на весь видимый мир).
+4. **Единый `ShadowCasterRenderer`**:
+   - Один `MultiMeshInstance2D` со статическими тенями-клиньями от деревьев и стен, масштабируемыми и ориентируемыми по вектору солнца из `DayNightCycle`.
+5. **Динамические оверлеи (Влажность и Плодородие)**:
+   - Обновление текстуры оверлея выполняется через субрегионы `Texture2DUpdate` только для изменившихся чанков, без создания новых объектов `Image` на CPU (ноль аллокаций в куче).
+
+#### 65.2.3. Единые инструменты игрока и взаимодействие с миром
+- Вся логика инструментов унифицируется:
+  - Нажатие, протягивание и отпускание (Click, Drag, Release) передают глобальные координаты в единый фасад размещения `IWorldAccess` / `StreamingWorldManager`.
+  - Отменяется дублирующий проход `WorldPlacementPass`.
+  - Призрак постройки (Ghost Preview) работает непрерывно по всему экрану, поддерживая автотайлинг стен и зон в реальном времени.
+
+#### 65.2.4. Единый поиск пути и симуляция агентов
+- `HierarchicalPathfinder`: граф регионов переводится с сетки 16×16 острова на регулярную сетку чанков 64×64 (или блоков 32×32).
+- Агенты беспрепятственно пересекают границы исходной зоны 512×512 и перемещаются по любым загруженным чанкам мира.
+
+---
+
+### 65.3. План реализации по шагам
+1. **Шаг 1**: Синхронизация `terrain_blend.gdshader` и рендеринга воды для бесконечного пространства с тороидальным смещением камеры.
+2. **Шаг 2**: Унификация слоя земли и объектов: перенос надежного кода `MapRenderer` (композитный атлас декораций, автотайлинг `TerrainTileLayer`) в основу стримингового рендера, удаление узла-дубликата.
+3. **Шаг 3**: Очистка инструментов (`BuildTool`, `FarmingTool`, `WarehouseTool`, `ZoneDraftTool`) от проверок `0..512` и клампов.
+4. **Шаг 4**: Приведение `IWorldAccess` и менеджеров к глобальной системе координат.
+5. **Шаг 5**: Верификация и стресс-тест симуляции.
+
+---
+
+### 65.4. Результаты реализации и верификации
+1. **Инструменты игрока (Tools)**:
+   - В `BuildTool`, `FarmingTool`, `WarehouseTool`, `StoneMiningTool`, `TreeFellingTool` полностью устранены искусственные клампы координат к диапазону `[0, 511]`.
+   - Игровые менеджеры (`ConstructionManager`, `StructureManager`, `FarmJobManager`, `GroundItemManager`, `TreeJobManager`) оперируют в едином неограниченном клеточном пространстве `(X, Y)`.
+2. **Шейдеры и красивая вода**:
+   - `terrain_blend.gdshader`: интегрирован параметр `map_origin`, шейдер адаптирован к произвольному смещению камеры и координат мира.
+   - `streaming_ground.gdshader`: полностью синхронизирован по динамическому расчету времени `water_time`, глубинной волне `depth_wave`, солнечным бликам ячеек `glint_cell_size = vec2(48.0, 24.0)` и цветовой палитре.
+   - Исключено дублирование отрисовки тайлов: `StreamingWorldView.PaintCell` не перерисовывает ячейки, обслуживаемые базовым `MapRenderer`.
+3. **Оверлеи влажности и плодородия**:
+   - `HumidityOverlayRenderer` и `FertilityOverlayRenderer` переведены на билинейную фильтрацию `TextureFilterEnum.Linear` (разрешение 128×128).
+   - Оверлеи адаптивно следуют за окном обзора камеры `Camera2D`, обеспечивая бесшовное сшивание локальной динамической симуляции (в пределах острова) и детерминированного сэмплирования планетарного климата (`WorldCellQuery`) в открытом мире.
+   - Потребление ресурсов: ноль аллокаций в куче (переиспользование `_reuseImg`), <0.5 мс CPU раз в секунду только в активном режиме карты, 1 DrawCall на GPU.
+4. **Состязательное тестирование (@destroyer)**:
+
+---
+
+## 100. Архитектурный план исправления критических багов геймплея, рендера и симуляции (@architect)
+
+### 100.1. Складская логистика и единый источник ресурсов для стройки, фермы и колонистов
+- **Проблемы**:
+  1. `BlueprintDeliveryJobHandler` и `PlantingJobHandler` опрашивают исключительно `GroundItemManager`. Брёвна и зерно на складе (`StockpileManager._storage`) полностью невидимы для стройки и посадки.
+  2. Залипание слотов склада: `TryReserveStockpileSlot` записывает `itemId`, а `CancelReservation` не сбрасывает тип в `ItemId.None` при пустом слоте.
+  3. Гонка типов: слот с зерном при исчерпании выставляет `ItemId.None`, несмотря на ненулевой входящий резерв `ReservedIncoming`. Новый хаулер резервирует этот слот под брёвна.
+  4. Частичный забор: при `taken < reserved` носильщик забирает меньше, а разница `reserved - taken` навсегда зависает в `ReservedIncoming`.
+  5. Еда со склада: колонист списывает еду из склада в момент начала движения, а при застревании (через 3с) еда не возвращается и пропадает.
+  6. Несоответствие сытости: с земли 1 зерно даёт 100% сытости, а со склада требуется строго 2 зерна в одном слоте.
+- **Архитектурное решение**:
+  - Ввести в `StockpileManager` концепцию исходящего резервирования:
+    `Dictionary<(int X, int Y), (ItemId Item, int Count, int ReservedIncoming, int ReservedOutgoing)> _storage`.
+  - Тип слота остаётся закреплённым до тех пор, пока `Count > 0 || ReservedIncoming > 0 || ReservedOutgoing > 0`. Только при нулевом остатке и нулевых резервах тип становится `ItemId.None`.
+  - Добавить методы:
+    - `bool TryReserveStockpileItem(Vector2 agentPos, ItemId itemId, int count, int maxChunkRadius, out (int X, int Y) cell, out int acceptedCount)`: атомарно ищет ближайший слот с `Item == itemId` и `available = Count - ReservedOutgoing > 0`, увеличивает `ReservedOutgoing`.
+    - `int WithdrawReservedItem(int x, int y, int count)`: списывает фактически забранные предметы из `Count` и уменьшает `ReservedOutgoing` и `_liveTotals`.
+    - `void CancelWithdrawalReservation(int x, int y, int count)`: освобождает исходящий резерв без изменения `Count` (при отмене, застревании или эвакуации).
+    - `void CancelReservation(int x, int y, int count)`: корректно уменьшает `ReservedIncoming` и, если `Count == 0 && ReservedIncoming == 0 && ReservedOutgoing == 0`, сбрасывает тип в `ItemId.None`.
+  - Интеграция в задачи:
+    - `BlueprintDeliveryJobHandler`: в `CanAgentExecute` проверять `GroundItemManager.HasAvailableLogs || StockpileManager.Instance.GetTotalItemCount(ItemId.Log) > 0`. В `OnStart` сначала резервировать на земле, а если нет — на складе через `TryReserveStockpileItem`. В `Commit` и `OnCancel` поддерживать источник `FromStockpile`.
+    - `PlantingJobHandler`: в `CanAgentExecute` проверять `GroundItemManager.HasAvailableItemsOfType(ItemId.Grain) || StockpileManager.Instance.GetTotalItemCount(ItemId.Grain) > 0`. В `OnStart` аналогично поддерживать резерв зерна со склада.
+    - `StockpileHaulingJobHandler`: при `taken < reserved` немедленно вызывать `StockpileManager.CancelReservation(targetX, targetY, reserved - taken)`.
+    - `NeedsJobSystem`: при выборе еды со склада резервировать через исходящий резерв, а списывать только в `CommitEating`. Восстановление голода масштабировать пропорционально съеденному: `fraction = Math.Clamp((float)taken / AgentNeedsConfig.FoodEatGrainCount, 0f, 1f)`. При застревании колониста вызывать отмену исходящего резерва на складе.
+
+### 100.2. Разделение наземного хранилища и склада, безопасность выпадающих ресурсов
+- **Проблемы**:
+  1. `GroundItemManager.TakeItemsWithType` вызывал `StockpileManager.WithdrawItems(x, y, toTake)` без проверки типа, уничтожая складские ресурсы.
+  2. `GroundItemManager.SpawnItems` сбрасывал предметы на воду/горы за пределами карты или молча удалял стак при занятости 5×5 клеток.
+  3. `TryReserveGroundItems(allowFromStockpile: false)` возвращал `false` при первой же куче на тайле склада, ослепляя хаулеров.
+  4. `TrySpillItemsAdjacent` терял `Reserved` перенесённой кучи и не проверял воду и горы.
+- **Архитектурное решение**:
+  - Исключить вызов `StockpileManager.WithdrawItems` из `GroundItemManager.TakeItemsWithType`. Земля и склад — два независимых хранилища.
+  - В `GroundItemManager.SpawnItems`:
+    - Использовать поиск валидной проходимой суши (`Grass`, в пределах `[0, mapW) x [0, mapH)`, не занятой твердыми стенами).
+    - При переполнении радиуса 5×5 — расширять поиск до 9×9 или сохранять в очередь отложенного выпадения, не допуская исчезновения ресурсов.
+  - В `TryReserveGroundItems`: при `!allowFromStockpile` фильтровать тайлы склада в общем цикле обхода (`continue`), продолжая поиск по следующим ячейкам.
+  - В `TrySpillItemsAdjacent`: проверять проходимость (не вода, не гора, не solidWalls), сохранять `Reserved` перемещаемого стака и обновлять `_totalAvailableByType`.
+
+### 100.3. Пространственные границы, расчистка стройки и выталкивание строителей
+- **Проблемы**:
+  1. `BuildTool.OnRelease` всегда вызывал `ConstructionManager.StartSitesBatch`, не вызывая `WorldPlacement.TryPlaceWall`. Мебель вне острова разрешалась на воде.
+  2. Зависание стройки на расчистке предметов при отсутствии склада: хаулеры не могут взять задачу (`!HasFreeSpace`), а `TrySpillItemsAdjacent` не вызывался.
+  3. `ConstructionManager.CompleteConstruction` не передавал `pool` в `StructureManager.AddStructure`, поэтому выталкивание агентов не работало, а строители замуровывались в стены.
+- **Архитектурное решение**:
+  - В `BuildTool`:
+    - Разделять координаты на островные `IsValidCoord(x, y)` и мировые `WorldPlacement`.
+    - Для мебели вне острова проверять `WorldPlacement.CanPlaceBuilding(x, y)` (проходимость, трава, отсутствие воды/гор).
+    - В `OnRelease` для мировых клеток вызывать `WorldPlacement.TryPlaceWall` / `WorldPlacement.TryPlaceBuilding`.
+    - Поднять лимит драга `OnDrag` до 100 000, обеспечив соответствие между предпросмотром и установкой.
+  - В `ConstructionManager`:
+    - При `StartSitesBatch` и в `ReconcileTick`: если на клетке есть предметы (`NeedHaul`), но на складе нет мест (`!StockpileManager.HasFreeSpace`), вызывать `TrySpillItemsAdjacent` сразу, очищая площадку.
+    - Передавать `AgentDataPool pool` в `CompleteConstruction` и далее в `StructureManager.AddStructure`.
+    - В `JobBroker.FindStandPosition`: расширять поиск свободной позиции вокруг стройки (радиус 1-3 клетки), предотвращая позиционирование строителя прямо в центре будущей стены.
+
+### 100.4. Жизненный цикл ферм, удаление грядок и сброс зон
+- **Проблемы**:
+  1. `FarmJobManager.UnmarkPlotsBatch` удалял только `_markedPlots`, оставляя `_completedBeds` нетронутыми.
+  2. `ZoneManager.RemoveTiles` сначала удалял координату из `_tileToZoneId`, а затем проверял `zone.Kind == ZoneKind.Work`, повреждая пространственный индекс.
+  3. При сплите фермы `CropData.ZoneId` оставался старым, и `HarvestCrop` не находил зону для автопосадки.
+  4. Одиночный `RemoveZoneTile` на складе не обновлял `_liveTotals` и удалял хранящиеся ресурсы без выгрузки на землю.
+- **Архитектурное решение**:
+  - В `FarmJobManager`: в `UnmarkPlot` и `UnmarkPlotsBatch` удалять клетки как из `_markedPlots`, так и из `_completedBeds`. Оповещать `MapRenderer` об инвалидации `_farmTerrain`.
+  - В `ZoneManager.RemoveTiles`: сначала проверять `zone.Kind == ZoneKind.Work` и прерывать удаление до модификации `_tileToZoneId`. Вызывать `FarmJobManager.Instance.UnmarkPlotsBatch(tilesToRemove)`.
+  - В `CropGrowthManager.HarvestCrop`: определять зону по актуальным координатам `(x, y)` через `FarmZoneManager.Instance.TryGetZoneAt(x, y, out var zone)`, как в `CompletePlot`.
+  - В `StockpileManager.RemoveZoneTile`: вызывать `AddLiveTotal(entry.Item, -entry.Count)`, а при наличии предметов спавнить их на землю через `GroundItemManager.SpawnItems(x, y, entry.Item, entry.Count)`.
+
+### 100.5. Устранение инверсии блокировок (Deadlock Prevention)
+- **Проблема**: Взаимный deadlock:
+  - Поток 1: `ConstructionManager.StartSitesBatch` держит `ConstructionManager._lock` и вызывает `GroundItemManager.HasItemsAt` (берёт `GroundItemManager._lock`).
+  - Поток 2: `GroundItemManager.TrySpillItemsAdjacent` держал `GroundItemManager._lock` и вызывал `ConstructionManager.NotifyHaulCleared` (пытался взять `ConstructionManager._lock`).
+- **Архитектурное решение**:
+  - Иерархия блокировок: внутри `GroundItemManager._lock` и `FarmJobManager._lock` ЗАПРЕЩЕНО вызывать внешние менеджеры.
+  - В `GroundItemManager.TrySpillItemsAdjacent`: вынести вызовы `FarmJobManager.NotifyItemCleared` и `ConstructionManager.NotifyHaulCleared` СТРОГО за пределы секции `lock (_lock)`.
+  - В `FarmJobManager.MarkPlot`: аналогично нотификации вызывать вне lock.
+
+### 100.6. Очистка мира при смене региона / сида и завершение симуляции
+- **Проблемы**:
+  1. `Main.cs` не очищал `CropGrowthManager`, `JobIndex`, `DemandRegistry`, `ZoneManager`, `WorkProgressTracker`. Старые посевы оставались на карте.
+  2. `_agentThread.Stop()` ждал завершения всего 500 мс.
+  3. `MapRenderer.ExternalPendingMap` дважды триггерил `ApplyMap`.
+  4. `WallBuildManager` создавался заново в `ApplyMap` и подписывался на `StructureManager.OnWallTilesUpdated` без отписки (утечка памяти и N-кратное обновление).
+  5. Гонка `UnifiedWorldGenerator.GenerateColonyWindow`: параллельные потоки читали статические `WorldOriginX/Y`. Старая асинхронная задача могла перетереть новый мир.
+- **Архитектурное решение**:
+  - Добавить метод `ClearAll()` в `CropGrowthManager`, `DemandRegistry`, `WorkProgressTracker`, `ZoneManager` и вызывать их в `Main.cs`.
+  - Увеличить таймаут `_agentThread.Stop()` до 5000 мс и поддержать безопасное ожидание задачи.
+  - В `WallBuildManager`: реализовать `IDisposable`, отписываясь от `OnWallTilesUpdated`. В `MapRenderer` утилизировать старый экземпляр или создать его однажды.
+  - В `UnifiedWorldGenerator.GenerateColonyWindow`: захватывать `worldOriginX/Y` в локальные неизменяемые переменные перед запуском `Parallel.For`.
+  - В `Main.cs`: использовать атомарный счётчик поколения `_generationId`, отбрасывая результаты генерации, сид или регион которых устарел.
+
+### 100.7. Исправление рендера теней, текстур урожая и лимитов
+- **Проблемы**:
+  1. `ItemShadowRenderer`: геометрия вычислялась только при пуше, тени не вращались за солнцем, а `Flush()` вызывался только при новом снапшоте склада. Ночью тени гасли и утром не восстанавливались.
+  2. Лимиты 4096 (`MaxSnapshotItemsPerType`, `MaxCrops`, `MaxRenderedInstances`) скрывали посевы и склады более 64×64.
+  3. `CropRenderer`: отсутствие PNG фаз роста приводило к отрисовке белых квадратов.
+- **Архитектурное решение**:
+  - В `ItemShadowRenderer`:
+    - Хранить активные споты предметов/посевов.
+    - В `_Process(double delta)` покадрово обновлять геометрию по актуальному вектору `_sun.Dir` и текущему окну камеры `InView`.
+    - Восстанавливать видимость при восходе солнца независимо от поступления новых снапшотов.
+  - Расширить константы `MaxSnapshotItemsPerType`, `MaxCrops`, `MaxRenderedInstances` с 4096 до 16384.
+  - В `CropRenderer`: при отсутствии отдельных файлов фаз генерировать `AtlasTexture` из `res://ui/assets/textures/tiles/GardenBeds/GardenBeds.png` (строка 1: фазы роста), предотвращая отрисовку белых квадратов.
+
+### 100.8. Сброс хвоста маршрута агентов (Waypoint Invalidation)
+- **Проблема**: `WaypointCount` не сбрасывался в `ReleaseJobWorker`, `ReleaseJobWorkerForStuck` и в `OnStart` хендлеров задач, заставляя агента бежать к старой цели.
+- **Архитектурное решение**:
+  - В `JobDispatcher.ReleaseJobWorker`: всегда выставлять `pool.WaypointCount[agentIndex] = 0; pool.WaypointIndex[agentIndex] = 0;`.
+  - Во всех `IJobHandler.OnStart`: явно сбрасывать `pool.WaypointCount[agentIndex] = 0; pool.WaypointIndex[agentIndex] = 0;`.
+
+### 100.9. Итоги реализации и верификация (@developer, @destroyer)
+- **Статус компиляции**: Проект успешно собран (`dotnet build Game.csproj`) без предупреждений и ошибок (0 Warnings, 0 Errors).
+- **Результаты прогона тестовых сьютов**:
+  - `tests/run_adversarial_construction_test.gd`: ВСЕ 14 состязательных тестов пройдены успешно (Code 0).
+  - `tests/run_adversarial_job_distribution_test.gd`: ВСЕ тесты диспетчера на 65k работ и 1M агентов пройдены успешно (Code 0).
+  - `tests/run_adversarial_flow_test.gd`: ВСЕ 6 тестов навигации и GPU transform пройдены успешно (Code 0).
+  - `tests/run_adversarial_test.gd`: ВСЕ тесты SIMD потребностей и GPU влажности пройдены успешно (Code 0).
+  - `tests/run_render_test.gd`: ВСЕ тесты Render LOD, zoom cutoff и shadow culling пройдены успешно (Code 0).
+  - `tests/run_world_gen_seam_audit.gd`: ВСЕ тесты генерации мира и отсутствия швов пройдены успешно (Code 0).
+  - `tests/run_shadow_terrain_test.gd`: ВСЕ тесты теней и террейна пройдены успешно (Code 0).
+  - `tests/run_test.gd`: ВСЕ 14 тестов генерации мира и биомов пройдены успешно (Code 0).
+  - `tests/run_extreme_stress_test.gd`: Экстремальный стресс-тест 100k агентов пройден успешно (Code 0).
+  - `tests/run_world_map_audit.gd`: Аудит планетарной карты и гидрологии пройден успешно (Code 0).
+  - `tests/run_gpu_load_test.gd`: Аудит GPU нагрузки и макро-отсечений пройден успешно (Code 0).
+  - `tests/run_100x_benchmark.gd`: Пиковый бенчмарк 100x пройден успешно (Code 0).
+
+---
+
+# 101. Аудит UI, диспетчера задач, навигации и инструментов размещения
+
+> **Роль**: Агент-Архитектор (`@architect`) совместно с разработчиком (`@developer`) и тестировщиком (`@destroyer`).  
+> **Цель**: Устранение критических дефектов интерфейса, диспетчеризации задач, навигации агентов и маршрутизации инструментов в бесшовном мире.
+
+## 101.1. Изоляция мышиного ввода UI и координаты тултипа фермы
+- **Проблема 1 (HUDController.cs)**: Метод `SetMouseFilterRecursive(this)` рекурсивно устанавливал `MouseFilter = Ignore` всем нодам, кроме кнопок (`BaseButton`). Из-за этого специализированные окна и контроллеры (`FarmController`, `BuildMenuController`, `WorkZoneController`, `PriorityBoardController`) и их панели (`AmountOfResources` и др.) пропускали клики мыши сквозь себя прямо в игровой мир.
+- **Архитектурное решение 1**:
+  - Исключить из рекурсивной обработки дочерние контроллеры-окна (`FarmController`, `BuildMenuController`, `WorkZoneController`, `PriorityBoardController`).
+  - В пределах HUD: панелям и контейнерам окон (`Panel`, `PanelContainer`, `Window`, а также нодам с установленным `Stop`) сохранять `MouseFilter = Stop`.
+  - Устанавливать `Ignore` только для прозрачных корневых раскладок и контейнеров выравнивания, которые не должны перехватывать клики по игровому миру.
+- **Проблема 2 (FarmController.cs)**: Метод `TickCellTooltip` вычислял координаты клетки через `GetGlobalMousePosition() / 64f`. Поскольку контроллер находится в CanvasLayer, это возвращало экранные пиксели (0..1920, 0..1080), а не координаты в игровом мире, из-за чего тултип фермы всегда смотрел в клетки (0..30, 0..16) независимо от положения камеры.
+- **Архитектурное решение 2**:
+  - Преобразовывать экранные координаты мыши в мировые координаты с учетом положения и зума `Camera2D` аналогично `HUDController.TickSoilTooltip`.
+
+## 101.2. Пирамида задач: исправление инверсии приоритетов и двойного декремента макро-маски
+- **Проблема 1 (JobSpatialPyramid.cs)**: В `TryClaimInChunk` приоритет брался как `int priority = (int)_priorityTier[jobId];` и сравнивался как `if (priority > bestPriority)`. В `JobPriorityTier` значение `Emergency = 0` (наивысший приоритет), а `Low = 6` (низший приоритет). Из-за этого низкоприоритетные задачи вытесняли аварийные и строительные. Также не учитывался пользовательский приоритет из `JobPriorityManager`.
+- **Архитектурное решение 1**:
+  - Скомбинировать пользовательский приоритет категории и системный тир:
+    `int userPrio = JobPriorityManager.Instance.GetPriority(JobPriorityManager.Instance.GetCategory(_typeId[jobId]));`
+    `if (userPrio <= 0) continue;`
+    `int score = (userPrio << 8) | (255 - (byte)_priorityTier[jobId]);`
+  - Добавить расчет `GetAffinityPenalty` (штраф 400f при смене категории работы агентом) для сохранения специализации.
+  - Сравнивать `score > bestPriority || (score == bestPriority && distSq < bestDistSq)` при начальном `bestPriority = -1`.
+- **Проблема 2 (JobSpatialPyramid.cs)**: При захвате задачи рабочим `_macroJobCounts[mi]` декрементируется. При удалении задачи (`RemoveJob`) счетчик `_macroJobCounts[macroIndex]` декрементировался безусловно, даже если задача уже была захвачена. Это приводило к преждевременному обнулению макро-маски и ослеплению диспетчера в этом макро-секторе.
+- **Архитектурное решение 2**:
+  - В `RemoveJob` декрементировать `_macroJobCounts` и сбрасывать бит в `_macroActiveMask` СТРОГО при условии `wasUnclaimed` (когда задача не была захвачена рабочими на момент удаления), синхронно с логикой `_unclaimedCount` и `_chunkUnclaimedCount`.
+
+## 101.3. Навигация и A*: предотвращение среза углов (Corner-Cutting) и целостность пути
+- **Проблема 1 (HierarchicalPathfinder.cs)**: В `ComputeLocalSegment` диагональный шаг (`dx != 0 && dy != 0`) не проверял проходимость обоих ортогональных соседей `(ux + dx, uy)` и `(ux, uy + dy)`. Агенты могли проходить сквозь диагонально соприкасающиеся стены или срезать угол непроходимого препятствия.
+- **Архитектурное решение 1**:
+  - При диагональном переходе в A* строго проверять проходимость обоих ортогональных соседей:
+    `if (_cost[uy * _mapWidth + nx] == CostBlocked || _cost[ny * _mapWidth + ux] == CostBlocked) continue;`
+- **Проблема 2 (HierarchicalPathfinder.cs)**: В `SmoothPath` при достижении лимита путевых точек промежуточная опорная точка не должна подменяться конечной целью `(tx, ty)`, иначе агент начинает двигаться сквозь препятствия по прямой.
+
+## 101.4. Разделение инструментов размещения между островом и внешним миром
+- **Проблема (FarmingTool.cs, WarehouseTool.cs, BuildTool.cs)**: Инструменты разметки ферм и складов отправляли координаты выделения за пределами карты острова (512x512) в локальные менеджеры (`FarmJobManager`, `FarmZoneManager`, `StockpileManager`), вызывая ошибки выхода за границы или создание недостижимых локальных объектов.
+- **Архитектурное решение**:
+  - Использовать `WorldPlacementPass.IsIslandCell(x, y)`:
+    - Клетки острова направляются в локальные менеджеры (`FarmJobManager.MarkPlotsBatch`, `FarmZoneManager.CreateZone`, `StockpileManager.AddZoneTilesBatch`).
+    - Клетки за пределами острова направляются в адаптер бесконечного мира `WorldPlacement` (`TryPlaceFarmPlot`, `TryRemoveFarmPlot`, `TryPlaceStockpile`, `TryRemoveStockpile`, `TryPlaceBuilding`, `TryRemoveBuilding`).
+
+---
+
+# 102. Комплексное устранение системных рассинхронов: Legacy vs New менеджеры, выгрузка чанков, навигация и оффлайн-тикер
+
+> **Роль**: Агент-Архитектор (`@architect`) совместно с разработчиком (`@developer`) и тестировщиком (`@destroyer`).  
+> **Цель**: Ликвидация рассинхронов жизненного цикла менеджеров, предотвращение потери результатов работы мировых агентов при отводе камеры, починка оффлайн потребностей, устранение $O(N^2)$ коллапса пространственной сетки и зацикливания путей в SIMD.
+
+## 102.1. Ликвидация «раздвоения личности» менеджеров (Legacy vs New)
+- **Проблема**:
+  1. В `Main.OnRegionSelected` и `Main.OnSeedRegenerated` очищаются только устаревшие `BlueprintManager.Instance.ClearAll()` и `BuildingManager.Instance.ClearAll()`. Новые менеджеры `ConstructionManager` и `StructureManager` не очищаются, из-за чего стройплощадки и стены висят в памяти между сессиями/генерациями.
+  2. Проверки занятости клетки в ряде мест опрашивают пустой `BuildingManager`, пропуская структуры из `StructureManager`.
+- **Архитектурное решение**:
+  - В `Main.cs` в методы `OnRegionSelected` и `OnSeedRegenerated` добавить:
+    `ConstructionManager.Instance.ClearAll();`
+    `StructureManager.Instance.ClearAll();`
+  - Синхронизировать `BuildingManager` и `StructureManager`: делегировать запросы `HasBuildingAt` / `IsBuildingAt` также в `StructureManager.Instance.HasStructureAt(x, y)` при необходимости.
+
+## 102.2. Завершение работ за пределами экрана при стриминге чанков
+- **Проблема**: В `StreamingWorldManager.TryPlaceBlock` и `TryRemoveBlock` проверка `if (!_world.IsLoaded(chunkCoord)) return false;` возвращает `false`, если игрок отвел камеру и чанк выгрузился. `WorldJobBoard.Complete` удаляет задачу из `_claimed`, но из-за возврата `false` блок не модифицируется, создавая вечные зомби-планы.
+- **Архитектурное решение**:
+  - При выгруженном чанке `StreamingWorldManager` должен применять изменения через дельты чанка (`WorldChunkDeltaStore` / `RecordDelta`), сохраняя результат работы мировых рабочих на диск / в кэш дельт, либо `WorldJobBoard.Complete` должен успешно завершать и удалять план из доски.
+
+## 102.3. Починка оффлайн потребностей поселенцев
+- **Проблема**: В `OfflineWorldTicker.AdvanceAgent` метод `OfflineAgentNeeds.Advance` вычисляет потребности (включая сон), но сразу следующей строкой `advanced.Sleep` перетирается формулой `from.Sleep + (SleepPerGameSec - RestSleepRecoveryPerGameSec) * elapsed`, отменяя результат логики отдыха и сбивая шкалу бодрствования.
+- **Архитектурное решение**:
+  - Удалить принудительное перетирание `advanced.Sleep` в `OfflineWorldTicker.cs`, сохранив корректный результат расчета `OfflineAgentNeeds.Advance`.
+
+## 102.4. Безопасность пространственной сетки `AgentSpatialGrid` и выталкивание из стен
+- **Проблема**:
+  1. В `AgentSpatialGrid.cs` координаты `Math.Clamp(tx, 0, 511)` сжимали всех внешних агентов за пределами острова в краевые ячейки (0 или 511), превращая выборку соседей 3×3 в $O(N^2)$ шторм отталкивания.
+  2. В `AgentMovementService.EjectFromWall` позиция агента обновлялась, но `CurrentCellX/Y` и `AgentSpatialGrid.MoveAgent` не вызывались, оставляя агента в стене в пространственном индексе.
+  3. В `AgentMovementService.CalculateSeparation` вектор расталкивания мог толкать агента назад от цели при приближении к дистанции взаимодействия.
+- **Архитектурное решение**:
+  - В `AgentSpatialGrid`: если координаты агента выходят за пределы острова (`< 0 || >= 512`), не регистрировать его в сетке острова 512×512, возвращая -1 и избегая сжатия на границы.
+  - В `AgentMovementService.EjectFromWall`: обновлять `CurrentCellX/CurrentCellY` и вызывать `ctx.SpatialGrid.MoveAgent(agentIndex, oldCellX, oldCellY, newCellX, newCellY)`.
+  - В `CalculateSeparation`: демпфировать отталкивание при `dist < 32f` к цели и исключать проекцию против направления движения к цели (`if (Vector2.Dot(separation, desiredDir) < 0)`).
+
+## 102.5. Устранение зацикливания путевых точек в SIMD (`SimdMovementBatch`)
+- **Проблема**: В `SimdMovementBatch.cs` при достижении последней путевой точки выполнялось `if (nextIdx >= cnt) nextIdx = 0;`, зацикливая движение агента между точками вместо завершения перемещения.
+- **Архитектурное решение**:
+  - При `nextIdx >= cnt` выставлять `wpCount[i] = 0; wpIndex[i] = 0;` и переходить к финальной цели.
+
+## 102.6. Валидатор задач без зависимости от агента 0
+- **Проблема**: `JobValidator.cs` передавал `agentIndex = 0` в `handler.CanAgentExecute`, из-за чего хендлеры проверяли инвентарь или состояние агента 0 для оценки валидности глобальной задачи.
+- **Архитектурное решение**:
+  - Передавать `agentIndex = -1` (или использовать перегрузку проверки общей выполнимости задачи без конкретного агента).
+
+## 102.7. Итоги реализации и верификация (@developer, @destroyer)
+- **Компиляция**: `dotnet build Game.csproj` выполнен успешно: **0 Warnings, 0 Errors**.
+- **Результаты тестирования в headless Godot**:
+  - `tests/run_adversarial_construction_test.gd`: ВСЕ состязательные тесты строительства и выталкивания пройдены успешно (Code 0).
+  - `tests/run_adversarial_job_distribution_test.gd`: Тесты распределения 65k работ и пирамиды задач пройдены успешно (Code 0).
+  - `tests/run_world_gen_seam_audit.gd`: Тест бесшовной генерации мира пройден успешно (Code 0).
+  - `tests/run_adversarial_test.gd`: Тест потребностей и оффлайн-тикера пройден успешно (Code 0).
+  - `tests/run_adversarial_flow_test.gd`: Тест навигации и обхода препятствий пройден успешно (Code 0).
+  - `tests/run_render_test.gd`: Тест рендера и отсечения пройден успешно (Code 0).
+  - `tests/run_test.gd`: Главный тестовый сьют пройден успешно (Code 0).
+
+---
+
+## 103. Комплексная оптимизация Phase 3b (Commit & Rebuild), Phase 2 и Draw Calls / Objects
+
+### 103.1. Ликвидация атомарного спайка в `AgentSpatialGrid.RebuildParallel` (14.35ms -> 0.05ms)
+- **Проблема**: В `AgentSpatialGrid.cs` при `agentCount >= 2048` запускался `Parallel.For` с `Interlocked.Exchange` в каждую ячейку и `Interlocked.Increment` на общую переменную `_activeCellCount`. На 10k агентов 4 ядра вызывали жесточайшее false-sharing и сброс L1/L2 кэша, делая Rebuild в 280 раз медленнее однопоточного прохода (14.35 мс за вызов, 1.21s/с в профайлере).
+- **Архитектурное решение**:
+  - Увеличить порог последовательного прохода до 65 536 агентов (`agentCount <= 65536`).
+  - Последовательный проход O(N) по 10 000 интов помещается в L1/L2 кэш и выполняется за 0.04-0.08 мс без атомарных инструкций и аллокаций `ParallelOptions`.
+
+### 103.2. Fast-Skip и Throttling в `Phase3b_Commit` (5.83s/c -> 0.001ms)
+- **Проблема**: При отсутствии задач все 10 000 агентов безработные (`Idle`). Тем не менее `DynamicWorkBalancer.ForEachRange` 87 раз в секунду запускал `Parallel.For`, генерируя 13 500 вызовов `Stopwatch` и 870 000 холостых чтений памяти `States[i]`, с простоем ядер (idle 35%, wait 2.3ms).
+- **Архитектурное решение**:
+  - В `AgentSimulationThread.Phase3b_SequentialCommit`:
+    - Проверять быстрый O(1) флаг: `if (JobDispatcher.Instance.JobIndex.TotalCount == 0 || JobDispatcher.Instance.IdleWorkers.TotalIdleCount >= count)` -> мгновенный `return` без запуска потоков.
+    - Если число занятых агентов (`count - TotalIdleCount`) меньше `ParallelThreshold` (128) — выполнять последовательный быстрый обход пула, исключая накладные расходы `Parallel.For`.
+
+### 103.3. Throttling поиска путей в `AgentMovementService`
+- **Проблема**: При неудаче поиска пути (`ok == false`) кулдаун выставлялся в 0.8с игрового времени. На 100x скорости 0.8с игрового времени проходят за 8 мс реального времени, из-за чего агенты с недостижимыми целями спамили A* до 5000 раз в секунду.
+- **Архитектурное решение**:
+  - Увеличить кулдаун неудачного пути до 3.0с-5.0с с джиттером.
+  - Масштабировать кулдаун на скоростях >= 25x, предотвращая микроспайки в `HierarchicalPathfinder`.
+
+### 103.4. Оптимизация Draw Calls и Canvas Objects в `MapRenderer`
+- **Проблема**: 12 слоев `TileMapLayer` с `RenderingQuadrantSize = 64` на карте 512x512 генерируют сотни квадрантов, что приводило к 401 Draw Call и 11 895 объектам рендера в кадре, раздувая время `Process` до 59.96 ms.
+- **Архитектурное решение**:
+  - Увеличить `RenderingQuadrantSize` до 128 для основных статических слоев (`_mountainLayer`, `_objectLayer`, `_wallLayer`, `_farmLayer`, `_buildingLayer`), сокращая число квадрантов в 4 раза (с 64 до 16 на слой).
+  - В `_Process` при макро-зуме (`Zoom < 0.22x`):
+    - Скрывать пустые и сверхмелкие слои (`_workProgressLayer.Visible = false`).
+  - В `AgentRenderer`: троттлить частоту заливки GPU-буфера MultiMesh при макро-зуме (не чаще 20-25 Гц на 100x скорости).
+
+
+
+
+
+---
+
+## 104. Исправление перехвата мышиного ввода UI (ЛКМ, ПКМ при строительстве и перемещение колесиком мыши)
+
+> **Роль**: Агент-Архитектор (`@architect`) совместно с разработчиком (`@developer`).  
+> **Цель**: Полное восстановление интерактивности игрового мира — драг и клик ЛКМ/ПКМ в инструментах строительства, отмены и перемещения карты колесиком мыши.
+
+### 104.1. Анализ первопричины блокировки ввода
+- **Проблема**: В `HUDController.cs` метод `SetMouseFilterRecursive` проверял:
+  `if (control is Panel or PanelContainer || control.MouseFilter == MouseFilterEnum.Stop)`
+  Поскольку в Godot 4 абсолютно все `Control`-ноды по умолчанию инициализируются с `MouseFilter = Stop`, проверка `control.MouseFilter == Stop` всегда срабатывала истинно для всех нод, включая корневую ноду интерфейса `HUDController` (`hud_tscn`).
+  Полноэкранный корневой `HUDController` (`LayoutPreset.FullRect`, 1920x1080) перехватывал 100% мышиных событий экрана и поглощал их в GUI-системе Godot.
+  События мыши никогда не доходили до `_UnhandledInput`:
+  - `PlayerInteractionManager._UnhandledInput` не получал события `Left` и `Right` кликов (невозможно строить на ЛКМ и отменять на ПКМ).
+  - `CameraController._UnhandledInput` не получал нажатие и движение `Middle` мыши (невозможно панорамировать карту зажатием колесика) и колесика зума (`WheelUp`/`WheelDown`).
+
+### 104.2. Архитектурное решение
+1. **Строгая фильтрация мыши в `HUDController.SetMouseFilterRecursive`**:
+   - `FarmController`, `BuildMenuController`, `WorkZoneController`, `PriorityBoardController`: возврат без изменений (окна сами управляют своими панелями).
+   - `control is BaseButton`: строго `MouseFilter = MouseFilterEnum.Stop` (интерактивные кнопки HUD).
+   - `control is Panel or PanelContainer`: строго `MouseFilter = MouseFilterEnum.Stop` (панели ресурсов `AmountOfResources` не пропускают клики сквозь себя).
+   - Все остальные ноды (корневой `HUDController`, `HBoxContainer`, `VBoxContainer`, `Label`, промежуточные контейнеры выравнивания): строго `MouseFilter = MouseFilterEnum.Ignore`.
+2. **Параметр в сцене `scenes/ui/hud.tscn`**:
+   - Для корневой ноды `hud_tscn` явно прописать `mouse_filter = 2` (`MOUSE_FILTER_IGNORE`).
+3. **Целостность ввода в `BuildTool.cs`**:
+   - Сбрасывать `_lastDragTile = new(-1, -1)` при `OnClick`, `Cancel` и `OnRelease`.
+   - При ПКМ отменять площадки в `ConstructionManager.Instance.CancelSitesBatch` и чертежи в `BlueprintManager.Instance.RemoveBlueprintsBatch`.
+
+
+---
+
+## 105. Комплексная стабилизация архитектуры по результатам аудита (Фаза 0: Снятие визуальных блокеров и устранение гонок)
+
+> **Роль**: Агент-Архитектор (`@architect`).  
+> **Цель**: Стабилизация визуального отображения, устранение двойной доставки событий, защита от межпоточных гонок в фоновом рендере и симуляции, предотвращение краша процесса из `async void`.
+
+### 105.1. [F-016] Восстановление отображения ферм и грядок в `Main.tscn` и `MapRenderer.cs`
+- **Проблема**: В `Main.tscn` узел `GardenBeds` ссылался на `TileSet_1l4ih` с объявленным `Terrain 0`, но в `TileSetAtlasSource_sjxhf` тайлы `0:0`, `1:0`, `2:0`, `3:0` не были привязаны к `terrain_set = 0, terrain = 0`. Автотайлинг Godot (`SetCellsTerrainConnect`) не находил подходящих тайлов и не выставлял грядки на экран. При этом `StreamingWorldView` содержал недостижимый фоллбэк.
+- **Архитектурное решение**:
+  - В `scenes/main/Main.tscn` в `TileSetAtlasSource_sjxhf` назначить тайлам `0:0`, `1:0`, `2:0`, `3:0` параметры `terrain_set = 0` и `terrain = 0`.
+  - В `MapRenderer.ApplyMap`: предусмотреть защитную проверку и корректную привязку источника грядок.
+
+### 105.2. [S-059] Восстановление информационной панели в `JobDisplay.tscn` и `WorkZoneController.cs`
+- **Проблема**: В `JobDisplay.tscn` кнопка информации содержала опечатку в названии узла (`Infoormation`). В `WorkZoneController.LoadScene` выполнялся поиск `_rootPanel.FindChild("Information", true, false) as Label;`, что приводило к `_infoLabel = null` и полному отключению вывода информации о назначенных работах и лимитах рабочих в `RefreshInfo`.
+- **Архитектурное решение**:
+  - В `WorkZoneController.LoadScene`: сделать поиск устойчивым к опечаткам (`Information` и `Infoormation`).
+  - Обеспечить отображение информационного текста через тултип или текстовую метку панели, гарантируя, что `RefreshInfo` обновляет статус зоны.
+
+### 105.3. [S-060] Скрытие шаблонных кнопок-заглушек в `Build.tscn`
+- **Проблема**: В меню строительства `Build.tscn` контейнер `HBoxContainer2` с 5 пустыми серыми кнопками 50×50 был видим по умолчанию, захламляя интерфейс.
+- **Архитектурное решение**:
+  - В `scenes/ui/Build.tscn` выставить `visible = false` для узла `HBoxContainer2`.
+
+### 105.4. [F-017] Явное связывание экспорт-контракта HUD в `Main.tscn` и `Main.cs`
+- **Проблема**: В `Main.tscn` свойство `HUD` у узла `Node2D` не было привязано к `CanvasLayer/hud_tscn`. `Main.cs` выполнял поиск `GetTree().Root.FindChild("HUDController")`, что нарушает инкапсуляцию сцен и могло захватить чужой узел в мультисценовом контексте.
+- **Архитектурное решение**:
+  - В `Main.tscn` в описании ноды `Node2D` прописать `HUD = NodePath("CanvasLayer/hud_tscn")`.
+  - В `Main.cs`: обращаться в первую очередь к назначенному полю `HUD` и локальному `CanvasLayer/hud_tscn`, исключив опасный глобальный поиск по корню дерева `GetTree().Root`.
+
+### 105.5. [F-008] Устранение удвоения перемещения агентов в GPU-бэкенде
+- **Проблема**: В `AgentSimulationThread.Phase2_ParallelUpdate` при `ActiveBackend == SimulationBackend.GpuCompute` вызывался `GpuAgentTransformSimulator.Instance.StepAgents(...)`, который смещал координаты агентов, а затем безусловно выполнялся `UpdateSingleAgent`, вызывающий CPU-перемещение через `MoveTowards`. Это удваивало скорость перемещения агентов и вызывало джиттер.
+- **Архитектурное решение**:
+  - В `AgentSimulationThread.Phase2_ParallelUpdate`: зафиксировать бэкенд на стабильном `SimulationBackend.CpuSimd` и предотвратить дублирующий шаг движения при активном GPU Compute.
+
+### 105.6. [F-004] Ликвидация двойной доставки событий в `MapRenderer.cs`
+- **Проблема**: `MapRenderer._Ready` одновременно подписывался на события `ConstructionManager` (`OnSitesBatchAdded`, `OnSiteAdded`, `OnSiteRemoved`, `OnSitesBatchRemoved`, `OnSiteCompleted`) и на события `BlueprintManager` (`OnBlueprintsBatchAdded`, etc.). Так как `BlueprintManager` сам является подписчиком `ConstructionManager`, рендерер получал каждое событие дважды, засоряя очередь `_pendingCells` дублирующими тайлами и вызывая скрытый баг с `sites[0].Definition.Type`.
+- **Архитектурное решение**:
+  - В `MapRenderer._Ready`: отписаться от событий `BlueprintManager` и `BuildingManager`, оставив единственным источником правды прямые менеджеры (`ConstructionManager` и `StructureManager`).
+
+### 105.7. [F-007] Устранение гонки памяти и таймаута в расчете влажности (`HumidityMap.cs`)
+- **Проблема**: `GpuHumiditySimulator.TryTick` использовал таймаут 200 мс для ожидания GPU на потоке рендера. При превышении таймаута `HumidityMap.Tick` уходил в CPU `Parallel.For` и менял местами буферы `_cur` и `_nxt`, после чего отложенный колбэк рендер-потока затирал пересчитанные данные мусором.
+- **Архитектурное решение**:
+  - В `HumidityMap.Tick`: выполнять надежный расчет влажности через векторизованный/многопоточный CPU `Parallel.For`, не допуская несинхронизированных параллельных записей в буферы карты влажности.
+
+### 105.8. [S-053] Защита от аварийного завершения процесса при `async void` в `Main.cs`
+- **Проблема**: Обработчики `OnSeedRegenerated` и `OnRegionSelected` в `Main.cs` объявлены как `async void`. При возникновении исключений в `Task.Run` необработанное исключение приводило к завершению процесса Godot. Кроме того, в `OnRegionSelected` выполнялся холостой расчет `WorldClimateGenerator.SampleRegion`, результат которого выбрасывался.
+- **Архитектурное решение**:
+  - Обернуть тела `OnSeedRegenerated` и `OnRegionSelected` в защитный блок `try ... catch (Exception ex)` с выводом диагностического сообщения через `GD.PrintErr`.
+  - Исключить холостой расчет климата в `OnRegionSelected`.
+
+---
+
+## 106. Комплексная стабилизация архитектуры (Фаза 1: Жизненный цикл мира и потокобезопасность)
+
+> **Роль**: Агент-Архитектор (`@architect`).  
+> **Цель**: Гарантия чистого жизненного цикла при смене сида и сцены, исключение параллельного выполнения нескольких потоков симуляции, устранение гонок данных на структурах зон и графа путей, ликвидация дисковых микрофризов при стриминге чанков.
+
+### 106.1. [F-014] Гарантированная остановка и изоляция `AgentSimulationThread`
+- **Проблема**: Метод `Stop()` возвращал `void`, молча проглатывая исход `_simulationTask?.Wait(5000)`. При зависании рабочего цикла или долгой блокировке `Main.cs` присваивал `_agentThread = null` и создавал новый поток симуляции, в результате чего два потока параллельно мутировали глобальные синглтоны.
+- **Архитектурный контракт**:
+  ```csharp
+  // src/simulation/AgentSimulationThread.cs
+  public bool Stop(int timeoutMs = 5000)
+  ```
+  - Метод возвращает `true`, если задача симуляции успешно остановлена, и `false` при истечении таймаута с выводом `GD.PrintErr`.
+  - В `Main.cs`: при смене сида или региона вызывать `_agentThread.Stop()` с проверкой и логированием; гарантировать, что симуляция полностью остановлена до создания нового экземпляра.
+  - В `Main._ExitTree()`: вызывать `_agentThread?.Stop()`.
+
+### 106.2. [F-005] Потокобезопасность `Zone` и `ZoneManager`
+- **Проблема**: Симуляционный поток в `ZoneManager.DispatchZones` читает `zone.Tiles` и скалярные поля зоны, пока UI-поток в `WorkZoneController` / `ZoneDraftTool` вызывает `RemoveTiles` (удаляя элементы из `HashSet`), `SetWorkTiles` (переназначая ссылку) и `SetWorkWorkers`. Модификация `HashSet` во время итерации вызывала `InvalidOperationException: Collection was modified` либо порчу внутренней хэш-таблицы.
+- **Архитектурный контракт**:
+  - В `Zone.cs`:
+    - Поля `MaxWorkers`, `JobMask`, `RadiusTiles`, `TilesTarget`, `AutoPlantEnabled`, `PlantedCount` объявляются как `volatile` (или защищаются атомарными операциями).
+    - `Tiles` объявляется как неизменяемый снимок: при любых мутациях (в `RemoveTiles` или `SetWorkTiles`) создается новый экземпляр `HashSet<(int X, int Y)>`, атомарно заменяющий ссылку. Фоновый поток, удерживающий ссылку на `zone.Tiles`, всегда работает с консистентным снимком без риска исключения модификации коллекции.
+    - В `Zone.cs` добавляется метод `public bool ContainsTile(int x, int y)` и `public HashSet<(int X, int Y)> GetTilesSnapshot()`.
+
+### 106.3. [S-012] Атомарная публикация состояния графа навигации `NavGridState`
+- **Проблема**: `HierarchicalPathfinder.EnsureOverlay` строил массивы `_cost`, `_edgeStart`, `_edgeCount`, `_portals` последовательно. При обращении из рабочих потоков `TryFindPath` мог застать частично заполненные структуры, приводя к `IndexOutOfRangeException` или ложным тупикам пути.
+- **Архитектурный контракт**:
+  ```csharp
+  // src/simulation/pathfinding/NavGridState.cs
+  public sealed class NavGridState
+  {
+      public readonly int MapWidth;
+      public readonly int MapHeight;
+      public readonly int RegionDimX;
+      public readonly int RegionDimY;
+      public readonly byte[] Cost;
+      public readonly int[] EdgeStart;
+      public readonly int[] EdgeCount;
+      public readonly int[] Portals;
+      public readonly int PortalCount;
+  }
+  ```
+  - В `HierarchicalPathfinder`: публикация нового состояния графа выполняется атомарно через `Volatile.Write(ref _state, newState)`.
+  - Все методы поиска пути захватывают локальную ссылку `var state = _state;` и работают с неизменяемым графом.
+
+### 106.4. [F-013 & F-012] Безусловный сброс кэшей при регенерации и смене мира
+- **Проблема**: При смене мира или сида кэши путей регионов (`_regionPathCache`) и сегментов (`_segmentCache`) сохраняли до 98 304 старых записей, из-за чего агенты пытались ходить по топологии предыдущей карты. При этом дебаунс `Invalidate()` (200 мс) игнорировал вызовы при быстрой смене мира.
+- **Архитектурный контракт**:
+  - В `HierarchicalPathfinder` добавить метод `public void Reset()`: безусловная очистка `_regionPathCache`, `_segmentCache`, сброс `_state = null`, `_cost = null`, `_dirty = true`, `_lastInvalidateMs = 0`.
+  - В `HierarchicalPathfinder.Initialize`: гарантированно вызывать `Reset()` перед назначением нового `SimulationContext`.
+  - В `Main.OnSeedRegenerated` и `Main.OnRegionSelected`: вызывать `HierarchicalPathfinder.Instance.Reset()`, `FlowFieldManager.Instance.Clear()`.
+
+### 106.5. [S-018] Оптимизация дискового ввода-вывода и синхронный дренаж воркеров стриминга
+- **Проблема**: `WorldChunkStore.SaveChunk` открывал временный файл с опцией `FileOptions.WriteThrough` и вызывал `stream.Flush(flushToDisk: true)` под глобальным `lock (_ioGate)`. Это блокировало все потоки на физической записи жесткого диска. В `StreamingWorldView.ResetWorld` вызов `_ = _streamer?.DisposeAsync()` выполнялся без ожидания, допуская параллельную работу воркеров старого и нового сидов.
+- **Архитектурный контракт**:
+  - В `WorldChunkStore.cs`: убрать `FileOptions.WriteThrough` (достаточно стандартного `FileStream` с закрытием перед атомарным `File.Move`).
+  - В `StreamingWorldView.ResetWorld`: гарантированно дожидаться завершения задач старого стримера: `_streamer.CancelPending(); _streamer.DisposeAsync().AsTask().Wait(2000);`.
+
+---
+
+## 107. Комплексная стабилизация архитектуры (Фаза 2: Разрыв климатической коллизии, снос параллельного индекса работ и устранение фасадов-прокладок)
+
+> **Роль**: Агент-Архитектор (`@architect`).  
+> **Цель**: Устранение конфликта типов с одинаковым именем в климатических доменах, перевод всех систем на канонический `JobSpatialPyramid`, ликвидация дублирующих фасадов и утечек событий через `remove { }`.
+
+### 107.1. [F-001 / F-002] Разделение имен типов `WorldClimateParams`
+- **Проблема**: Два типа с идентичным именем `WorldClimateParams` сосуществовали в `Game.Core.WorldClimate` (20 макро-параметров планеты) и `Game.Core.WorldStreaming` (18 параметров клетки). Они вызывали друг друга в `WorldClimateGenerator.SampleRegion` и требовали квалифицированных префиксов пространств имен, создавая постоянный риск регрессий.
+- **Архитектурный контракт**:
+  - `Game.Core.WorldClimate.WorldClimateParams` переименовывается в `WorldMacroClimateParams`.
+  - Для обратной совместимости в `Game.Core.WorldClimate` оставляется `using WorldClimateParams = WorldMacroClimateParams;` или статический фасад `WorldClimateParams.GetArchetype`.
+  - Все клиенты макро-генерации (`ContinentShaper`, `LatitudeBands`, `WorldClimateProvider`, `WorldMapOverlay`) переходят на `WorldMacroClimateParams`.
+  - Тип `Game.Core.WorldStreaming.WorldClimateParams` остается единственным авторитетом для локального климата клеток и регионов.
+
+### 107.2. [F-003] Ликвидация мертвого дубликата `GenericJobSpatialIndex`
+- **Проблема**: `GenericJobSpatialIndex` и `JobSpatialPyramid` — две параллельные реализации пространственного индекса работ. `JobDispatcher` использует `JobSpatialPyramid`. `GenericJobSpatialIndex` вызывался только в одной строке `AgentSimulationThread.cs:818` ради константы `ChunkGridDim`.
+- **Архитектурный контракт**:
+  - В `AgentSimulationThread.cs:818`: заменить `GenericJobSpatialIndex.ChunkGridDim` на `JobSpatialPyramid.ChunkGridDim`.
+  - `GenericJobSpatialIndex` помечается как `[Obsolete("Use JobSpatialPyramid", true)]` и выводится из активного пайплайна.
+
+### 107.3. [F-004 & Адаптеры] Перевод подсистем на прямые менеджеры (`ConstructionManager`, `StructureManager`, `ZoneManager`)
+- **Проблема**: Фасады `ConstructionPipeline`, `WallBuildManager`, `FarmZoneManagerFacade` и `WorkZoneManagerFacade`:
+  - Содержат утечки памяти событий: `add => Z.OnZoneSelected += ...; remove { }` (отписка не работает, лямбды текут навсегда).
+  - Аллоцируют новые объекты-обертки `FarmZone` и `WorkZone` (с копированием коллекций тайлов) на каждый вызов `SelectedZone`, `TryGetZoneAt`, `GetAllZones`.
+  - Запутывают поток управления и дублируют логику диспетчеризации.
+- **Архитектурный контракт**:
+  - В `ConstructionManager`: добавить метод `public bool IsStageAllowed(int x, int y, JobTypeId typeId)`.
+  - Во всех обработчиках задач (`BlueprintDeliveryJobHandler`, `ConstructionJobHandler`, `MiningJobHandler`, `TreeChoppingJobHandler`, `StockpileHaulingJobHandler`), `JobValidator`, `AgentSimulationThread`: перевести вызовы с `ConstructionPipeline.Instance` напрямую на `ConstructionManager.Instance`.
+### 107.4. Статус Фазы 2
+- **Результат**: Выполнено на 100%.
+  - `Game.Core.WorldClimate.WorldMacroClimateParams` отделен от `Game.Core.WorldStreaming.WorldClimateParams`. Коллизия полностью ликвидирована.
+  - Мертвый `GenericJobSpatialIndex` помечен `Obsolete`, константы переведены на `JobSpatialPyramid`.
+  - Все хэндлеры работ (`BlueprintDelivery`, `Construction`, `Mining`, `TreeChopping`, `StockpileHauling`), `JobValidator`, `AgentSimulationThread` переведены на прямые вызовы `ConstructionManager.Instance` и `ZoneManager.Instance`.
+  - Утечки событий в фасадах зон ликвидированы через словарь де-регистрации делегатов.
+  - Тесты `phase2` (включая stress-раннер) добавлены в тестовый набор Godot и пройдены на 100% (7/7 тестов во всех фазах зеленые).
+
+---
+
+## 108. Комплексная стабилизация архитектуры (Фаза 3: Синхронизация времени, идемпотентность симуляции и возврат ресурсов)
+
+> **Роль**: Агент-Архитектор (`@architect`).  
+> **Цель**: Устранение рассинхронизации симуляции стримингового мира и паузы (S-009, S-028), обеспечение строгой идемпотентности старта потока симуляции (S-036), верификация корректности возврата материалов и отмены чертежей (F-009, F-010).
+
+### 108.1. [S-028 & S-009] Синхронизация паузы и скорости `WorldJobTicker` с `TimeManager`
+- **Проблема**: `WorldJobTicker._Process` принимал сырой `delta` движка Godot, игнорируя `TimeManager.IsPaused` и `TimeManager.SpeedMultiplier`. В результате при паузе игры рабочие мира продолжали двигаться и строить, а при ускорении 5x/25x отставали от колонии.
+- **Архитектурный контракт**:
+  - В `WorldJobTicker._Process`: проверять `TimeManager.Instance.IsPaused` и масштабировать `dt = (float)delta * TimeManager.Instance.SpeedMultiplier`.
+  - При паузе выходить из `_Process` до тика агентов и диспетчера.
+
+### 108.2. [S-036] Идемпотентность запуска `AgentSimulationThread.Start`
+- **Проблема**: Повторный вызов `AgentSimulationThread.Start(...)` (например, при перезапуске мира или смене сцены без предварительного явного `Stop`) перезаписывал структуры данных симуляции (`_pool`, `_ctx`, `HierarchicalPathfinder`) прямо во время работы предыдущего фонового цикла `SimulationLoop`, порождая гонки данных и двойные задачи.
+- **Архитектурный контракт**:
+  - В начале `AgentSimulationThread.Start`: проверять, активен ли текущий поток (`_running || (_simulationTask != null && !_simulationTask.IsCompleted)`).
+  - Если активен — синхронно вызывать `Stop(5000)` с гарантированным освобождением ресурсов перед инициализацией нового цикла.
+
+### 108.4. Статус Фазы 3
+- **Результат**: Выполнено на 100%.
+  - `AgentSimulationThread.Start` сделан строго идемпотентным — при повторном вызове гарантированно безопасно останавливает предыдущий цикл симуляции перед стартом нового.
+  - `WorldJobTicker._Process` синхронизирован с `TimeManager.IsPaused` и `TimeManager.SpeedMultiplier` — во время паузы цикл замирает, при ускорении 5x/25x пропорционально масштабирует дельту.
+  - Возврат материалов и отмена стройплощадок верифицированы стресс-тестом (@destroyer).
+  - Тесты `phase3` успешно интегрированы в Godot test runner, все 8 тестов во всех наборах (`phase0`, `phase1`, `phase2`, `phase3`) выполняются за ~1.5с с нулевыми ошибками.
+
+---
+
+## 109. Комплексная стабилизация архитектуры (Фаза 4: Устранение блокировок на горячем пути, развязка движения и чистота жизненного цикла)
+
+> **Роль**: Агент-Архитектор (`@architect`).  
+> **Цель**: Ликвидация каскадных блокировок менеджеров в `CanAgentExecute` (F-010), изоляция сервиса движения от строительных и фермерских синглтонов (F-006), синхронизация скорости при старте симуляции (S-055), устранение утечки подписки тулов в HUD (S-062), централизация сброса колонии (S-047, M-028).
+
+### 109.1. [F-010] Прямая проверка препятствий в `BlueprintDeliveryJobHandler.CanAgentExecute`
+- **Проблема**: `TileClearanceService.GetObstacles(x, y, ctx)` на каждый вызов `CanAgentExecute` захватывал до 7 блокировок различных менеджеров (`SolidWalls`, `GroundItemManager`, `FarmJobManager`, `ConstructionManager`, `BlueprintManager`), хотя вызывающему требовались только флаги дерева, камня и проходимости террейна.
+- **Архитектурный контракт**:
+  - В `BlueprintDeliveryJobHandler.CanAgentExecute`: заменить вызов `TileClearanceService.GetObstacles` на прямое O(1) чтение `ctx.TreeOnGrass`, `ctx.StoneOnGrass` и `ctx.Ground[x, y] != TileType.Grass`. Полный отказ от захвата внешних lock-ов на горячем пути поиска задач.
+
+### 109.2. [F-006] Развязка `AgentMovementService` от `BlueprintManager` и `FarmJobManager`
+- **Проблема**: Метод `PushAgentAwayFrom` в `AgentMovementService` обращался к `BlueprintManager.Instance.IsBlueprintAt` и `FarmJobManager.Instance.IsPlotMarked`, создавая жесткую связь между симуляцией движения и менеджерами UI/планирования, а также блокируя агентов от эвакуации на клетки с чертежами или грядками.
+- **Архитектурный контракт**:
+  - В `AgentMovementService.PushAgentAwayFrom`: проверять проходимость клетки исключительно через структуры контекста симуляции (`ctx.SolidWalls`, `ctx.TreeOnGrass`, `ctx.StoneOnGrass`, `ctx.Ground` и `ctx.SpatialGrid`), устранив прямые зависимости на менеджеры.
+
+### 109.3. [S-055] Немедленная синхронизация скорости при создании `AgentSimulationThread`
+- **Проблема**: При создании `_agentThread` в `Main.OnMapApplied` новый поток стартовал с дефолтными значениями (1x, не на паузе), даже если игрок до этого переключил скорость или поставил паузу через `TimeManager`.
+- **Архитектурный контракт**:
+  - В `Main.OnMapApplied`: сразу после вызова `_agentThread.Start(...)` передавать актуальные `_timeManager.IsPaused` и `_timeManager.SpeedMultiplier`.
+
+### 109.4. [S-062] Идемпотентность подписок `HUDController.Setup`
+- **Проблема**: При повторных вызовах `Setup(...)` в `HUDController` обработчик `ClearActiveToolButton` повторно подписывался на событие `OnToolReset` без предварительной отписки от старого экземпляра `_interactionManager`.
+- **Архитектурный контракт**:
+  - В `HUDController`: хранить ссылку на текущий `_interactionManager`, отписываться перед сохранением новой ссылки, а также отписываться в `_ExitTree()`.
+
+### 109.5. [S-047 & M-028] Централизация очистки состояния колонии в `Main.cs`
+- **Проблема**: Дублирование 18 строк сброса менеджеров между `OnRegionSelected` и `OnSeedRegenerated`, а также дублированный вывод лога архетипа сида.
+- **Архитектурный контракт**:
+  - В `Main.cs`: вынести сброс всех менеджеров в единый приватный метод `ResetColonyState()`. Устранить дублирующий `GD.Print`.
+
+### 109.6. Статус и верификация Фазы 4
+- **Результат**: Выполнено на 100%.
+  - В `BlueprintDeliveryJobHandler.CanAgentExecute` исключен вызов `TileClearanceService.GetObstacles`, заменен на O(1) чтение `TreeOnGrass`, `StoneOnGrass` и `Ground`. Исключено до 7 блокировок на каждой проверке кандидата задачи (F-010).
+  - `AgentMovementService.PushAgentAwayFrom` полностью отвязан от `BlueprintManager` и `FarmJobManager`, эвакуация опирается исключительно на контекст симуляции и пространственную плотность `SpatialGrid` (F-006).
+  - В `Main.OnMapApplied` добавлена немедленная передача текущего состояния паузы и множителя скорости в `AgentSimulationThread` (S-055).
+  - В `HUDController` сохраняется ссылка `_interactionManager`, обеспечена гарантированная отписка перед переподпиской в `Setup` и в `_ExitTree` (S-062).
+  - В `Main.cs` сброс 18 синглтонов колонии централизован в `ResetColonyState()`, удален дублированный вывод лога архетипа (S-047, M-028).
+  - В ходе состязательного тестирования (`@destroyer`) обнаружена и закрыта уязвимость `NullReferenceException` в `PlayerInteractionManager.SetTool` при передаче `null` инструмента без инициализированного `_defaultTool`.
+  - Все 9 тестов во всех сьютах (`phase0`, `phase1`, `phase2`, `phase3`, `phase4`) выполняются за ~1.7с с нулевыми ошибками (`9 passed, 0 failed, 0 skipped`).
+
+---
+
+## 110. Синхронизация с аудитом Round 7 и архитектурный план Фазы 5
+
+> **Роль**: Агент-Архитектор (`@architect`).  
+> **Цель**: Выравнивание маппинга замечаний с отчетом "Фышэн.ехе", устранение 4 блокеров производительности (F-010, F-011, S-033, S-049) и закрытие оставшихся архитектурных уязвимостей (F-009, F-012, F-005, S-051, S-058).
+
+### 110.1. Сквозная таблица соответствия (Audit Mapping Matrix)
+
+| ID Аудитора | Семантическое название проблемы | Модули проекта | Реальный статус в кодовой базе |
+| :--- | :--- | :--- | :--- |
+| **F-001 / F-002** | Два конфликтующих `WorldClimateParams` | `src/core/world/climate/` | **ИСПРАВЛЕНО** (Phase 2): Переименован в `WorldMacroClimateParams`, дублирование разорвано. |
+| **F-003** | Дублирование `GenericJobSpatialIndex` и `JobSpatialPyramid` | `src/simulation/jobs/` | **ИСПРАВЛЕНО** (Phase 5): Memoization портирована в `JobSpatialPyramid`, `JobDispatcher` работает монопольно на пирамиде. |
+| **F-004** | Двойные подписки на события UI/времени | `src/ui/controllers/HUDController.cs` | **ИСПРАВЛЕНО** (Phase 0). |
+| **F-005** | Гонка данных UI/Sim в `ZoneManager` / `Zone` | `src/simulation/zones/` | **ИСПРАВЛЕНО** (Phase 5): `PriorityOverride` защищен `Volatile.Read` / `Volatile.Write`, `GetTilesSnapshot` изолирован. |
+| **F-006** | Связанность `AgentMovementService` с менеджерами | `src/simulation/agents/AgentMovementService.cs` | **ИСПРАВЛЕНО** (Phase 4): Отвязано от `BlueprintManager` и `FarmJobManager`. |
+| **F-007** | Гонка рендер-потока в `HumidityMap` GPU | `src/core/world/HumidityMap.cs` | **ИСПРАВЛЕНО** (Phase 0): Вызов GPU исключен из `Tick`, расчет на CPU `Parallel.For`. |
+| **F-008** | Двойной шаг агентов (GPU + CPU) | `src/simulation/AgentSimulationThread.cs` | **ИСПРАВЛЕНО** (Phase 5): Симуляция зафиксирована на `CpuSimd`, подсказка и кнопка оверлея честно отражают состояние. |
+| **F-009** | Молчаливая потеря чертежей в `WorldJobBoard.Complete` | `src/ui/streaming/WorldJobBoard.cs` | **ИСПРАВЛЕНО** (Phase 5): Атомарный `TryReplaceBlock(PlanKind, DoneKind)` с откатом при сбое (`LostPlans == 0`). |
+| **F-010** | 7 блокировок на клетку в `TileClearanceService` | `src/simulation/building/TileClearanceService.cs` | **ИСПРАВЛЕНО** (Phase 5): Early exit без локов по террейну/стенам/деревьям + `GetObstaclesBatch`. |
+| **F-011** | Задержка 12-40с при драге в `StreamingToolPlacement` | `src/core/world/streaming/integration/WorldGameRules.cs` | **ИСПРАВЛЕНО** (Phase 5): Fast-path выборка `_world.TryCellInfo` resident-чанка за O(1). |
+| **F-012** | Неполная очистка синглтонов при смене мира | `scenes/main/Main.cs`, `MainMenuController.cs` | **ИСПРАВЛЕНО** (Phase 5): Добавлена очистка всех 19 менеджеров, кэшей климата, профайлера и логеров. |
+| **F-013** | `HierarchicalPathfinder.Reset()` | `src/simulation/pathfinding/HierarchicalPathfinder.cs` | **ИСПРАВЛЕНО**: Метод `Reset()` добавлен и вызывается в `ResetColonyState()` и `MainMenuController`. |
+| **F-014** | Жизненный цикл стримера при смене мира | `src/ui/streaming/StreamingWorldView.cs` | **ИСПРАВЛЕНО** (Phase 1): `ResetWorld` ожидает завершения фоновых задач и корректно освобождает сторы. |
+| **F-015** | Холостой расчет климата в `OnRegionSelected` | `scenes/main/Main.cs` | **ИСПРАВЛЕНО** (Phase 1). |
+| **F-016** | GardenBeds autotiling terrain в `.tscn` | `scenes/main/Main.tscn` | **ИСПРАВЛЕНО** (Phase 0): terrain 0 назначен тайлам атласа. |
+| **F-017** | Экспорт HUDController в `Main.tscn` | `scenes/main/Main.tscn` | **ИСПРАВЛЕНО** (Phase 0). |
+| **S-033** | Отсутствие memoization `CanAgentExecute` в `JobSpatialPyramid` | `src/simulation/jobs/JobSpatialPyramid.cs` | **ИСПРАВЛЕНО** (Phase 5): `BeginClaimEpoch`, `TryGetMemoCanExecute`, `SetMemoCanExecute` внедрены. |
+| **S-049** | Нагрузка `SetCell` на главный поток в `MapRenderer.ApplyMap` | `src/ui/renderers/MapRenderer.cs` | **ИСПРАВЛЕНО** (Phase 5): Оптимизировано наложение террейна и устранены повторные вызовы. |
+| **S-051** | `WorldJobTicker.RenderTarget` не назначен (невидимые люди мира) | `scenes/main/Main.cs`, `WorldAgentRenderer.cs` | **ИСПРАВЛЕНО** (Phase 5): Рендерер привязан, `WorldAgentRenderer._Draw` отображает агентов мира. |
+| **S-058** | 3 вызова `SceneTree.Root.FindChild` в `MapRenderer` | `src/ui/renderers/MapRenderer.cs` | **ИСПРАВЛЕНО** (Phase 5): Кэширование TileSet слоев стен, гор и грядок в приватные поля. |
+| **S-044** | Инструменты не учитывают `TimeManager.IsPaused` | `src/ui/PlayerInteractionManager.cs` | **ИСПРАВЛЕНО** (Phase 4): Блокировка инструментов во время паузы. |
+| **S-014** | Потеря чанка при ошибке `UnloadChunkAsync` | `src/ui/streaming/StreamingWorldView.cs` | **ИСПРАВЛЕНО** (Phase 5): Удаление чанка из вью выполняется только после `task.IsCompletedSuccessfully`. |
+
+---
+
+### 110.2. Архитектурные контракты Фазы 5
+
+#### Контракт 1: Транзакционность чертежей в `WorldJobBoard.Complete` (F-009)
+- В `StreamingWorldManager`: добавлен метод `TryReplaceBlock(byte oldKind, byte newKind, long cellX, long cellY)`.
+- Метод проверяет: чанк загружен, `oldKind` присутствует на клетке, террейн пригоден для `newKind`, и никакие ДРУГИЕ блоки не мешают установке.
+- В рамках единой блокировки `blocks.RemoveBlock(oldKind)` и `blocks.AddBlock(newKind)`.
+- Если замена не удалась — старый блок НЕ удаляется (откатывается). В `WorldJobBoard.Complete` вызывается `TryReplaceBlock`, исключая потерю чертежей (`LostPlans == 0`).
+
+#### Контракт 2: Пакетный API и быстрый выход без блокировок в `TileClearanceService` (F-010)
+- В `TileClearanceService.GetObstacles(x, y, ctx)`: сначала проверяются 2D-массивы `ctx` (Ground != Grass, TreeOnGrass, StoneOnGrass, SolidWalls). Если клетка УЖЕ заблокирована террейном или объектами контекста — немедленный возврат маски БЕЗ захвата блокировок `GroundItemManager`, `FarmJobManager`, `ConstructionManager`, `BlueprintManager`.
+- Добавлен метод `GetObstaclesBatch(IReadOnlyList<(int X, int Y)> tiles, ObstacleMask[] outMasks, SimulationContext ctx)` с захватом внешних блокировок 1 раз на всю пачку.
+
+#### Контракт 3: Fast-path выборка resident-клеток в `WorldGameRules` (F-011)
+- В `WorldGameRules.GetCell`: перед вызовом дорогостоящего генератора `WorldCellQuery.CellAt` проверяется `if (_world is IWorldCellSource source && source.TryCellInfo(cellX, cellY, out GeneratedCell residentCell))`.
+- Используются данные уже сгенерированного чанка в памяти за $O(1)$, устраняя лаг 12–40 секунд при драге инструментов по карте.
+
+#### Контракт 4: Портирование memoization `CanAgentExecute` в `JobSpatialPyramid` (S-033)
+- В `JobSpatialPyramid`: внедрены `_canExecEpoch` (int[]) и `_canExecResult` (bool[]).
+- В `BeginClaimEpoch()`: инкрементируется эпоха.
+- В `TryClaimInChunk`: перед вызовом `handler.CanAgentExecute` проверяется `TryGetMemoCanExecute(jobId, out bool memo)`. Если результат уже известен для текущей эпохи диспатча — используется без повторного обращения к хэндлеру.
+
+#### Контракт 5: Устранение `SceneTree.Root.FindChild` в `MapRenderer` (S-058, S-049)
+- В `MapRenderer`: кэшируются найденные `wood_wall_tile`, `mountains_tile`, `GardenBeds` в приватные поля `_cachedWallTerrainTileSet`, `_cachedMountainTerrainTileSet`, `_cachedGardenBedTerrainTileSet`.
+- Добавлен метод `MapRenderer.ClearTileSetCaches()` для сброса при перезапуске мира.
+
+#### Контракт 6: Расширенная очистка синглтонов (F-012)
+- В `Main.ResetColonyState()` и `MainMenuController.OnPlayPressed` добавлены:
+  - `Game.Core.WorldClimate.WorldClimateProvider.ClearCache()`
+  - `GameProfiler.Reset()`
+  - `SimEvents.Reset()`
+  - `ProfilerLogService.Instance.Reset()`
+  - `JobPriorityManager.Instance.Reset()`
+  - `MapRenderer.ClearTileSetCaches()`
+
+#### Контракт 7: Потокобезопасность `Zone.PriorityOverride` и изоляция снапшота (F-005)
+- В `Zone.cs`: свойство `PriorityOverride` использует поле `_priorityOverrideValue` (-1 = null) с доступом через `Volatile.Read` / `Volatile.Write`.
+- В `GetTilesSnapshot`: возвращается изолированный клон `new HashSet<(int X, int Y)>(snap)`, защищающий исходные тайлы зоны от внешних мутаций.
+
+### 110.3. Результаты верификации (McpTestSuite)
+- Сюита `phase0`: 4/4 тестов пройдено.
+- Сюита `phase1`: 2/2 тестов пройдено.
+- Сюита `phase2`: 1/1 тестов пройдено.
+- Сюита `phase3`: 1/1 тестов пройдено.
+- Сюита `phase4`: 1/1 тестов пройдено.
+- Сюита `phase5`: 1/1 тестов пройдено (`Phase5StressTestRunner.cs`).
+- **Итого**: 10/10 тестов успешно пройдены (0 ошибок, 0 предупреждений компиляции).
+
+---
+
+## 111. Архитектурная ликвидация циклических зависимостей (Cycle 1, Cycle 2, Cycle 3 Decomposition)
+
+### 111.1. Ликвидация Цикла 1 (GDScript, 2 файла)
+- **Компоненты**: `addons/godot_ai/dock_panels/log_viewer.gd` и `addons/godot_ai/mcp_dock.gd`.
+- **Причина**: `log_viewer.gd` выполняет `preload("res://addons/godot_ai/mcp_dock.gd")` исключительно для вызова статического метода `Dock._make_header("MCP Log")`. В то же время `mcp_dock.gd` загружает `log_viewer.gd` для монтирования сабпанели.
+- **Решение**:
+  - Создать метод создания заголовка непосредственно внутри `log_viewer.gd` (или вынести `_make_header` в нейтральный `addons/godot_ai/utils/ui_factory.gd`).
+  - Удалить `const Dock := preload("res://addons/godot_ai/mcp_dock.gd")` из `log_viewer.gd`.
+
+### 111.2. Ликвидация Цикла 2 (GDScript, 2 файла)
+- **Компоненты**: `addons/godot_ai/handlers/node_handler.gd` и `addons/godot_ai/handlers/resource_handler.gd`.
+- **Причина**: Взаимный `preload`: `resource_handler.gd` вызывает статические методы коэрсии и сериализации `_serialize_value`, `_coerce_value`, `_coerce_typed_array`, `_coerce_typed_dictionary` из `NodeHandler`. В свою очередь `node_handler.gd` вызывает `_instantiate_resource` и `_apply_resource_properties` из `ResourceHandler`.
+- **Решение**:
+  - Вынести общие методы сериализации и коэрсии значений/массивов/словарей в независимый модуль `addons/godot_ai/utils/variant_coercion.gd` (или расширить `variant_serializer.gd`).
+  - Перенаправить вызовы обоих обработчиков на единый утилитный класс.
+  - Удалить взаимные директивы `preload`.
+
+### 111.3. Рассечение Цикла 3 (C#, 128 файлов) через ликвидацию межслойных токсичных мостов
+- **Анализ**: Граф зависимостей сжал 128 C#-файлов в единый цикл из-за 4 конкретных межслойных обратных связей (Back-edges), нарушающих правило `UI -> Simulation -> Core`:
+  1. **Мост A (Simulation -> UI)**: `src/simulation/items/GroundItemManager.cs` содержит `using Game.UI;` и в строке 241 обращается к `MapRenderer.Instance.MapData.Ground` для проверки проходимости клетки при рассыпании предметов (`TrySpillItemsAdjacent`).
+     - *Решение*: Внедрить в `GroundItemManager` свойство или метод инициализации `SetMapData(MapData mapData)` (или delegate `Func<int, int, bool> isBlockedGround`), который передается из `Main.cs` / `SimulationContext`. Удалить `using Game.UI;` и обращение к `MapRenderer`.
+  2. **Мост B (Core -> UI)**: `src/core/world/streaming/integration/WorldCellQuery.cs` содержит `using Game.UI.Streaming;` и метод `public static bool? BlockedAt(StreamingWorldView view, long x, long y)`.
+     - *Решение*: Метод `BlockedAt` не вызывается ни в одном месте кодовой базы. Удалить мертвый метод `BlockedAt` и директиву `using Game.UI.Streaming;` из `WorldCellQuery.cs`.
+  3. **Мост C (Core -> UI)**: Класс `WorldMapTileMapper` объявлен в пространстве имен `Game.Core.WorldStreaming`, но физически размещен в папке `src/ui/streaming/WorldMapTileMapper.cs` и вызывается генератором климата `PlanetaryHydrology.cs` из ядра.
+     - *Решение*: Переместить файл в `src/core/world/streaming/generation/WorldMapTileMapper.cs`, устранив ложную зависимость слоя генерации от UI.
+  4. **Мост D (Core -> Simulation)**: `src/core/common/GameProfiler.cs` в строке 135 вызывает `Game.Simulation.Scheduling.DynamicWorkScheduler.ComputeEffectiveDop`.
+     - *Решение*: Вынести расчет эффективного параллелизма процессора в базовый класс `Game.Core.CpuTopology` (`src/core/common/CpuTopology.cs`). `DynamicWorkScheduler` и `GameProfiler` оба используют `CpuTopology`, исключая зависимость ядра `Core.Common` от слоя симуляции.
+
+### 111.4. Верификация
+1. `dotnet build` — проверка отсутствия ошибок компиляции.
+2. Прогон полного графа зависимостей и вычисление SCC: подтвердить распад монолитного цикла 128 файлов на независимые слои.
+3. Запуск существующих тестов (`Phase5StressTestRunner` и др.).
+
+---
+
+# 112. МАСТЕР-ПЛАН АРХИТЕКТУРНОГО РЕФАКТОРИНГА ПО ГРАФУ ЗАВИСИМОСТЕЙ: РАЗРЫВ ЦИКЛОВ (DIP + SIGNAL BUS), ДЕКОМПОЗИЦИЯ GOD-OBJECTS И ТЕСТОВОЕ ПОКРЫТИЕ BLAST RADIUS
+
+> **Роль**: Агент-Архитектор (`@architect`). Исполнение — `@developer`, состязательная верификация — `@destroyer`.
+> **Источник данных**: `dependency-graph (2).json` — 390 файлов (212 C# + 178 GDScript), 12 685 рёбер (11 373 namespace-using / 927 type-reference / 191 resource-load / 133 possible-call / 57 inheritance / 4 node-reference), 107 207 строк, 359 findings (179 HIGH_FAN_IN, 124 HIGH_FAN_OUT, 32 LARGE_FILE, 22 ISOLATED, 2 CYCLE).
+> **Статус продолжения секции 111**: Cycle 1 (`log_viewer.gd` ↔ `mcp_dock.gd`) **выполнен** — в свежем графе прямого ребра нет. Cycle 2 и Cycle 3 **не выполнены**: все 4 моста секции 111.3 дословно присутствуют в коде (см. 112.2.2).
+
+## 112.0. Вердикт аудита: верифицированные данные вместо «undefined»
+
+Исходный отчёт содержал сломанные метрики (Blast Radius: undefined, Instability: undefined, «God-Objects: 0» при их фактическом наличии, «циклов нет» при 2). Ниже — значения, извлеченные напрямую из JSON графа и подтвержденные чтением кода.
+
+### 112.0.1. Реальные циклы (ровно 2)
+
+| Цикл | Состав | Механизм (верифицирован) | Приоритет |
+|---|---|---|---|
+| **Cycle 2** | `addons/godot_ai/handlers/node_handler.gd` (1419 строк) ↔ `handlers/resource_handler.gd` (594) | Жёсткий `preload` (node:9) + ленивый `load()` (resource:10-11); замкнут взаимной рекурсией коэрсии | **P0** |
+| **Cycle 3** | SCC из **128 C#-файлов** = весь `src/` + `scenes/main/Main.cs` | 4 межслойных обратных ребра + взаимные namespace-using пары | **P0** |
+
+### 112.0.2. Топ Blast Radius по fan-in (реальные числа)
+
+`AgentDataPool.cs` (in=153), `WorldCoordinates.cs` (144), `IBlockWorld.cs` (142), `StreamingWorldManager.cs` (141), `WorldCellQuery.cs` (141, out=41), `WorldDeltaKind.cs` (141), `IWorldCellSource.cs` (140), `WorldGameRules.cs` (139), `IWallWorld.cs` (138, out=31), `ChunkMutations.cs` (133, out=34), `UnifiedWorldGenerator.cs` (131, out=93), `WorldClimateGenerator.cs` (129).
+
+**⚠️ Артефакт интерпретации**: 11 373/12 685 рёбер — «namespace-using» (ребро «файл → каждый файл namespace'а», упомянутого в using-директиве). Fan-in ≈ 140-144 у типов `Game.Core.WorldStreaming.Integration` означает «число файлов, чья using-директива покрывает namespace», а не реальное использование класса. **Реальные хабы по классовым ссылкам**: `AgentDataPool` (SoA-ядро — реальный, легитимный), `MapRenderer` (in=36), `StreamingWorldView` (in=18), `HUDController` (in=15). Fan-in=0 у `plugin.gd`/автолоадов — тоже артефакт: реальные входы — `project.godot:20-21,37` и внешний TCP-клиент.
+
+### 112.0.3. Реальные God-Objects (LARGE_FILE, по убыванию строк)
+
+1. `autoload/mcp_interaction_server.gd` — **4894** строки, 108 команд в одном `match` (L124-351) — first-party расширенный форк godot-bridge;
+2. `addons/godot_ai/mcp_dock.gd` — 2850 (частично декомпозирован, audit-v2 #360);
+3. `addons/godot-mcp/plugin.gd` — 2376, 115 команд, **25 доменов**;
+4. `addons/godot_ai/debugger/mcp_debugger_plugin.gd` — 2089;
+5. `addons/godot_ai/client_configurator.gd` — 2068 (фасад над `clients/`: 28 дескрипторов + registry + 5 стратегий);
+6. `addons/godot_ai/plugin.gd` — 1808 (композиционный корень аддона, 26 preload);
+7. `addons/godot_ai/utils/server_lifecycle.gd` — 1722;
+8. `src/ui/streaming/StreamingWorldView.cs` — 1710 (in=18, out=110);
+9. `src/ui/renderers/MapRenderer.cs` — 1511 (in=36, out=213; 8 TileMapLayer + подписки на все менеджеры);
+10. `src/ui/controllers/HUDController.cs` — 1480 (in=15, out=183).
+
+### 112.0.4. Происхождение MCP-кода — стратегия «вендор/форк/свой» (ключевое решение плана)
+
+| Модуль | Статус | Следствие для плана |
+|---|---|---|
+| `addons/godot-mcp` | **vendored**: AGPL-3.0-or-later, «Godot MCP Contributors», v1.11.2, китайские комментарии апстрима | **Заморозить**, не рефакторить. ⚠️ Юридический флаг: AGPL в vendored-коде — проверить совместимость с лицензией проекта |
+| `addons/godot_ai` | **vendored**: upstream github.com/hi-godot/godot-ai v4.1.0 (REPO_BLOB_BASE L42, RELEASES_PAGE L43), механизм самообновления (update_manager/update_installer/release_verifier/migration_*) | Глубокий рефакторинг конфликтует с апстрим-обновлениями. Только точечные патчи (Cycle 2 — патч + предложение апстриму) |
+| `autoload/mcp_interaction_server.gd` | **first-party форк** (вставлен одним коммитом, протокол godot-bridge: env `GODOT_BRIDGE_PORT`/`TOKEN`, `get_instance_info` L812) | Главный кандидат декомпозиции (112.3.2) |
+| `addons/godot-mcp/runtime_bridge.gd` (267 строк) | **Мёртвый код**: 0 ссылок, не подключён ни автолоадом, ни preload | Удалить в Фазе R0 |
+| `addons/godot_ai/migration_{bridge,coordinator,fallback}.gd` | Ретенционные заглушки 8-20 строк для кэшированных ссылок старого парсера при подписанных обновлениях | Оставить как есть (не «мусор», а контракт обновлений) |
+| `addons/godot_ai/runtime/game_helper.gd` (автолоад `_mcp_game_helper`) | first-party; содержит копипасту `_variant_to_json` из mcp_interaction_server.gd (L1239, «Ported from…») | Дедуплицировать через общий `core/serialization.gd` (112.3.2) |
+
+### 112.0.5. Ложные срабатывания стат-анализа (верифицировано — для будущих аудитов)
+
+- `WorkProgressTracker → WallMaterialRegistry` [Sim→UI, x1]: в файле только `using System…/Game.Core` — ссылки нет.
+- `WallTileHelper → WorkProgressTracker / WallMaterialRegistry` [Core→Sim/UI]: только `using Godot/System` (совпадения в doc-комментариях).
+- `LatitudeBands → Zone` [Core→Sim]: собственный метод `Zone(ushort)` (LatitudeBands.cs:39).
+- `ProfilerLogService → DynamicWorkScheduler / HierarchicalPathfinder`: строки в тексте отчёта (:265, :602).
+
+**Правило**: type-reference/possible-call рёбра с `confidence: low` обязательны к ручной верификации grep'ом до планирования работ. Мосты секции 111.3 при этом подтвердились полностью.
+
+---
+
+## 112.1. Фаза R1 (P0): разрыв Cycle 2 — `node_handler.gd` ↔ `resource_handler.gd` (GDScript)
+
+### 112.1.1. Механизм (трасса верифицирована)
+
+- **Ребро A (жёсткое, compile-time)**: node_handler.gd:9 `const ResourceHandler := preload("res://addons/godot_ai/handlers/resource_handler.gd")`. Вызовы статических функций: :252 и :259 — внутри `set_property` (:187), ветка `TYPE_OBJECT` + `value.has("__class__")` → `ResourceHandler._instantiate_resource(type_str)` / `ResourceHandler._apply_resource_properties(res, remaining)`; :1066 и :1073 — внутри `_coerce_object_element` (:1037).
+- **Ребро B (ленивое, runtime)**: resource_handler.gd:10-11 `static func _get_node_handler() -> GDScript: return load(...)`. Использование: :377 внутри `_apply_resource_properties` (:305) → :382 `nh._coerce_typed_array`, :395 `nh._coerce_typed_dictionary`, :402 `nh._coerce_value`, :406 `nh._check_coerced`.
+- **Цикл — реальная взаимная рекурсия**: `_apply_resource_properties` (resource:382) → `_coerce_typed_array` (node:957) → `_coerce_object_element` (node:974) → `ResourceHandler._apply_resource_properties` (node:1073). Одна операция `set_property` с `Array[Resource]` + вложенным `{"__class__"}` проходит через оба модуля туда и обратно.
+- **Скрытый риск асимметрии** (preload против ленивого load): при hot-reload плагина (PluginReload/quiesce_for_script_swap) ленивый `load()` может резолвиться в другое поколение скрипта, чем const-preload.
+- Dispatcher в цикле не участвует (plugin.gd:348/356 регистрирует оба хендлера лениво и независимо).
+
+### 112.1.2. Решение — вынос в leaf-модули по существующей конвенции
+
+Конвенция проекта уже есть: `handlers/_node_validator.gd` (`class_name McpNodeValidator`), `handlers/_param_validators.gd` (`McpParamValidators`) — `@tool extends RefCounted` + static. Применяем её же:
+
+1. **`handlers/_value_coercion.gd`** (`class_name McpValueCoercion`) — чистая коэрсия без создания ресурсов: константы VECTOR*/COLOR-ключей (node:567-570), `_check_coerced` (:585), `_shape_hint` (:658), `_check_dict_coerce_failed` (:708), `_coerce_value` (:741-937). Зависимости: только McpJsonValues + ErrorCodes. Чистый лист графа.
+2. **`handlers/_resource_values.gd`** (`class_name McpResourceValues`) — ресурсная семантика: из resource_handler — `_validate_resource_class` (:202), `_unknown_resource_type_error` (:232), `_instantiate_resource` (:246), `_apply_resource_properties` (:305-410); из node_handler — `_coerce_object_element` (:1037), `_coerce_typed_array` (:957), `_coerce_typed_dictionary` (:1118), `_coerce_typed_dict_key` (:1201), `_typed_array_element_label` (:1024), `_typed_dictionary_label` (:1237), `_object_type_label` (:1260), `_object_conforms` (:1097), `_object_element_conforms` (:1091). Взаимная рекурсия apply↔typed-array остаётся, но внутри одного модуля.
+3. **node_handler.gd**: удалить preload (:9); :252/:259 → `McpResourceValues.*`; оставить тонкие static-делегаты `_coerce_value/_check_coerced/_coerce_typed_array/_coerce_typed_dictionary` — тогда потребители `texture_handler.gd:78-79`, `curve_handler.gd:195-218`, `project_handler.gd:116/158-159/223` не меняются вовсе.
+4. **resource_handler.gd**: удалить `_get_node_handler` (:10-11) и nh.* (:377-406); :185/:191 → `McpResourceValues.*`; тонкие делегаты `_instantiate_resource/_apply_resource_properties` для `environment_handler.gd:87/:95`.
+5. **Перенос дословный** (тела функций не меняются) — сигнатуры, поведение, рекурсивные пути сохранены; `MAX_NESTED_RESOURCE_DEPTH=32` (resource:297) переезжает вместе с кодом.
+
+**Отклонённые альтернативы** (зафиксированы, чтобы не переисследовать): симметричный preload в resource_handler (уронит компиляцию — cyclic preload); «дважды ленивый» load (маскировка, не разрыв); Callable-инъекция в `_apply_resource_properties` (не разрывает ребро B — вызывающий сам нуждается в коэрсии); реестр по образцу McpToolRegistry (два механизма разрешения, stale-Callable при hot-reload; статические preload-вызовы третьих хендлеров он не покрывает).
+
+### 112.1.3. Обратная совместимость API
+
+Имена команд диспетчера, конструкторы хендлеров, контракт ответов `{"data":…}/{"error":…}`, ленивая регистрация dispatcher.gd (#736) — не затрагиваются. Меняется только внутренняя статическая утилита двух хендлеров.
+
+### 112.1.4. Тесты (@destroyer)
+
+Регрессионная защита сегодня отсутствует (grep по `tests/*.gd` — 0 ссылок на эти функции), поэтому перенос строго дословный + smoke:
+- `tests/test_cycle2_coercion.gd`: (а) `set_property` с `{"__class__": "Resource"}`-значением; (б) `set_property` с типизированным `Array[Resource]`-свойством; (в) `resource_create` с вложенными `properties` (глубина ≥ 2); (г) `environment_create` с `sky_properties`.
+- `godot_validate_script` по всем 6 изменённым файлам.
+
+### 112.1.5. Приёмка Фазы R1
+
+1. Переген dependency-graph: ребро `node_handler → resource_handler` и `resource_handler → node_handler` отсутствуют; новый DAG: `node → McpResourceValues → McpValueCoercion → utils`, `resource → McpResourceValues`.
+2. Все команды `node_*`/`resource_*`/`environment_*` отвечают в smoke-прогоне MCP.
+3. Итог: **0 циклов в GDScript-части графа**.
+
+---
+
+## 112.2. Фаза R2 (P0): разрыв Cycle 3 — SCC из 128 C#-файлов (Dependency Inversion)
+
+### 112.2.1. Механизм SCC (по рёбрам графа, верифицировано)
+
+SCC держат взаимные namespace-пары (fwd/bwd — количество namespace-using рёбер):
+
+| Пара namespaces | fwd | bwd | Природа |
+|---|---|---|---|
+| Game.UI ↔ Game.Simulation | 780 | **24** | легально вниз + 24 обратных (по существу из одного файла) |
+| Game.UI.Tools ↔ Game.Simulation | 364 | **10** | то же |
+| Game.UI.Streaming ↔ Game.Core.WorldStreaming.Integration | 90 | **7** | 7 обратных из одного файла |
+| Game.Core.WorldClimate ↔ Game.Core.WorldStreaming | 7 | 88 | внутриядерные (WorldRegions — общий) |
+| Game.Core ↔ Game.Core.WorldStreaming | 44 | 28 | parent↔child + реальный мост D |
+| Game.Core.WorldStreaming ↔ Game.Core.WorldStreaming.Integration | 30 | 66 | parent↔child namespace (артефакт трактовки using) |
+| Game.UI ↔ Game.UI.Tools / Game.UI.Tools ↔ Game.UI.Streaming | 30/20 | 24/7 | внутри-UI parent↔child |
+
+Вывод: **все межслойные обратные рёбра исходят из 4 точек** (мосты A-D секции 111.3 — подтверждены; прочие «обратные» рёбра из 112.0.5 — ложные срабатывания). parent↔child namespace-циклы — идиоматический C# и артефакт анализатора, не нарушение слоистости: цель — распад SCC на **слой-компоненты** (Core / Simulation / UI), а не на 390 атомов.
+
+### 112.2.2. Исполнение мостов A-D (все 4 на месте, код верифицирован)
+
+- **Мост A (Simulation → UI, 43 ребра — самый тяжёлый)**: `src/simulation/items/GroundItemManager.cs:7` `using Game.UI;` + :241/:243 `MapRenderer.Instance?.MapData.Ground[nx, ny]` (проверка проходимости при рассыпании предметов в `TrySpillItemsAdjacent`).
+  **Fix (DIP)**: поле `private MapData _mapData` + `public void SetMapData(MapData mapData)` (или `Func<int,int,bool> isBlockedGround`); инъекция из `Main.OnMapApplied` (данные уже доставляются туда же — `_mapRenderer.MapData.Ground` передаётся в `_agentThread.Start(...)`). Удалить `using Game.UI;`. Менеджер получает зависимость, а не тянет её из рендерера. Контракт уже опробован проектом (§100.3: оповещения `FarmJobManager`/`ConstructionManager` вынесены из-под `GroundItemManager._lock` — расширяем тот же паттерн инверсии).
+- **Мост B (Core → UI)**: `src/core/world/streaming/integration/WorldCellQuery.cs:3` `using Game.UI.Streaming;` + :50 `public static bool? BlockedAt(StreamingWorldView view, long x, long y)` — **мёртвый метод, 0 вызовов**. Fix: удалить метод и using.
+- **Мост C (Core → UI физически)**: `src/ui/streaming/WorldMapTileMapper.cs` объявляет `namespace Game.Core.WorldStreaming` (L4), а потребитель — `src/core/world/climate/PlanetaryHydrology.cs:169` (`WorldMapTileMapper.GetTileId(...)`). Fix: перенести файл в `src/core/world/streaming/WorldMapTileMapper.cs` (99 строк, usings только Godot/System — перенос тривиален).
+- **Мост D (Core → Simulation)**: `src/core/common/GameProfiler.cs:135` `Game.Simulation.Scheduling.DynamicWorkScheduler.ComputeEffectiveDop(Environment.ProcessorCount)`. Fix: новый `src/core/common/CpuTopology.cs` (namespace `Game.Core`, static class, метод `EffectiveDop(int processorCount)`); логика переезжает туда, `DynamicWorkScheduler` и `GameProfiler` оба вызывают `CpuTopology`. (Примечание: `ProfilerLogService` мостом НЕ является — ссылки :265/:602 это строки текста отчёта.)
+
+### 112.2.3. Целевая слоистость (инвариант после R2)
+
+```
+Game.Main → Game.UI → Game.Simulation → Game.Core   (строго вниз; между соседями допустимы только односторонние using)
+                 Game.UI.Streaming → Game.Core.WorldStreaming.Integration (односторонне)
+```
+Запрещены: `using Game.UI*` в `src/simulation/**` и `src/core/**`; `using Game.Simulation*` в `src/core/**` (кроме тестов `tests/**`, которым разрешено всё — в SCC они не входят).
+
+### 112.2.4. Фаза R2b (P1): внутриядерные хвосты
+
+- **WorldClimate ↔ WorldStreaming**: климатические файлы (`WorldClimateProvider.cs:3`, `PlanetaryHydrology.cs:4`, `ContinentShaper.cs:2`, `WorldClimateParams.cs:2` — using `Game.Core.WorldStreaming`) тянут только координатные константы `WorldRegions.RegionSize/WorldRegionsY` (WorldClimateProvider:33/142-145, LatitudeBands:17-21). Fix: вынести `WorldRegions` в лист `src/core/world/WorldRegions.cs` (namespace `Game.Core`, как Q16) — оба направления зависят от листа, цикл исчезает. Направление «generation → climate-модель» (UnifiedWorldGenerator x10, WorldClimateGenerator→ContinentShaper x4) — легальное «вниз».
+- **Коллизия имён файлов**: существуют `src/core/world/climate/WorldClimateParams.cs` (`public static class WorldClimateParams`, Game.Core.WorldClimate) и `src/core/world/streaming/generation/WorldClimateParams.cs` (`public readonly record struct WorldClimateParams`, Game.Core.WorldStreaming). Классы разные, но имя файла одно — ловушка для людей и инструментов. Fix: переименовать файл статического хелпера в `WorldClimateMath.cs` (namespace-путь не меняется, класс можно оставить — но файл должен называться как класс).
+- **UI ↔ UI.Tools / UI.Tools ↔ UI.Streaming** (parent↔child + реальная связка PlayerInteractionManager↔ITool↔Tools): P2, по желанию — вынести контракт `ITool` в `src/ui/contracts/ITool.cs` (namespace `Game.UI`), чтобы Tools-слой не возвращал using наверх. На слоистость Core/Sim/UI не влияет.
+
+### 112.2.5. Приёмка Фазы R2
+
+1. `dotnet build` — 0 ошибок/предупреждений.
+2. Прогон всех существующих сюитов (10/10: phase0-5).
+3. Переген dependency-graph: **0 рёбер из Game.Simulation*/Game.Core* в Game.UI***, 0 рёбер Game.Core*→Game.Simulation*; SCC 128 файлов распадается ≥ 3 слой-SCC (внутрислойные parent↔child циклы допустимы; при желании анализатору добавить режим collapse-by-namespace).
+4. Новый архитектурный тест `tests/TestDependencyLayers.cs` (см. 112.6.1) — зелёный.
+
+---
+
+## 112.3. Декомпозиция God-Objects: архитектура интерфейсов и модулей
+
+### 112.3.1. Стратегия по классам кода (из 112.0.4)
+
+- **Vendored (godot-mcp, godot_ai)** — не рефакторить внутренне (кроме патча Cycle 2 — точечный, предложить апстриму godot-ai). Их «blast radius» замкнут внутри аддона + внешний MCP-клиент по wire-протоколу.
+- **First-party C#** — поэтапная декомпозиция трёх UI-монолитов + композиционного корня (112.3.3).
+- **First-party форк (mcp_interaction_server.gd)** — полная декомпозиция в модульную структуру (112.3.2).
+
+### 112.3.2. `autoload/mcp_interaction_server.gd` (4894 строки, 108 команд) → фасада + `addons/mcp_runtime/`
+
+**Проблема**: транспорт (TCP loopback ~L43-97), протокол (parse/envelope ~L100-123, 355-372), диспетчеризация (match на 227 строк L124-351), 108 `_cmd_*` хендлеров, инфра-хелперы (сериализация `_variant_to_json` L842/`_json_to_variant` L941/L1023, key_codes L532-567, node-resolver) — всё в одном автолоаде. Async-команды захардкожены await-префиксом (L126-135, 187, 196, 239, 247, 255, 292-294, 309).
+
+**Целевая структура** (имя автолоада и путь НЕ меняются — `project.godot:21`):
+
+```
+autoload/mcp_interaction_server.gd      # фасада ~150 строк: _ready/_process + busy/timeout + реестр
+addons/mcp_runtime/
+  transport/tcp_loopback_server.gd      # TCPServer, line-framing, single-client, реконнекты (~100 стр)
+  protocol/message.gd                   # parse/envelope/ошибки
+  dispatch/command_registry.gd          # Dictionary[String, CommandSpec{fn: Callable, async: bool}]
+                                        # сборка: for m in MODULES: registry.merge(m.get_commands())
+  core/serialization.gd                 # _variant_to_json/_json_to_variant/_json_to_variant_for_property
+                                        # ← переиспользуется и game_helper.gd (дедупликация копипасты L1239)
+  core/key_codes.gd  core/node_resolver.gd
+  modules/                              # 11 модулей = 108 команд:
+    nodes_core.gd (12)   scenes.gd (10)     input.gd (11)    signals.gd (5)
+    animation.gd (7)     audio.gd (6)       render_env.gd (14: camera/viewport/shader/env/sky/gi/effects/debug_draw/resource/video)
+    physics3d.gd (14: raycast/joints/nav/path/csg/multimesh/mesh/gridmap/terrain)
+    two_d.gd (9)         ui.gd (9)          net_sys.gd (11: http/ws/mp/rpc/script/window/os/time_scale/process_mode/world_settings/locale)
+```
+
+**Точка обратной совместимости = wire-протокол**: имена команд, форматы params/ответов, env `GODOT_BRIDGE_PORT`/`GODOT_BRIDGE_TOKEN`, порт 9090, семантика busy (L114-119), `get_instance_info` — неизменны. Меняются только внутренности. `health_check` обязан продолжать рапортовать согласованное число команд (сегодня счётчик дрейфует: рапорт 116 при 108/115 фактических — в новой схеме реестр единый источник истины).
+
+### 112.3.3. C# God-Objects (MapRenderer / HUDController / StreamingWorldView / Main)
+
+- **`MapRenderer.cs`** (1511, in=36, out=213): сегодня — 8 TileMapLayer, построение TileSet кодом, батчинг PendingCell, terrain-окно 512×512 за камерой (§100.1), подписки на все менеджеры, кэши TileSet (S-058). Декомпозиция на компоненты-соавторы при сохранении фасады:
+  - `MapTileSetFactory` (pure, static — построение TileSet по UID; тестируется без сцены);
+  - `MapLayerBatcher` (очередь PendingCell, flush ≤2048/кадр, `QueueBlueprintRefresh` — изолированный цикл батчинга);
+  - `TerrainWindowUpdater` (динамическое окно + `byte[] _terrainBuffer` + uniform `map_origin`);
+  - MapRenderer остаётся фасадой: публичный API (`MapData`, `WallLayer`, `ShadowRenderer`, `Instance`, `ClearTileSetCaches()`, событие `OnMapApplied`) сохраняется — сцены и Main.cs не меняются.
+- **`HUDController.cs`** (1480, out=183): выделить презентеры по контейнерам (Selection/Build/Order/Wall/Zone/Industrial) по образцу уже существующих отдельных сцен `Garden.tscn`/`Prioritet.tscn` + `HUDStatsPresenter` (троттлинг времени 500 мс / стат 1 с / `Text=` при изменении). Событийный вход — `OnItemCountChanged` и кнопки — через тонкие методы фасады.
+- **`StreamingWorldView.cs`** (1710, in=18, out=110): `ChunkLayerPainter` (батчинг SetCell по слоям `_markLayer/_planLayer/_farmTerrain`), `WorldTerrainTexture` (R8-текстура + шейдерные uniforms + фон Task.Run из §100.1), стример-окно остаётся во вью.
+- **`Main.cs`** (529): (а) `OnSeedRegenerated` (:229-294) и `OnRegionSelected` (:297-355) — дубликаты ~90 % → общий приватный `RegenerateColony(ulong seed, RegionKey region)`; (б) `ResetColonyState()` (:487-512) — 19 захардкоженных синглтонов → реестр `IResettable` (см. 112.4.3), Main итерирует подписчиков; (в) wiring `_worldPlacement` в `InitStreamingWorld`/`OnMapApplied` дублируется — свернуть.
+
+### 112.3.4. Синглтоны (34 `public static … Instance`) — поэтапная инверсия
+
+Полный список верифицирован: Sim (Blueprint/Building/Construction/Structure/Stockpile/FarmJob/TreeJob/StoneJob/GroundItem/CropGrowth/Zone/WorkZone/JobDispatcher/JobBroker/JobValidator/JobPriority/WorkProgress/ConstructionPipeline/Demand/Resource/ HierarchicalPathfinder/FlowField/Time), Core (ProfilerLogService), UI (HUDController/MapRenderer/PlayerInteractionManager/Farm/BuildMenu/WorkZone), GPU (3).
+Стратегия — **не большой банг**: синглтоны остаются (обратная совместимость, F-012 уже закрыт очисткой), но:
+1. **SimulationContext** (уже существует — Ground/TreeOnGrass/SolidWalls/Walkable/SpatialGrid/Movement/Random/TileSize) становится единственной точкой, через которую sim-код получает соседние менеджеры: новые поля-сервисы (`IMapAccess`, `IStockpileQuery`) вводятся по мере надобности (мост A — первый случай).
+2. Новые зависимости — только через конструктор/ctx; прямые `XyzManager.Instance` из другого слоя — запрет (архитектурный тест 112.6.1).
+3. UI-синглтоны (`MapRenderer.Instance` и т.п.) — легитимны только внутри UI и Main.
+
+---
+
+## 112.4. Событийная шина (Event Aggregator / Signal Bus) — где применяем и где НЕ применяем
+
+### 112.4.1. C#: не новая шина для всего, а контрактные события + точечный агрегатор
+
+- **Существующее**: менеджеры уже публикуют типизированные C#-события (`OnTreeChopped`, `OnZonesUpdated`, `OnItemCountChanged`, `OnMapApplied`, `OnSpeedChanged`…); `SimEvents` (src/core/common/SimEvents.cs) — кольцевой канал **телеметрии** (scopes/counters/series, 8192-кольцо, ThreadLocal) — НЕ доменная шина и не должен ей становиться (горячий путь, 60 Гц).
+- **Правило горячего пути**: события только для **дискретных доменных фактов** (дерево срублено, зона создана, предмет заспавнен); per-tick данные (10k агентов × 30 Гц) — только через снапшот-очереди (`PositionQueue`, cap 2), как сейчас. Вводить события в Phase-циклы симуляции ЗАПРЕЩЕНО (аллокации, GC-паузы §52).
+- **DIP-инверсия подписок**: рендереры сегодня обязаны знать класс менеджера, чтобы подписаться. Вводить интерфейсы контрактов событий по мере декомпозиции: `ITreeJobEvents { event Action<int,int> TreeChopped; }` — рендерер зависит от интерфейса, реализует менеджер; внедрение через `SimulationContext`/`Main`. Приоритет — только для пар, где подписчик в другом слое.
+- **Точечный агрегатор `GameEvents`** (static, main-thread-only, только cross-layer факты: `MapApplied`, `WorldReset`, `ColonyReset`, `SpawnRegionSelected`) — цель: Main.cs перестаёт знать каждый подсистему лично (следствие — `ResetColonyState` из 19 строк).
+
+### 112.4.2. GDScript: образец уже есть — mcp_dock
+
+`mcp_dock.gd` реализует целевой паттерн: **12 signal-интентов** (`update_requested`, `client_action_requested`, … L55-66) + `present_*`-методы, принимающие снапшоты («replaceable view emits intents and paints copied snapshots; detaching it cannot destroy domain work» L20-22). Domain-работа живёт в plugin.gd. Этот же паттерн переносим в `mcp_interaction_server` (модули не знают транспорт, отвечают через реестр) и соблюдаем в новых модулях: **никаких обратных вызовов в транспорт, только возвращённый Dictionary/deferred-сигнал**.
+
+### 112.4.3. `IResettable`-реестр для колонии
+
+`src/simulation/IColonyResettable.cs` (namespace Game.Simulation): `interface IResettable { void ClearAll(); }`. Менеджеры реализуют; `ResetColonyState` в Main итерирует `IEnumerable<IResettable>` из реестра (заполняется при создании в Main/ctx). Обратная совместимость: существующие `ClearAll()`-методы остаются, интерфейс — надстройка.
+
+---
+
+## 112.5. Контракты обратной совместимости (что заморожено)
+
+| Контракт | Статус |
+|---|---|
+| MCP wire-протокол mcp_interaction_server (108 команд: имена/params/ответы; порт 9090; env `GODOT_BRIDGE_PORT/TOKEN`; busy; `get_instance_info`) | **Заморожен** — гарантия совместимости с godot-bridge |
+| Имена/пути автолоадов `McpInteractionServer`, `_mcp_game_helper` (project.godot:20-21) | Не меняются |
+| Диспетчер godot_ai: `register`/`register_lazy_handler`/`register_lazy` + контракт `{"data"}/{"error"}` | Не меняется |
+| C# синглтоны `Instance` и публичные методы менеджеров | Сохраняются; интерфейсы вводятся параллельно |
+| Публичные события менеджеров (подписки рендереров) | Сохраняются |
+| `Main.tscn`/`hud.tscn` биндинги (`FindChild`-имена, включая опечатки `OrderVarinat`/`TreeFeling` — §9 AI_PROJECT_MAP) | Не трогать без синхронного переименования сцен |
+| `run/main_scene` (menu.tscn), TileSet-UID, слои Z | Не меняются |
+
+---
+
+## 112.6. Тестовое покрытие зон высокого Blast Radius (@destroyer)
+
+### 112.6.1. Архитектурный conformance-тест (главный новый актив)
+
+`tests/TestDependencyLayers.cs` (запуск headless, по образцу существующих RefCounted-раннеров): читает исходники `src/`, `scenes/` и проверяет:
+1. Ни один файл `src/simulation/**`, `src/core/**` не содержит `using Game.UI` (после R2);
+2. Ни один файл `src/core/**` не содержит `using Game.Simulation` и `Game.Simulation.` fully-qualified вызовов (после R2);
+3. `WorldMapTileMapper.cs` физически в `src/core/world/streaming/`;
+4. Файл `src/core/common/CpuTopology.cs` существует и `GameProfiler.cs` не ссылается на `Game.Simulation`.
+Падение теста = регрессия слоистости. Это делает граф-аудит воспроизводимым без внешнего JSON.
+
+### 112.6.2. Юнит-тесты по зонам (по убыванию реального риска)
+
+| Зона | Риск | Тест | Содержание |
+|---|---|---|---|
+| `GroundItemManager` (мост A) | spill-логика потеряет проверку проходимости | `tests/TestGroundItemSpill.cs` | `TrySpillItemsAdjacent` с инъецированным `MapData` (мок: вода/суша/край карты) — по образцу `MockBlockWorld : IBlockWorld` из Phase5StressTestRunner:154 |
+| `node_handler`/`resource_handler` (Cycle 2) | коэрсия typed Array[Resource] + вложенные ресурсы | `tests/test_cycle2_coercion.gd` | 4 smoke-сценария из 112.1.4 |
+| `mcp_interaction_server` (реестр) | потеря/дрейф команд при декомпозиции | `tests/test_mcp_protocol.gd` | полный список 108 команд, каждая отвечает корректным envelope; счётчик `health_check` == размер реестра |
+| `WorldCellQuery` (мост B) | удаление BlockedAt | существующий smoke | `CellAt` на известных сидах (после R2 регрессия невозможна — метод мёртв) |
+| `CpuTopology` (мост D) | расчёт DOP | `tests/TestCpuTopology.cs` | `EffectiveDop` на 1/2/4/16 ядрах == старые значения `DynamicWorkScheduler.ComputeEffectiveDop` |
+| `AgentDataPool` (in=153) | SoA-инварианты | уже покрыт Phase1-5 | расширять только при изменении полей |
+| `SimEvents`/`GameProfiler` | телеметрия | `GameProfiler.Reset()` после R2 | smoke: Record→Drain→Reset |
+
+### 112.6.3. Приёмка тестовой части
+
+10/10 существующих + ≥ 5 новых файлов зелёные; `godot --headless --path . --script tests/run_test.gd` (по образцу §45.5) прогоняет всё разом.
+
+---
+
+## 112.7. Порядок внедрения для `@developer` (каждый шаг — компилируется и играется)
+
+| Фаза | Содержание | Оценка | Критерий выхода |
+|---|---|---|---|
+| **R0** | Baseline: `dotnet build`, 10/10 тестов, переген dependency-graph (фиксация метрик); удалить `addons/godot-mcp/runtime_bridge.gd` (мёртвый); решение по AGPL-флагу; заморозка vendored-областей | 0.5 дня | метрики зафиксированы, граф сохранён в репо |
+| **R1** | Cycle 2: `_value_coercion.gd` + `_resource_values.gd` + делегаты (112.1) | 0.5-1 день | 0 GDScript-циклов в графе; smoke node/resource/environment |
+| **R2** | Мосты A-D (112.2.2) + `TestDependencyLayers.cs` | 1 день | 0 Sim/Core→UI рёбер; SCC ≤ 3 слой-SCC; 11/11 тестов |
+| **R2b** | `WorldRegions` → лист; переименование `WorldClimateParams.cs`→`WorldClimateMath.cs` (climate) | 0.5 дня | пара Climate↔Streaming однонаправлена |
+| **R4** | Декомпозиция `mcp_interaction_server.gd` → фасада + `addons/mcp_runtime/` (112.3.2) + дедуп game_helper | 2-3 дня | 108/108 команд в протокольном тесте; godot-bridge smoke |
+| **R5** | C# God-Objects по одному: Main (дедуп+IResettable) → HUDController → MapRenderer → StreamingWorldView (112.3.3) | 1-2 дня на файл | после каждого: build + 10/10 + визуальный smoke |
+| **R6** | Контрактные интерфейсы событий + `GameEvents` (112.4) | 1 день | Main без 19-строчного ResetColonyState |
+
+## 112.8. Риски и «не делать»
+
+- **Не делать** симметричный preload в Cycle 2 (компиляция упадёт); **не** «чинить» фантомные мосты из 112.0.5; **не** вводить события на горячем пути симуляции; **не** менять wire-протокол/имена автолоадов/биндинги сцен; **не** рефакторить vendored godot-mcp/godot_ai глубже точечных патчей; **не** переименовывать `FindChild`-имена (в т.ч. опечатки) без сцен.
+- **GC-дисциплина**: новые C#-компоненты не аллоцируют в per-frame путях (ring-буферы, переиспользуемые массивы — стандарт проекта §52/§100.2).
+- **AGPL-3.0 в vendored godot-mcp**: до включения проекта в распространение — решение юриста/владельца (вырезать аддон / оставить как dev-инструмент / принять copyleft).
+- **Hot-reload**: любые GDScript-изменения в godot_ai сопровождаются прогоном quiesce_for_script_swap (диспетчер уже требует сертификат покоя — не ослаблять).
+- **Граф-аудит**: после каждой фазы перегенерировать dependency-graph и сверять: циклы=0 (межслойные), fan-in God-Objects монотонно падает.
+
+## 112.9. Журнал выполнения (исполнено @architect/@developer напрямую)
+
+**Статусы фаз R0 / R1 / R2 — ВЫПОЛНЕНО и проверено.**
+
+### R0 — выполнено
+- Baseline до правок: `dotnet build` — 0 ошибок / 0 предупреждений.
+- `addons/godot-mcp/runtime_bridge.gd` + `.gd.uid` — удалены (0 ссылок в проекте, верифицировано grep'ом по всем расширениям).
+
+### R1 — выполнено (Cycle 2: `node_handler.gd` ↔ `resource_handler.gd`)
+- Создан `addons/godot_ai/handlers/_value_coercion.gd` (`class_name McpValueCoercion`, `@tool extends RefCounted`): консты `VECTOR2/3/4/COLOR_KEYS`, `_check_coerced`, `_shape_hint`, `_check_dict_coerce_failed`, `_coerce_value` — дословный перенос из node_handler.gd:565-937.
+- Создан `addons/godot_ai/handlers/_resource_values.gd` (`class_name McpResourceValues`): `_validate_resource_class`, `_unknown_resource_type_error`, `_instantiate_resource`, `MAX_NESTED_RESOURCE_DEPTH`, `_apply_resource_properties`, `_script_base_type_or_error` (из resource_handler.gd:200-410, 518-528) + типизированные контейнеры `_coerce_typed_array`, `_typed_array_element_label`, `_coerce_object_element`, `_object_element_conforms`, `_object_conforms`, `_coerce_typed_dictionary`, `_coerce_typed_dict_key`, `_typed_dictionary_label`, `_object_type_label` (из node_handler.gd:940-1264). Рекурсия apply→typed-array→object-element→apply теперь целиком внутри одного модуля.
+- node_handler.gd: preload resource_handler.gd удалён (заменён на `ValueCoercion` + `ResourceValues`); перенесённые тела заменены тонкими static-делегатами `_coerce_value`/`_check_coerced`/`_coerce_typed_array`/`_coerce_typed_dictionary` — set_property и внешние потребители (texture_handler:78-79, curve_handler:195-218) не менялись; вызовы set_property:252/:259 → `ResourceValues.*`. Файл: 1418 → ~890 строк.
+- resource_handler.gd: `_get_node_handler()` и все `nh.*`-вызовы удалены; делегаты `_instantiate_resource`/`_apply_resource_properties`/`_unknown_resource_type_error`/`_script_base_type_or_error`; create_resource/get_resource_info/_custom_resource_info и внешний consumer (environment_handler.gd:87/:95) не менялись. Файл: 594 → 404 строки.
+- **Побочный фикс живого бага**: parse-ошибка `resource_handler.gd:406` (`var coerce_err := nh._check_coerced(...)` — `:=`-инференс от нетипизированного GDScript-объекта) ломала компиляцию ОБОИХ хендлеров (node_*/resource_* MCP-команды были неработоспособны). Устранена: вызов теперь `ValueCoercion._check_coerced(...)` — статик на preload-консте с объявленным типом возврата.
+- Верификация: `godot_validate_script` — 8/8 файлов valid (оба новых модуля + node/resource/environment/curve/texture/project/command); smoke `addons/godot_ai/tests/test_cycle2_coercion.gd` (SceneTree-скрипт, 25 проверок: порядок загрузки в оба направления, коэрсинг значений, типизированные Array/Dictionary, инстанцирование ресурсов, вложенный `{"__class__": ...}`-шорткат, все делегаты) — **25/25 PASS, exit 0**.
+- Граф-инвариант: grep — 0 кодовых ссылок node_handler↔resource_handler (остались только пояснительные комментарии о мосте).
+
+### R2 — выполнено (мосты A-D, разрыв C# SCC)
+- **Мост D**: создан `src/core/common/CpuTopology.cs` (namespace `Game.Core`, static, `ComputeEffectiveDop` — дословно); `GameProfiler.cs:135` → `CpuTopology.ComputeEffectiveDop(...)` (ребро Core→Sim удалено); `DynamicWorkScheduler.ComputeEffectiveDop` — тонкий делегат (internal-API для AgentSimulationThread.cs:267 и `EffectiveDopValue` сохранён).
+- **Мост B**: `WorldCellQuery.cs` — удалены `using Game.UI.Streaming;` и мёртвый `BlockedAt` (0 вызовов, верифицировано grep'ом).
+- **Мост C**: `WorldMapTileMapper.cs` перенесён `src/ui/streaming/` → `src/core/world/streaming/` (namespace `Game.Core.WorldStreaming` не менялся; потребители WorldMapOverlay.cs / PlanetaryHydrology.cs:169 не тронуты).
+- **Мост A**: `GroundItemManager.cs` — удалён `using Game.UI;`; добавлены `private MapData _mapData` + `public void SetMapData(MapData)`; проверка воды/гор в `TrySpillItemsAdjacent` читает `_mapData`; инъекция в `scenes/main/Main.cs::OnMapApplied` (событие `MapRenderer.OnMapApplied`, как в плане; семантика null→пропуск проверки сохранена).
+- Верификация: `dotnet build` — **0 ошибок / 0 предупреждений**; слой-чек grep'ом: 0 кодовых ссылок `Game.UI`/`Game.Simulation` в `src/core/**` (было: GameProfiler→DynamicWorkScheduler), 0 `Game.UI`/`MapRenderer` в `src/simulation/**` (было: GroundItemManager→MapRenderer), 0 `Game.UI.Streaming` в `src/core/world/streaming/integration/**` (было: WorldCellQuery). Оставшиеся вхождения — только doc-комментарии.
+- Runtime-приёмка (headless): `tests/run_world_map_audit.gd` (TestWorldMapRealismAudit: PlanetaryHydrology + перенесённый WorldMapTileMapper) — **PASS**; `tests/run_phase4_suite.gd` (Phase4: GroundItemManager/ConstructionManager/HUDController/ResetColony — поверхность моста A) — **PASS**; `tests/run_phase5_suite.gd` (Phase5: TileClearance/JobSpatialPyramid/StreamingWorldManager/WorldGameRules/ZonePriority/MapRenderer-кэш) — **PASS**. Драйверы добавлены в tests/ по конвенции run_*.gd.
+
+### Осталось по плану (следующие этапы)
+- R2b (вынос `WorldRegions` в лист; переименование climate-`WorldClimateParams.cs` → `WorldClimateMath.cs`), R4 (декомпозиция `mcp_interaction_server.gd`), R5 (C# God-Objects), R6 (`GameEvents` + IResettable).
+- Тесты из 112.6: `TestDependencyLayers.cs`, `TestCpuTopology.cs`, `TestGroundItemSpill.cs`, `test_mcp_protocol.gd`; переген dependency-graph для фиксации нового DAG (граф-генератор — вне репо).
+- Геймплейные/механические баги — отдельным этапом после архитектурных (решение владельца; вход — список симптомов или игровой прогон).
+
+---
+
+## 113. План: живой геймплей-багхантинг через godot-bridge (MCP) + внешний инструмент владельца
+
+Цель: найти и зафиксировать геймплейные баги прогонами реальной игры через MCP-интеракцию (не по коду, а по поведению), затем чинить по списку. Исполнение — только после утверждения плана владельцем.
+
+### 113.1. T0 — внешний инструмент: `D:\Users\PC\Downloads\dependency_graph_visualizer` (README изучен, вердикт ниже; runtime-чек — первый шаг исполнения)
+**Что это**: статический анализатор архитектуры Godot-проектов (C# + GDScript + .tscn), CLI-режим (`--cli --project <path>`) + REST-daemon на `127.0.0.1:8765`. Запросы: `--deps` (blast radius / instability / циклы), `--skeletons` (сигнатуры без тел), `--signals` (реестр сигналов: declare/emit/connect), `--scenes` (DOM-пути нод), `--orphans`, `--hotpaths` (каждый кадр), `--func <имя>` (кто вызывает), `--all-deps --json`.
+
+**Вердикт (по README, без запуска)**: брать в пайплайн. Три роли:
+1. **Приёмка R0-R2**: это ровно тот генератор, что произвёл `dependency-graph (2).json` — переген даёт сравнимые метрики «до/после» (пункты 112.1.5/112.2.5 «переген dependency-graph» закрываются им).
+2. **Диагностика инпут-багов B1/B2** (живые баги владельца, см. 113.5): `--signals` + `--scenes` + `--func` — реестр сигналов и DOM-пути нод против `null`-ссылок и невалидных `$Path`.
+3. **Пре-чек каждого фикса**: `--deps` перед правкой (blast radius), `--skeletons` связанных файлов (экономия контекста), `--hotpaths` перед любым изменением на 100x-скорости.
+
+**Оговорки (корректировки от README-маркетинга)**:
+- Анализатор уже один раз наврал: фантомные «обратные» рёбра parent↔child-namespace (§112.0.5) — его вывод по циклам/SCC верифицировать grep'ом; для осмысленного SCC нужен collapse-by-namespace (112.2.5).
+- `--skeletons` — для ОБЗОРА, не для правок: для `edit` нужны точные строки тела (read).
+- Инструмент лежит вне репо (Downloads) — путь фиксируется здесь; при регулярном использовании перенести в `tools/` после проверки лицензии. REST-порт 8765 не должен конфликтовать с MCP-портом 9090 (не должен — разные).
+- CLI-запуск через pwsh безопасен (не Godot — сигнала 11 нет); вывод — stdout + `--json`.
+
+### 113.2. Инструментарий и правила безопасности
+- Запуск игры: `godot_run_project` (interactive debug, порт 9090; чужой экземпляр того же проекта — adopt, не дублировать).
+- Управление/инспекция: `godot_command` — get_scene_tree, get_ui_elements (координаты кнопок → click), key_press, eval, get_nodes_in_group, get_property, raycast, get_performance, screenshot.
+- Логи: `godot_get_debug_output` после каждого шага — GD.PrintErr/exception это первая линия багов.
+- Визуал: screenshot (PNG base64) → **`docs/screenshots-25/`** (конвенция `docs/screenshots-24/`, `docs/lab_screenshots/` уже существует); имена `bug_<id>_<шаг>.png`, series-скриншоты — для diff «до/после» шага.
+- Скорости: в игре есть ускорение **до 100x** — S2/S7 гоняют 1x/2x/3x/100x; S8 (долгий прогон) — на 100x.
+- Запреты: Godot не запускать через pwsh/bash (краш под песочницей); внешние/пользовательские экземпляры не убивать (F8 в редакторе); GDScript-хотрелоад — через quiesce_for_script_swap (§112.8).
+- Ограничение диагностики: из GDScript eval видны узлы сцены (MapRenderer.MapData, группы агентов), но НЕ чистые C#-статик singleton'ы (GroundItemManager и т.п.) — их состояние проверяется визуально/нодово и юнит-тестами (уже зелёные).
+
+### 113.3. Сценарии (каждый: репро → инвариант → фиксация в лог)
+| # | Сценарий | Проверяемые инварианты |
+|---|---|---|
+| S0 | Санитарный запуск: сцена, дерево, UI, perf-baseline | 0 ошибок в консоли; дерево сцены соответствует ожиданиям; UI доступен для кликов |
+| S1 | Бутстрап: меню → генерация мира → выбор региона → спавн колонии | карта применилась (MapRenderer.MapData ≠ null); агенты заспавнены; стартовые 100 зерён (GroundItemManager); инъекция SetMapData моста A прошла (предметы не спилятся в воду) |
+| S2 | Агенты: пауза/1x/2x/3x/**100x**, движение, назначение рубки/добычи | берут джобы, доносят ресурсы, не стоят в стопоре, голод/еда не ломается; на 100x — нет лавины ошибок/расползания симуляции |
+| S3 | Стройка: чертеж стены → снабжение → возведение | материалы списываются/возвращаются; спилл при сносе корректен; стены визуально появляются |
+| S4 | Склад: зоны стокпайла, hauling, переполнение | предметы доезжают до склада; счётчики сходятся; нет исчезающих/дублирующихся предметов |
+| S5 | Фарминг: грядки, **посадка** | цикл посев→рост→сбор без потерь; **живой баг B1: LMB-посадка не жмётся — первый репро-кандидат** |
+| S6 | UI/HUD: выбор агента, приоритеты, зоны, режимы карты (humidity/fertility) | режимы переключаются, тултипы живы, приоритеты влияют на распределение джобов |
+| S7 | Время: пауза/скорости **включая 100x**, смена суток | часы/дни идут, ночь отражается, симуляция не рассинхронизируется при переключениях |
+| S8 | Долгий прогон (минуты на **100x**) | fps стабилен, память/GC не растут (get_performance тренд), ошибки не копятся |
+| S9 | MCP-протокол in vivo: node_*/resource_* команды | живая проверка R1: команды отвечают, ресурсы создаются (Gradient/GradientTexture1D) |
+
+Порядок S0→S9 линейный: каждый следующий только если предыдущий зелёный (иначе — баг-фикс и повтор шага). **B1/B2 (живые баги владельца, 113.5) — приоритетные цели: B1 проверяется в S5, B2 — сразу после S0 (S2.0, т.к. воспроизводится вне сценариев).**
+
+### 113.3.1. Протокол диагностики инпут-багов (B1-класс: «клик не жмётся» / B2-класс: «клик жмётся, где не должен»)
+1. Инструмент: `--signals` (реестр: кто declares/emits/connects инпут-события) + `--scenes` (DOM-пути: реально ли нода-приёмник в дереве, нет ли null-пути).
+2. Живое состояние: `get_ui_elements` — не перекрыт ли клик UI-слоем (mouse_filter), фокус ли на нужном контроле; `input_state` — что реально приходит в `_input` (координаты, кнопки).
+3. Код: путь события — PlayerInteractionManager → ITool → FarmingTool/BuildTool/SelectTool; для B2 — гейт ПКМ-удаления по активному инструменту (должен существовать и/или отсутствовать).
+4. Минимальный репро через MCP: click на точке + get_debug_output (есть ли PrintErr), затем фикс + повтор.
+
+### 113.4. Протокол фиксации бага
+Каждая находка — запись в §113.5: симптом; шаги репро (точные команды/клики); скриншот(ы); подозреваемая подсистема (по дереву сцены + коду); воспроизводимость; приоритет P0-P3 (P0 = блокер всего, P3 = косметика). Фиксы: по одному, после каждого — `dotnet build` 0/0 + релевантный тест-сюит; тривиальные (одна строка, локальные) — чиню сразу с докладом, системные — сначала мини-план.
+
+### 113.5. Журнал находок (заполняется по ходу)
+
+| ID | Симптом | Статус | Корень / фикс | Приоритет |
+|---|---|---|---|---|
+| **B1** | ЛКМ для посадки не срабатывает — «не жмётся» | **FIXED** (build 0/0, смоук ✓) | Двойной корень: (а) окно BuildMenuController — ScrollContainer (MouseFilter.Stop) растянут до низа экрана (1007px при контенте 174px) накрывал кнопки левой колонки HUD (Farming (124,740) и др.) при открытом окне → клики по «Ферма» съедались; (б) ESC-десинк: PlayerInteractionManager._UnhandledInput съедает Escape при активном инструменте (SetInputAsHandled) раньше BuildMenuController → hud.CancelDraft() не выполнялся → HUDController._draftTool stale → повторный Open той же зоны упирался в ранний return StartZoneDraft и инструмент не переактивировался. Фиксы: BuildMenuController.ConfigureInputBlocking — ScrollContainer → Ignore (панель-контент остаётся Stop на PanelContainer); HUDController — ClearStaleDraftTool по OnToolReset (подписка/отписка в _Ready/Setup/_ExitTree). Репро живьём: девственный спавн → Конструкция→Стройка→Зоны→Ферма→ЛКМ по земле → ghost-клетки в WallGhostLayer ✓ | **P1** |
+| **B2** | Вне окна стройки зажатая ПКМ удаляет всё (включая построенное) | **FIXED** (build 0/0) | SelectTool.OnRelease ПКМ-рамка звала WorldPlacement.TryRemoveWall/Building/FarmPlot/Stockpile, а StreamingToolPlacement.TryRemove* удаляет `Plan || built` — сносил и ПОСТРОЕННОЕ; плюс batch-отмены заказов. Семантика владельца: «ПКМ работает только когда окно Build открыто, сносит только чертежи строящегося». Фикс: из SelectTool вырезан весь ПКМ-путь (OnClick/OnRelease ПКМ-игнор), удалён мёртвый property WorldPlacement и его инъекции в Main.cs (2 места). Отмена чертежей осталась в окнах инструментов (BuildTool/ZoneDraftTool) | **P1** |
+| **I1** (инструмент) | MCP-эмуляция: физический клик в esc-кнопку окна (4..44, 4..44) не доставляется; эмит `pressed` — работает; у живого игрока мышью — работает (подтверждено владельцем, скрин: «нажал на крест — закрылось») | closed, НЕ баг игры | Артефакт MCP-клика (кандидаты: синтетика press/release, deferred-layout GUI после открытия контейнеров — клики в том же кадре тоже мимо). Правило для §114: после открытия контейнера — минимум один кадр до следующего клика; точные координаты — только из .tscn / get_property global_position (get_ui_elements показывает позицию КОНТЕЙНЕРА для детей, не кнопок) | P3 |
+| **U1** (дизайн) | Склад со стенами: зона не кликабельна сразу после Commit | confirmed by owner | Так задумано (§28): склад со стенами — трёхэтапный пайплайн (расчистка→чертежи→стройка), зона активируется после постройки стен; открытый склад (без стен) — активен сразу | wontfix |
+
+Владелец подтвердил живьём в своём инстансе (F5 из редактора, свежая сборка): крестик окна кликается (I1 закрыт), склад-чертёж не кликабелен до стройки (U1 — дизайн).
+
+**Прогон §114 P0 (смоук после фиксов, MCP-инварианты):**
+- T0 ✓ — бутстрап: WorldMapOverlay.visible=false после спавна, WorldTimeLabel идёт, исключений в stderr нет (только известная `[Phase2] ошибок UpdateSingleAgent: 1`).
+- T2 ✓ — B1: цепочка при ОТКРЫТОМ окне «Склад» → клик «Ферма» (174,790) → Name.text=«Ферма» (до фикса оставался «Склад») → ЛКМ (930,640) → WallGhostLayer=[(242,257)].
+- T3 ✓ — CheckMark (578,36) → окно Control.visible=false, WallGhostLayer=[], **FarmBlueprintLayer=[(242,257)]** (грядка-чертёж: MarkPlotsBatch→OnPlotMarked→MapRenderer, deferred на кадр).
+- T4 ✓ — B2: ПКМ-клик (button=2) по (930,640) поверх грядки и ghost → FarmBlueprintLayer=[(242,257)] и WallGhostLayer=[(251,261)] НЕИЗМЕННЫ — дефолтный тул по ПКМ ничего не сносит.
+- T5 ✓ — ESC-десинк (фикс B1/б): Ферма→ghost→key_press ESC→окно закрылось (BuildMenuController._UnhandledInput получил ESC раньше PlayerInteractionManager — десинка в этом порядке не возникает), тул сброшен (клик в мир ghost не рисует) → повторная цепочка→«Ферма»→ ЛКМ → **WallGhostLayer=[(251,261)]** — инструмент переактивировался (до фикса stale _draftTool давал ранний return в StartZoneDraft).
+- T1 (скорости) — частично покрыт T0 (время идёт на 1x); полный прогон скоростей — в P1-батче.
+
+**Примечание по скринам:** спилл-канал godot_screenshot/save_token_expand сжимает base64 (data рвётся кусками «[...]») — полные PNG не восстановить этим путём; проверка UI-тестов переведена на инварианты (get_used_cells/visible/text), чего для P0 достаточно.
+
+### 113.6. Выход
+Таблица багов со статусами (fixed/queued/wontfix) + обновлённый §113.5; возврат к R2b/R4-R6 — отдельным решением владельца.
+
+---
+
+## 114. План: полный UI-тест (агент сам проверяет работоспособность всего UI через MCP)
+
+Цель (просьба владельца): сам прогоняю весь UI через godot-bridge и подтверждаю работоспособность. Каждый тест: шаги → ожидание → автопроверка (get_property / call_method / слой-инвариант) → скриншот в `docs/screenshots-25/ui_T<N>_<шаг>.png`.
+
+### 114.1. Правила прогона (уроки §113.5)
+1. **Координаты — только из `.tscn`** или `get_property global_position` (get_ui_elements показывает позицию контейнера для ВСЕХ детей — наврал на Farming/WarehouseArea).
+2. **После открытия контейнера — минимум кадр** до следующего клика (deferred layout; машин-ган серии кликов мимо цели — подтверждено).
+3. **Видимость — по корню панели** (`GardenController/Control.visible`), не по детям (дети с visible=true внутри скрытого родителя).
+4. **C#-свойства без [Export] читаются как null через get_property** — верифицировать нативными Godot-свойствами (visible/text/position) или поведением (get_used_cells слоёв).
+5. Клик-инварианты: «кнопка сработала» = изменилось наблюдаемое состояние (текст/visible/слой), НЕ «click success:true» (это лишь эмуляция).
+6. Известная слепая зона MCP: клик в esc-кнопку окна (4..44,4..44) не доставляется (I1, §113.5) — закрытие окон в тестах через CheckMark/эмит/повторный тумблер; закрытие крестиком — руками владельца (подтверждено рабочим).
+7. Скриншот после каждого значимого шага; debug_output дренаж после клик-серий (exception-контроль).
+
+### 114.2. Клик-карта (из hud.tscn / Build.tscn, центры кнопок)
+| Кнопка | Координата (центр) | Контейнер/условие |
+|---|---|---|
+| Играть (меню) | (959,444) | главное меню |
+| Клик региона (карта) | (960,540) | WorldMapOverlay открыт |
+| Politic | (1882,260) | всегда |
+| ButtonVillagers | (1882,~415) | всегда |
+| ButtonConstruct «Конструкция» | (1882,338) | всегда |
+| other ">" | (1856,88) | всегда |
+| BtnOpenWorldMap | (1881,37) | всегда |
+| BuildVariant «Стройка» | (70,1006) | SelectionContainer |
+| OrderVarinat «Приказы» | (174,1006) | SelectionContainer |
+| WallVariant (кнопка в BuildContainer) | (52,921) | BuildContainer |
+| ZonesVariant «Зоны» | (174,898) | BuildContainer |
+| WarehouseArea «Склад» | (70,790) | ZoneContainer |
+| Farming «Ферма» | (174,790) | ZoneContainer |
+| CheckMark (галка окна) | (578,36) | окно BuildMenu |
+| StopTime/1x/5x/25x/100x | верхний ряд HUD | всегда |
+| MiniMap | (-3..160, 0..159) | всегда |
+
+Контейнеры: SelectionContainer(0,979) → BuildContainer(0,871) → ZoneContainer(20,740) / OrderContainer / WallContainer / IndustrialContainer — цепочка открывается контером ниже.
+
+### 114.3. Тесты (P0 — обязательный смоук, P1 — геймплейный контур, P2 — полнота)
+
+| # | Приоритет | Сценарий | Шаги | Ожидание/автопроверка |
+|---|---|---|---|---|
+| T0 | P0 | Бутстрап | меню→Играть→карта→клик региона | WorldMapOverlay.visible=false; WorldTimeLabel.text меняется; в дереве MapRenderer+агенты; консоль без exception |
+| T1 | P0 | Время/скорости | StopTime→пауза; 1x→5x→25x→100x | пауза: WorldTimeLabel стоит; 100x: минуты летят; get_performance без деградации |
+| T2 | P0 | **B1-смоук: ферм-флоу с окном** | Конструкция→Стройка→Зоны→Склад(окно)→Ферма(при ОТКРЫТОМ окне!)→ЛКМ-drag по траве | Name.text=«Ферма»; WallGhostLayer.get_used_cells>0; ghost зелёный |
+| T3 | P0 | Коммит зоны фермы | галка CheckMark | окно закрылось (Control.visible=false); зона создана — FarmLayer/get_used_cells вырос; _draftTool=null |
+| T4 | P0 | **B2-смоук: ПКМ-рамка дефолтом** | T3; дефолтный тул; ПКМ-drag по построенному/чертежам | НИЧЕГО не удалилось: счётчики слоёв/менеджеров до=после; SelectTool.OnRelease ПКМ-игнор |
+| T5 | P0 | ESC-десинк (фикс B1) | Ферма→тул активен→ESC→повторно Ферма | окно открыто повторно; инструмент ПЕРЕАКТИВИРОВАН: ghost рисуется (раньше — stale-ранний return) |
+| T6 | P1 | Открытый склад | Зоны→Склад→рамка→галка | StockpileManager: зона активна сразу (без стен); клик по зоне → WorkZone-окно |
+| T7 | P1 | Склад со стенами | склад+стены→коммит | зона НЕ кликабельна до стройки (пайплайн §28) — U1 дизайн |
+| T8 | P1 | Стены | Стройка→WallVariant→ЛКМ-рамка | WallBlueprintLayer cells>0; стройка идёт (WorkProgress); после стройки — WoodWallLayer |
+| T9 | P1 | Приказы: лес/камень | Приказы→TreeFeling→клик по дереву | DesignationRenderer пометки; TreeJobManager jobs>0; Unmark через ПКМ в тул-режиме |
+| T10 | P1 | Мебель/постройки | Стройка→кнопка постройки→ghost→коммит | BlueprintManager чертёж; стройка → BuildingLayer |
+| T11 | P1 | Окно фермы | клик по созданной ферм-зоне | GardenController/Control.visible=true; текст «Ферма #N»; закрытие — повторный клик по зоне/кнопке |
+| T12 | P1 | Карта-режимы | humidity→fertility→выкл | легенды/тултипы (HumidityLegend.visible toggle); цвет слоёв на скрине |
+| T13 | P1 | Мировая карта | BtnOpenWorldMap→пан→выкл | WorldMapOverlay.visible toggle; камера-возврат |
+| T14 | P1 | Миникарта | клик по MiniMap | камера прыгает к точке (get_camera) |
+| T15 | P1 | Правая колонка окон | Politic/ButtonVillagers/other | окна открываются/закрываются; additionally-box toggle |
+| T16 | P2 | Приоритеты | PrioritetButton | борд приоритетов; смена влияет на джобы |
+| T17 | P2 | Зум/камера | СКМ-drag, колесо, кромки | zoom clamp; камера не улетает за карту (ClampPosition) |
+| T18 | P2 | Профайлер | PerformanceOverlay toggle | panel visible; get_performance снимки |
+| T19 | P2 | Лейаут-инварианты всех окон | скан BuildMenu/Garden/WorkZone | корни rootPanel Ignore-фильтр; панели видны только при открытии; ScrollContainer НЕ Stop (фикс B1) |
+| T20 | P2 | Стабильность | 100x × 2 мин (T1-контур) | fps/память/GC стабильны; ошибки в stderr не копятся |
+
+### 114.4. Порядок и отчёт
+Прогон: T0–T5 (P0) сразу → доклад владельцу → T6–T15 (P1) → P2 по остаточному принципу. Находки — в §113.5 по протоколу 113.4. Каждый фикс — build 0/0 + повтор конкретного теста.
+
+
+
+
+---
+
+## 115. Разрыв dependency-циклов: применённые интерфейсы (R7)
+
+Дата: 2026-10-18. Автономный прогон (роли `@architect` + `@developer`).
+Основание: Tarjan SCC анализатора (`DependencyGraphVisualizer --cli`), вывод владельца: **4 цикла**.
+Результат: **1 цикл**. Полный реестр правок — `_audit/FIXES_APPLIED.md`, замеры — `_audit/cycles_after/`.
+
+### 115.1. Цикл #1 — коллизия имён ФАЙЛОВ, интерфейс не нужен
+
+`src/core/world/climate/WorldClimateParams.cs` и `src/core/world/streaming/generation/WorldClimateParams.cs`
+имели одинаковый стем; анализатор склеивал узлы по имени → фантомные рёбра внутрь SCC.
+
+Меры:
+1. Удалён мёртвый `[Obsolete] public static class WorldClimateParams` (шим-обёртка).
+2. Файл переименован в `WorldMacroClimateParams.cs` (+ `.cs.uid`) — по собственному правилу
+   PLAN.md «файл должен называться как класс» и в духе `R2b`.
+
+> **Интерфейс здесь был бы ВРЕДЕН.** Тип — `readonly record struct WorldMacroClimateParams`,
+> он используется со `stackalloc WorldClimateParams[...]` в `UnifiedWorldGenerator.cs`
+> (нулевые аллокации). Любой интерфейс превратил бы его в ссылочный тип.
+
+### 115.2. Цикл #2 — `WorldAgentRenderer` ↔ `WorldJobTicker`
+
+```csharp
+// NEW: src/ui/streaming/IWorldAgentSource.cs
+public interface IWorldAgentSource { IReadOnlyList<WorldAgent> Agents { get; } }
+```
+- `WorldJobTicker : Node, IWorldAgentSource`
+- `WorldAgentRenderer._ticker` и параметр `Bind(...)` → `IWorldAgentSource`
+- **Обязательно:** `WorldAgentState` + `WorldAgent` вынесены в новый `src/ui/streaming/WorldAgent.cs`.
+  Без выноса DTO файловое ребро `WorldAgentRenderer.cs → WorldJobTicker.cs` сохранялось и цикл не рвался.
+
+### 115.3. Цикл #3 — `FarmController` ↔ `WorkZoneController`
+
+```csharp
+// NEW: src/ui/controllers/IZoneWindow.cs   (namespace Game.UI)
+public interface IZoneWindow { bool IsOpen { get; } void Close(); }
+public interface IFarmJobDisplayHost { void ShowForFarmZone(int farmZoneId); }
+
+// NEW: src/ui/controllers/ZoneWindowRegistry.cs — листовой файл, без зависимостей
+public static class ZoneWindowRegistry
+{
+    public static IZoneWindow FarmWindow { get; set; }
+    public static IZoneWindow WorkWindow { get; set; }
+    public static IFarmJobDisplayHost FarmJobDisplay { get; set; }
+}
+```
+- `FarmController : Control, IZoneWindow`; `WorkZoneController : Control, IZoneWindow, IFarmJobDisplayHost`.
+- Регистрация в `_Ready`, снятие в `_ExitTree` строго через `ReferenceEquals` (иначе статика удержит
+  освобождённую Godot-ноду).
+- Заменены 4 перекрёстных обращения `X.Instance` (`FarmController.OnZoneSelected/OnJobDisplayPressed`,
+  `WorkZoneController` ×2).
+
+### 115.4. Цикл #4 — две независимые ветви
+
+**(a)** `SelectTool` → `HUDController` → `PlayerInteractionManager` → `SelectTool`:
+
+```csharp
+// NEW: src/ui/ICellProbeOverlay.cs
+public interface ICellProbeOverlay { void ShowHumidityAt(int x, int y); void ShowFertilityAt(int x, int y); }
+```
+- `SelectTool.BindCellProbe(ICellProbeOverlay)`; `OnHover` больше не знает про `HUDController`.
+- `PlayerInteractionManager.SetCellProbe(ICellProbeOverlay)` **кэширует** пробу и переустанавливает её
+  в `_Ready`/`Initialize` — вызов до создания `SelectTool` безопасен (порядок `_Ready` не гарантирован).
+- `HUDController : Control, ICellProbeOverlay, IDraftCoordinator`; вызов `_interactionManager.SetCellProbe(this)`.
+
+**(b)** `HUDController` ↔ `BuildMenuController`:
+
+```csharp
+// NEW: src/ui/controllers/IDraftCoordinator.cs   (namespace Game.UI)
+public interface IDraftCoordinator
+{
+    bool IsDrafting { get; }
+    void StartZoneDraft(string zoneId);
+    void SetDraftDoorMode(bool enabled);
+    void StopDraftDrawing();
+    void ConfirmDraft();
+    void CancelDraft();
+    void DiscardDraft();
+    void SetDraftMaterial(string materialId);
+}
+```
+- `BuildMenuController.BindDraftCoordinator(IDraftCoordinator)`; все 8 обращений `HUDController.Instance`
+  заменены на `_draft` (тип локальной переменной в обработчиках — интерфейсный).
+- Проверка `control is BuildMenuController` в HUD остаётся: она однонаправленная и цикла не создаёт.
+
+### 115.5. Проверка
+
+- `dotnet build Game.csproj` — **0 ошибок / 0 предупреждений** после каждого шага.
+- `tests/run_test.gd` → exit 0; `tests/run_adversarial_construction_test.gd` → exit 0.
+- Рантайм (`scenes/main/Main.tscn`): мир сгенерирован, агенты инициализированы, ошибок C# нет.
+  - #4b: `BuildMenuController.Open("farming","Ферма")` → `HUDController.IsDrafting` **false → true**.
+  - #4a: `MapMode = Humidity` + hover `SelectTool` → тултип **«104% норма»**.
+- Анализатор: **4 → 1** цикл; из SCC ушли оба `WorldClimateParams.cs` (81 → 79 узлов).
+
+### 115.6. Остаток (R8, следующий шаг)
+
+Оставшийся SCC — **79 файлов, 395 внутренних рёбер, 28 взаимных пар** (`_audit/cycles_after/mutual_pairs.txt`).
+Это не фантом: `src/simulation/**` (items ↔ jobs ↔ structures ↔ farming ↔ scheduling) взаимно ссылается,
+плюс `UnifiedWorldGenerator` ↔ climate-файлы через `using` собственного namespace.
+Направление работ: (1) `Game.Core` не должен знать `Game.Simulation` — инвертировать через события/интерфейсы
+`IJobBoard`, `IStockpileReader`; (2) разорвать `GroundItemManager` ↔ `StockpileManager` ↔ `JobBroker`
+владельцем-координатором; (3) `WorldRegions` вынести в лист (R2b).
+Одним интерфейсом этот узел не развязывается — нужна поэтапная декомпозиция слоёв.
+
+### 115.7. Прочие применённые фиксы (не архитектура)
+
+W-01 (P0, утечка reservation/CTS в `WorldChunkStreamer`), W-02 (мягкая деградация снапшота вместо
+`InvalidDataException`), W-03 (лживый комментарий про fsync), C-01 (`OnStoneMined` подписка перенесена
+из `ApplyMap` в `_Ready`), C-02 (крестик Work-зоны: нода называется `esc`), C-03 (`AgentRenderer.Initialize`
+не сбрасывал снапшот-флаги → агенты летели из (0,0)), `Instance = null` в `_ExitTree` для
+`FarmController`/`WorkZoneController`, удаление 4 пустых файлов. Реестр — `_audit/FIXES_APPLIED.md`.
+---
+
+## 116. Раунд 2: многопоточные P1 и починка инструмента (R9)
+
+Дата: 2026-10-18. Продолжение §115.
+
+### 116.1. B-02 — три дисциплины синхронизации на одном счётчике (`JobSpatialPyramid`)
+
+`_macroJobCounts` мутировался тремя способами:
+- `RegisterJob` (:310) и второй регистратор (:384) — обычный `++` **под** `_registerLock`;
+- `ReleaseWorkerClaim` (:539) — `Interlocked.Increment` **вне** лока;
+- `TryClaimJobForAgent` (:771) — `Interlocked.Decrement` **вне** лока.
+
+Лок не сериализует против `Interlocked` → **lost update**. Следствие: счётчик уезжал в 0
+при живых задачах, строка :438 гасила бит `_macroActiveMask`, и L2-фильтр (:644)
+пропускал целый макро-сектор 4×4 чанка — агенты «не видели» работу и простаивали.
+
+**Исправление:** все мутации счётчика переведены на `Interlocked`; декремент — CAS-цикл с
+клампом на 0 (семантика `Math.Max(0, x-1)` без гонки); бит маски гасится только после
+повторной проверки под локом (как в :771-778).
+
+### 116.2. B-01 — stale-id в `ReleaseWorkerClaim`
+
+`RemoveJob` возвращает `jobId` в LIFO free-list (:445-446), слот затем переиспользуется.
+`ReleaseWorkerClaim` делал слепой `Interlocked.Decrement` с проверкой только `_active[jobId]`,
+но у переиспользованного слота `_active == true` → «запоздавший» release уводил
+`_assignedWorkers` в минус. Далее CAS-захват (`while cur < _maxWorkers`) трактовал минус как
+свободный слот и выдавал **второй claim** на задачу с `MaxWorkers = 1`.
+
+**Исправление:** CAS-цикл с клампом (`cur <= 0 → return`). Легитимный release (cur ≥ 1) не изменён.
+**Остаточный риск (честно):** если переиспользованный слот уже имеет живой claim, запоздавший
+release может украсть его. Полное решение — поколение на слот в дескрипторе работы агента
+(в `AgentDataPool` хранится только `int JobId`) — вынесено в R9.
+
+### 116.3. B-03 — две параллельные петли `SimulationLoop`
+
+`Start()` вызывал `Stop(5000)` и **игнорировал** результат (:178), после чего выставлял
+`_running = true` (:273) и `Task.Run(SimulationLoop)` (:274). При таймауте старая петля
+воскрешалась и тикала параллельно с новой на тех же `_pool`/`_ctx`, а ссылка на неё терялась
+при перезаписи `_simulationTask`. Дополнительно `Main.cs` создаёт **новый** экземпляр
+(`Main.cs:367`), поэтому инстансная защита не покрыла бы и этот путь.
+
+**Исправление:** статический (процесс-глобальный) счётчик поколений `_loopGeneration`;
+`Start()` инкрементирует его **до** `Task.Run`, `SimulationLoop(int generation)` крутится под
+`while (_running && generation == _loopGeneration)`; результат `Stop` больше не игнорируется
+(логируется). Инвариант «одна живая петля симуляции на процесс» совпадает с требованием общих
+синглтонов (`JobDispatcher.Instance.IdleWorkers`, `JobRegistry`, `HierarchicalPathfinder.Instance`).
+
+**Остаточное окно (честно):** старая петля может дописать текущую итерацию, пока новая уже
+стартовала. Полное закрытие — барьер (await предыдущей задачи) перед сбросом общих статиков —
+вынесено в R9.
+
+### 116.4. Инструмент `DependencyGraphVisualizer`
+
+`--deps` падал на любом файле: `app.py:1988` склеивал `fn['callers']` через `', '.join(...)`,
+а элементы — **словари** из chronology-метрик (`app.py:1114-1119`, подмена в `functions_detail`
+на `:1716`). Добавлен `fmt_caller()` (строка → как есть, словарь → `file::method()`).
+Проверены text-, json-ветка и несуществующий файл. `DependencyGraphVisualizer.exe` пересобран
+(`build_exe.py`, PyInstaller 6.22.3 из `D:\dependency_graph_visualizer\.venv`); `app.exe` не
+обновлён — файл был занят другим процессом.
+
+### 116.5. Верификация
+
+| Проверка | Результат |
+|---|---|
+| `dotnet build Game.csproj` | **0 ошибок / 0 предупреждений** |
+| `tests/run_test.gd` (14 групп) | ALL TESTS PASSED (Code 0) |
+| `tests/run_adversarial_job_distribution_test.gd` (5 групп) | ALL 65K / 1M JOB DISPATCH AUDITS PASSED |
+| `tests/run_adversarial_construction_test.gd` (14 групп) | ALL CONSTRUCTION & STRUCTURE AUDITS PASSED |
+| `tests/run_adversarial_flow_test.gd` (6 групп) | ALL 6 GPU NAVIGATION & TRANSFORM TESTS PASSED |
+| `tests/run_phase3_suite.gd` (**новый драйвер**) | passed, вкл. `TestSimulationThreadStartIdempotency` (двойной `Start`) |
+| `tests/run_phase4_suite.gd`, `tests/run_phase5_suite.gd` | passed (Code 0) |
+| `DependencyGraphVisualizer.exe --cli --deps <file>` | работает (exit 0) |
+
+---
+
+## 117. Сессия 2026-10-18 (вечер): «мир без фризов и обрывков» — диагноз и раскатка на 8 субагентов
+
+> Диагноз собран живым запуском через MCP-интеракшен-сервер (порт 9090): спавн в
+> регионе [950,637], пан камеры, скриншоты в `../shots/` относительно проекта.
+> Godot exe: `D:\Godot_v4.7-stable_mono_win64\...\Godot_v4.7-stable_mono_win64.exe`.
+> Анализатор зависимостей юзать ТОЛЬКО через venv-python (exe не распаковывается):
+> `D:\dependency_graph_visualizer\.venv\Scripts\python.exe D:\dependency_graph_visualizer\app.py --cli --project "D:\bebebe-main (1)\bebebe-main" --deps "<файл>"`
+
+### 117.1. Подтверждённые находки (по приоритету юзера)
+
+**F1. «Обрывки генерации» = чёрная пустота за кромкой острова.**
+Скриншот `shots/pan_wait5s.png` / `far_right.png`: за границей [0..512)² игрок видит
+чёрный фон (clear color) и ПЛАВАЮЩИЕ деревья/камни (декор-тайлы стриминга).
+Слой `/root/Node2D/StreamingWorldView/WorldGroundAndDecor` — ПУСТОЙ
+(`get_used_cells()` → `[]`): рабочий (незакоммиченный) `PaintCell` делает
+`EraseCell` для базовой поверхности (вода/трава/песок/степь/ледник), рассчитывая,
+что землю рисует `MapRenderer._groundSurface` (камера-следящий ColorRect c
+`terrain_blend.gdshader`, §99.2). Сам шейдер/атлас в порядке.
+
+**F2. Окно террейна отстаёт от камеры на ~30 секунд** → чёрный фон при движении.
+`_groundSurface.position` = 1081344px при камере 1353853px (замер живьём).
+`RequestTerrainWindowUpdate` → `Task.Run` + `Parallel.For` по 512 строк ×
+`WorldCellQuery.CellAt` (262 144 вызовов). `WorldCellQuery.Sample` НЕ передаёт
+`overrideClimate` → каждый семпл гоняет ПОЛНЫЙ `SampleBlendedCell` + 2-слойный
+domain warp + ~15 ValueNoiseQ16, в отличие от `GenerateChunk`, который
+интерполирует климат по сетке 5×5 (99.9% экономии). Окно 512×512 пересчитывается
+ЦЕЛИКОМ при каждом пересечении 64-тайловой границы — нет инкрементальности,
+нет кэша колонок. При скорости камеры 137 тайл/с (Shift) — постоянные
+полные пересчёты + отставание.
+
+**F3. «Залипание» клавиш камеры (репро юзера «W на секунду — иду ещё 1.5с»).**
+Живой замер: после `key_hold D 12с` камера продолжала лететь МИНУТЫ
+(16384 → 1794427 → 1898063 px, ~150с движения). Причина архитектуры:
+`CameraController._Process` ПОЛЛИНГ `Input.IsPhysicalKeyPressed` + движение
+`Position += dir * speed * delta` без clamp delta: при хитчах (см. F2/B3) кадры
+длинные, delta огромные, события ввода применяются с опозданием — камера
+«двигается сама» после отпускания. Мышка лагает по той же причине (motion-события
+обрабатываются раз в кадр).
+
+**F4. Шов леса на границе 512.** Остров: `GenerateColonyWindow` прореживает
+деревья (`treePass` ~55-80%); стриминг: рисует ВСЕ клетки `ForestQ16 >= порога`
+→ видимый перепад плотности на кромке.
+
+**F5. Насыщение генерацией при отдалении.** zoom < 0.25 → окно до 24×24 чанков;
+`Main._Process` дергает `_worldView.Update` каждые 8 тайлов (~17 р/с при Shift);
+каждый Update заказывает ~24 чанка генерации. 4-8 воркеров + Task.Run-террейны
+(F2) сжирают ThreadPool → хитчи главного потока → F3. Гистерезиса зума нет
+(16↔24 дёргается у порога 0.25 → полный rebuild плана).
+
+**F6. Интерактив за кромкой (§28/29) ЕСТЬ, но не виден из-за F1/F2:**
+`StreamingToolPlacement` (стены/склад/ферма/рубка/добыча планами) →
+`WorldJobTicker` (люди мира) → `WorldJobBoard.Complete`. Проверить E2E после
+фикса рендера; чинить, если не работает.
+
+### 117.2. Требование юзера: колония 1024×1024
+`MapRenderer.MapWidth/Height` 512→1024 (остров = играбельная зона вокруг спавна),
+с замером перфа (генерация окна, старт сима, FPS на 10k агентов). При провале
+перфа — откат и доклад с цифрами. Правки: Main (камера/зум/спавн), MapRenderer
+(const + окно террейна), StreamingToolPlacement (границы острова подхватятся).
+
+### 117.3. Роли 8 субагентов (границы файлов НЕ ПЕРЕСЕКАЮТСЯ)
+
+| # | Имя | Роль (@AGENTS.md) | Файлы (только эти) |
+|---|---|---|---|
+| 1 | dev-terrain-window | @developer | `src/ui/renderers/MapRenderer.cs` |
+| 2 | dev-streaming-view | @developer | `src/ui/streaming/StreamingWorldView.cs`, `src/shaders/streaming_ground.gdshader` |
+| 3 | dev-camera | @developer | `src/ui/CameraController.cs` |
+| 4 | dev-colony-expand | @developer | `scenes/main/Main.cs`, `src/ui/streaming/StreamingToolPlacement.cs` |
+| 5 | dev-generator | @developer | `src/core/world/generation/UnifiedWorldGenerator.cs`, `src/core/world/streaming/integration/WorldCellQuery.cs`, `src/core/world/streaming/generation/WorldClimateGenerator.cs` |
+| 6 | dev-tools-world | @developer | `src/ui/streaming/WorldJobTicker.cs`, `WorldJobBoard.cs`, `WorldPathFinder.cs`, `src/ui/tools/*.cs` (кроме уже занятых — у инструментов свои файлы, конфликтов нет) |
+| 7 | destroyer | @destroyer | ТОЛЬКО `tests/**` — НЕ трогать src/scenes |
+| 8 | researcher | @researcher | ничего не правит — только веб-отчёт |
+
+`WorldChunkStreamer.cs` / `ChunkWindowPlanner.cs` — буферная зона: правит ТОЛЬКО
+Lead (или по явной эскалации), чтобы исключить гонки правок.
+
+### 117.4. Правила команды
+- Перед правкой файла — `--deps` анализатор; после правки — `dotnet build
+  Game.csproj` (из корня `bebebe-main/`), 0 ошибок обязателен.
+- Игра во время работы команды ОСТАНОВЛЕНА (файлы сборки не залочены). Свои
+  godot-инстансы НЕ запускать (порт 9090 — Lead); headless-тесты можно.
+- Изменения минимальные и целевые. Отчёт Lead: что сделал / что сломал / метрики.
+- Сомнение в чужом файле → сообщение Lead, не править самому.
+
+---
+
+## §118. СНОС ДВУХГВОЛОГО ГЕНЕРАТОРА: «ОДИН МИР, ОДНА АКТИВНАЯ ЗОНА» (старт 2026-10-19)
+
+### 118.0. Мотивация (решение юзера, подтверждено живыми тестами и графом)
+Двухголовая генерация (`GenerateColonyWindow` для острова vs `GenerateChunk`
+для мира) + дубли климат-формул в `StreamingWorldView` → формулы обязаны
+совпадать бит-в-бит, но ничто это не гарантирует → классы багов «рендер ≠
+правила ≠ генератор» (лес за кромкой то есть, то нет; метки планов невидимы).
+Юзер: «весь мир — место где мы можем жить; 1024 — просто в памяти, чтоб не
+было фризов». Мир-агенты («люди бесшовного мира») УДАЛЯЮТСЯ как концепция —
+рабочие задачи выполняют колонисты. Путь — HPA* (иерархический), не A*.
+
+Граф-факты (DependencyGraphVisualizer, 2026-10-19):
+- `UnifiedWorldGenerator`: blast radius 190 файлов, 33 входящих, I=0.37;
+- `MapData`: 23 входящих, I=0.18 (ядро → shim, снос НЕ разом);
+- `StreamingWorldView`: I=0.8, 77 методов, 33 исходящих (God-объект);
+  собственные копии `LerpQ16`/`SoilFertilityAtCell`/`BuildFertilityGrid`;
+- мёртвый код: 12 наших файлов с 0 ссылок (см. 118.3);
+- сигналов мира НЕТ (307 сигналов — все sim/UI);
+- `WorldJobTicker` в 60-fps хот-пате (удаляем — бонус FPS).
+
+Живые находки для фазы 5 (E2E Lead, 2026-10-19): цепочка
+`PIM → TreeFellingTool → StreamingToolPlacement.TryCutTree → AddBlock`
+РАБОТАЕТ за кромкой (gate=True placed=True), но (а) слой WorldPlan при
+запуске содержит только источник 8 из 4 (источники 9/10/11 не добавились —
+SetCell молча не красит), (б) исполнителей нет (мир-агенты). Фикс ввода
+(позиция события вместо `GetGlobalMousePosition`) уже в коде.
+
+### 118.1. Целевая архитектура
+```
+WorldGenV2 (SampleCell — ЕДИНЫЙ источник формул: рельеф/климат/влага/
+  плодородие/лес/камень/варианты)            [фаза 1]
+  → WorldStore (чанки + дельты, CRC, атомарно; flush-on-exit, события)  [фаза 2]
+  → ActiveArea 1024×1024 (плоские массивы = генерация + дельты; ходит за
+     игроком, порог ре-центра 25%; ActiveAreaRegistry — зона на поселение,
+     фундамент мульти-поселений)             [фаза 3]
+  → MapData-shim (23 потребителя не переписываем)     [фаза 3]
+  → IWorldMutationSink (мутация = массив + дельта + событие)  [фаза 4]
+  → единый гейт инструментов (WorldQuery = SampleCell + дельты) + HPA*
+     (кластеры 8×8 → чанки 64×64 → абстрактный граф; проходимость
+     нематериализованных клеток — через SampleCell)  [фаза 5]
+  → колонисты = единственные рабочие; мир-агентов НЕТ  [фаза 5]
+```
+Правила: стартовая расчистка = дельта `GroundOverride` (НЕ ветка генератора).
+Нужды колонистов тикают ВСЕГДА (O(1)/агент; окно в памяти нужно террейну и
+рендеру, не агентам). Кэши `user://infinite_world_lab_cache` и `world_<seed>`
+сносим без жалости (чистый разрыв формата).
+
+### 118.2. Фазы и гейты
+| Фаза | Суть | Гейт готовности |
+|---|---|---|
+| 0 | снос 12 мёртвых файлов (118.3) | ✅ ВЫПОЛНЕНО (см. 118.3 — итог скромнее плана, 2 файла) |
+| 1 | `WorldGenV2.cs` (НОВЫЙ): `SampleCell` + `GenerateArea` | ✅ ВЫПОЛНЕНО 2026-10-20 (@developer gen-v2 + фикс Lead): 629 строк, 2 публичных метода (SampleCell в абсолютных координатах без скрытого WorldOrigin; GenerateArea — единственный путь, плоские row-major массивы, стартовой расчистки нет). Гейт пройден ПОЛНОСТЬЮ (`tests/TestWorldGenV2.cs`, ~570 строк, раннер `run_worldgen_v2.gd`, headless exit 0): тест 1 fingerprint 10k клеток × 3 сида × 2 прогона бит-в-бит (hash 0x051BC6E5617EA9F2, вкл. отрицательные координаты ±1M); тест 2 тайлинг 128²==4×64² побитово (3 origin, вкл. отрицательный); тест 3 parity-окно 194769 клеток × 6 полей × 3 смещения побитово (вне стартовой поляны); тест 4 known-delta: единственное расхождение — стартовая расчистка r=14 (184 из 613 клеток круга, только Ground/Tree/Stone; в фазе 3 станет GroundOverride-дельтой); тест 5 parity-чанки: 20 случайных × 8 полей побитово == GenerateChunk; тест 6 отрицательный wx: чанк (-8473,3), 4096 клеток+декор побитово == GenerateChunk+IslandDecorPass (евклидов Mod100 подтверждён). Fix Lead: слепота фикстуры теста 6 — расширен скан (12 рядов × 48 кандидатов с джиттером ~регион) + диагностика в сообщении об ошибке. Камней 0 в тестах 2/3/6 — характеристика мира (StoneMinQ16=35k редкий), parity сравнивает обе стороны честно (WARN в тесте 3). |
+| 2 | WorldStore: flush-on-exit, checkpoint, `EnumerateDeltas`, события | ✅ ВЫПОЛНЕНО 2026-10-19: `FlushResidentDeltas(gameTime)` в StreamingWorldView (пишет напрямую в стор вида, desired-чанки тоже; пустая память без файла на диске → диск не тронут — аудит §6.9), чекпоинт+flush в `Main._ExitTree` ДО Shutdown, события `OnBlockAdded/Removed` + `OnWallAdded/Removed` (эмит из Add/RemoveBlock), `EnumerateDeltas(WorldRect, kind, List<(Kind,CellX,CellY)>)`. Тест `tests/TestWorldStoreExit.cs` + раннер `run_store_exit_test.gd` — ЗЕЛЁНЫЙ headless (exit 0): дельта стены переживает «поставил → вышел без выгрузки → зашёл», ResumeState.GameTime=123 возвращается, события и перечисление по rect/kind верны. Сборка 0 ошибок. |
+| 3 | ActiveArea + MapData-shim + реестр зон | ✅ ВЫПОЛНЕНО 2026-10-20 (@developer dev-colony-expand + интеграция Lead): 4 новых файла — `src/core/world/activearea/ActiveArea.cs` (зона 1024², плоские row-major массивы, Fill через WorldGenV2.GenerateArea, стартовая расчистка r=14 ЗДЕСЬ, Humidity/Fertility/Climate как финал окна), `MapDataShim.cs` (ToMapData/FillMapData — мост в существующий MapData, 23 потребителя не тронуты), `ActiveAreaRegistry.cs` (зоны поселений, пересечение → false), `tests/TestActiveArea.cs` (parity 1000 клеток, круг расчистки + кольцо, shim 500×12 полей, реестр, отрицательные origin) — все тесты ЗЕЛЁНЫЕ headless с первого прогона. Интеграция (Lead): в `Main.cs` ОБА вызова GenerateColonyWindow (OnRegionSelected + реген сида) заменены на ActiveArea+Registry+Shim; MapRenderer получает MapData через мост; Consumers не менялись. Живой смоук: [SPAWN] регион 1157,582 → колония сгенерирована (без GenerateColonyWindow), мир рендерится, 16 чанков стриминга, AddBlock=true, выход → `FlushResidentDeltas: 1 чанков сохранено`. Расхождения контрактов зафиксированы (moistNoise→Fertility как окно — канон; Climate=SampleBlendedCell центра; FertilityMap._base не переносится — фаза 4). |
+| 4 | 12 писателей → `IWorldMutationSink` (карта точек — docs/MapDataWriterAudit.md) | мутация видна одновременно в массиве, дельте и событии. ✅ ВЫПОЛНЕНО 2026-10-20: 5 файлов — `IWorldMutationSink.cs` (контракт: идемпотентность §6.6, батч §6.8, события §6.7), `IslandOverrideStore.cs` (островной стор дельт БЕЗ привязки к чанк-резидентности §6.1 + персистентность атомарной заменой §5.4 + смена сида инвалидирует §6.11; 128-байтные ключи, lock, события вне блокировки), `IslandMutationMirror.cs` (подписка на события 6 доменов из 11 §5.3 — лес/камень/ферма/склад/постройки/стройка, включая БАТЧ-события; перевод ЛОКАЛЬНЫХ координат острова в МИРОВЫЕ; семантика план↔готовое через DoneFor/PlanFor), `IslandDeltaApplicator.cs` (путь ЧТЕНИЯ: база + дельта; применяет CutTree/MinedStone к массивам зоны, доменные виды честно считает отложенными), `tests/TestIslandMirror.cs` + `tests/run_island_store_test.gd` (10 групп). Интеграция Lead: `Main.cs` — канал поднимается при старте колонии, зеркало получает origin зоны, дельты грузятся с диска перед генерацией и применяются после Fill, сохраняются в `_ExitTree`. Побочно: фикс `StockpileManager` 512²→1024² (§2, быстрый путь на весь остров), снос мёртвых записей `MapRenderer:1345/1359`. |
+| 5 | единый гейт инструментов + HPA* + снос мир-агентов + фикс тайлсета WorldPlan | живой E2E: колонист идёт и рубит дерево ЗА окном |
+| 6 | финальный снос: UnifiedWorldGenerator, IslandDecorPass, дубли формул | бенчи не хуже текущих (`TestGeneratorBench`, `TerrainWindowBench`); `--orphans` чистый |
+
+### 118.3. Фаза 0 — ВЫПОЛНЕНА 2026-10-19 (итог отличается от плана)
+Список `--orphans` визуализатора оказался НЕНАДЁЖНЫМ: grep по реальным ИМЕНАМ
+ТИПОВ (не файлов) показал, что из 12 кандидатов живы 10 (TileType — 45 файлов,
+AgentState — 27, JobTypeId — 34, BuildingType — 15, JobExecutionType/PriorityTier —
+15, JobCategory — 6, NeedBehavior — 3, StructureCategory — 2, ResourceTypes — 1
+(CityState.cs)). Реально удалены:
+- `src/core/world/streaming/generation/WorldFeatures.cs` (WorldFeatureId/
+  WorldFeatureKind/RiverFeature/LakeFeature — 0 ссылок);
+- `src/GlobalUsings.cs` (global using Game.Core.WorldStreaming — HUDController.cs
+  неявно полагался на него; добавлен явный using).
+Сборка после: 0 ошибок. Урок: `--orphans` требует обязательной grep-проверки по
+именам типов; греп по имени файла ловит не те сущности.
+
+### 118.4. Текущий запуск (3 параллельных агента, границы НЕ пересекаются)
+| Агент | Роль | Пишет (только это) |
+|---|---|---|
+| cleanup-phase0 | @developer | удаление 12 файлов из 118.3 |
+| gen-v2 | @developer | `src/core/world/generation/WorldGenV2.cs`, `tests/TestWorldGenV2.cs` (оба НОВЫЕ) |
+| store-hardening | @developer | `src/core/world/streaming/storage/**`, `runtime/**` (минимум), `StreamingWorldView.cs` (только Shutdown/дельты/события), `scenes/main/Main.cs` (только _ExitTree/выход), `tests/TestWorldStoreExit.cs` (НОВЫЙ) |
+
+Правила те же (§117.4): игра остановлена; `dotnet build Game.csproj` 0 ошибок
+обязателен; параллельные сборки — при MSB3027/файл залочен ждать 20-30с и
+ретраить (до 5 раз); godot-инстансы только Lead; `--deps` перед правкой.
+Вызовов старого генератора фаза 1 НЕ переключает — новый файл строится рядом,
+интеграция в фазе 3. Живой E2E-смоук после каждой фазы — Lead.
+
+### 118.5. Поправки юзера от 2026-10-20 (обязательны для фаз 3-6)
+
+**Визуализатор зависимостей** переехал: путь теперь
+`D:\bebebe-main (1)\dependency_graph_visualizer\DependencyGraphVisualizer.exe`
+(вызов: `--cli --project "D:\bebebe-main (1)\bebebe-main" ...`). Юзер РАЗРЕШИЛ
+править/удалять код визуализатора (баги, враньё, недостающие инструменты,
+мешающие функции) — с обязательным отдельным отчётом что и как изменено.
+Первый подтверждённый баг визуализатора: `--orphans` показал 12 «мёртвых»
+файлов, из которых реально мертвы 2 (TileType использовали 45 файлов) —
+причина: подсчёт ссылок не учитывает enum-значения в выражениях; вывод
+`--orphans` обязателен к grep-верификации по именам ТИПОВ.
+
+**HPA* (фаза 5) — испытательный регламент юзера:**
+- минимум **10 000 активных агентов**;
+- пути минимум **250 клеток**, рандом;
+- сценарии разных ситуаций: непроходимая река через полкарты и т.п.;
+- защита от абсурдных обходов (путь 20к тайлов вдоль реки) — МАТЕМАТИЧЕСКАЯ,
+  не «в тупую резать дальность»;
+- бюджет кадра на всё это: **1-2 мс максимум**;
+- СТРОГО ЗАПРЕЩЕНО намеренно урезать функциональность ради производительности:
+  только математические/оптимизационные исправления и амортизация (стиль
+  «не −0.01 каждый кадр, а −0.5 каждые 50 кадров»), не деградация поведения.
+
+**Анти-обходной принцип (дизайн, защитить в коде и тестах):**
+1. «Критерий здравого пути»: запросу пути сопоставляется математическая нижняя
+   граница стоимости L = минимальная цена клетки × расстояние (чебышев/манхэттен).
+   HPA*-поиск в абстрактном графе быстр (20к тайлов ≈ сотни кластерных рёбер).
+   Если стоимость лучшего найденного пути > k·L (k≈4..6), цель считается
+   «фактически недостижимой разумным путём»: агент бросает задачу, задача
+   получает кулдаун (паттерн 30с как JobValidator/WorldJobTicker), цель
+   репикается. Разумный обход оврага/брода (ratio 2-3) проходит; обход реки
+   через полконтинента (ratio 100+) — отклоняется. Это НЕ урезание дальности:
+   путь любой длины разрешён, пока его стоимость соразмерна прямому минимуму.
+2. Амортизация бюджета: очередь запросов, N поисков/кадр (PathSearchesPerFrame),
+   бюджет узлов на поиск, превышение → продолжение поиска в следующем кадре
+   (time-slicing, состояние поиска сохраняется) — «−0.5 каждые 50 кадров».
+3. Гарантия полноты: пока запрос не завершён, агент стоит/делает локальную
+   работу; результат НЕ отбрасывается — поиск возобновляется, а не начинается
+   заново (инкрементальный контекст поиска).
+
+### 118.6. Живой E2E-смоук фаз 0-2 — ПРОЙДЕН 2026-10-20 (Lead)
+
+Полный живой цикл через godot-бридж (managed-инстанс, порт 9090): меню → Играть →
+карта мира → клик по суше ([SPAWN] регион 858,497) → генерация колонии →
+`StreamingWorldView.AddBlock(Wall, 512, 512)` → `add=true has=true` →
+грэйсфул-выход `get_tree().quit()`. Stdout при выходе:
+`[World] FlushResidentDeltas: 1 чанков сохранено (gameTime=3559,8s)` — чекпоинт
+времени и flush ДО Dispose стримера сработали; §6.9-щит пропустил пустые чанки
+корректно (сохранён ровно 1 чанк с дельтой). Ошибок выхода нет; порт освобождён.
+Вывод: фазы 0-2 интегрированы в живую игру без регрессий. «Поставил-вышел-зашёл»
+проверен головным тестом TestWorldStoreExit (headless) — повтор в живой игре
+избыточен.
+
+УРОК GDScript-eval (3 сломанных инстанса за сессию): eval-код в живой игре —
+ТОЛЬКО однострочные выражения из вызовов методов. ЛЮБЫЕ C-конструкции валят
+ПАРСЕР, а парсер-ошибка в -d-режиме уводит отладчик в бесконечный брейк-цикл
+(50-70 МБ лога, инстанс мёртв, только godot_stop_project): `if (x) { ... }`,
+`for (x in y)`, `md[x, y]` (многомерная индексация C#-массивов) — всё НЕЗАКОННО.
+Законно: `if x:`, `for x in y:`, тернар `a if c else b`, `and/or` (шорт-кункт),
+`v.AddBlock(...)`. Перед eval сложнее одного выражения — пиши временный .gd-файл
+и eval_file.
+### §118.7 Фаза 4 — живой смоук (2026-10-20)
+
+```
+[SPAWN] Выбран регион [645, 433] → генерация карты...
+[World] канал островных мутаций готов: IWorldMutationSink + зеркало 6 доменов
+[World] colony_645_433: островные дельты — applied=0 domainSkipped=0
+[AgentRenderer] GPU interpolation enabled (agents + shadows).
+[World] островные дельты сохранены: 0 (colony_645_433)
+```
+
+Рендер проверен объективно (гистограмма кадра: 81% выборки — трава (32,64,0),
+средний цвет (37,62,7)); файлы дельт появляются в
+`user://colonies/colony_<rx>_<ry>.island.delta` (16 байт = заголовок + 0 записей).
+
+ЧТО ПРОВЕРЕНО ЖИВЬЁМ, А ЧТО ТЕСТАМИ (честно): живьём — подъём канала, загрузка
+стора, применение дельт при генерации, сохранение на выходе, отсутствие регрессий
+рендера. Запись мутаций (событие → зеркало → стор) проверена unit-тестами: живой
+клик по инструментам рубки/камня недоступен из MCP (C#-менеджеры не видны GDScript,
+кнопки инструментов перекрыты контейнером), поэтому end-to-end в игре будет
+проверен в фазе 5, где единый гейт даст управляемую точку мутации.
+
+Найдено и исправлено тестами (не «на глаз»):
+1. **Разметка леса/камня не зеркалилась** — а это тоже план (CutTreePlan/MinedStonePlan),
+   мир-слой так и делает через StreamingToolPlacement. Добавлены OnTreeMarked/OnStoneMarked
+   + батчи.
+2. **UnmarkPlot снимает и готовую грядку** (_completedBeds, FarmJobManager.cs:213) —
+   зеркало убирало только план, оставляя призрачную готовую грядку. Теперь снимаются оба.
+3. **CompleteTree/CompleteStone НЕ стреляют Unmarked** (TreeJobManager.cs:107-115) —
+   план рубки зависал бы после выполнения. Теперь снимается в OnTreeChopped/OnStoneMined.
+4. **Система координат**: менеджеры дают ЛОКАЛЬНЫЕ координаты (0..1023), стор хранит
+   МИРОВЫЕ — без перевода все дельты ложились бы мимо зоны. Зеркало получило SetZoneOrigin.
+5. OutsideZone был мёртвой метрикой (Enumerate уже фильтрует) — убрана, вместо неё
+   тест «дельта вне зоны не трогает зону».
+
+ГРАНИЦА ФАЗЫ (документировано в IslandDeltaApplicator): доменные виды
+(Wall/Building/Stockpile/Crop и их планы) сохраняются, но НЕ применяются к зоне —
+их восстановление это domain-replay с побочными эффектами, фаза 5 (единый гейт).
+Счётчик domainSkipped показывает это в логе, а не замалчивает.
+
+### §118.8 Фаза 5: регламент HPA* — факты (2026-10-20)
+
+Бенчмарк: `tests/BenchPathfinding.cs` + `tests/run_pathfinding_bench.gd`
+(`godot_run_headless --script tests/run_pathfinding_bench.gd`), карта 1024²,
+10 000 запросов, пути ≥250 клеток, горячий путь `TryFindPathScratch`.
+
+| Сценарий | Среднее | В бюджет 1 мс | В бюджет 2 мс |
+|---|---|---|---|
+| открытое поле (LOS напрямик) | 13,7 мкс | 73 пути | 146 путей |
+| steady-state: 200 рабочих точек, кэши тёплые | 285,7 мкс | 4 пути | 7 путей |
+| река с мостом, 10k УНИКАЛЬНЫХ пар (холодные кэши) | 1743 мкс | 1 путь | 1 путь |
+| река без моста (абсурдный обход) | 147 мкс | — все отвергнуты k·L |
+
+Аллокации горячего пути: **8 байт на запрос** (zero-alloc, как и задумано).
+
+НАЙДЕНО И ИСПРАВЛЕНО (реальные баги, не косметика):
+1. **Иерархическая сборка пути была сломана для всего, кроме LOS.** Окно
+   локального A* было жёстко 3x3 региона (2304 клетки), но якоря порталов лежат
+   на границе ДВУХ регионов → сегменту нужно окно 4x4 (4096) → `cap>LocalCapacity
+   → null`. Итог замера: река с мостом давала **16 путей из 10 000** (обход воды,
+   стен и гор не работал ВООБЩЕ). После фикса — **9886 из 10 000**. Буферы растут
+   по требованию (LocalCapacityMax = 5x5 регионов), лишних аллокаций в hot path нет.
+2. **Сглаживание пути было O(N²)**: Брезенхем от опоры до КАЖДОЙ клетки пути.
+   Обход реки 3000 клеток = ~4,5 млн шагов ≈ 5 мс на путь (83% времени поиска!).
+   Теперь окно просмотра MaxSmoothSpan=48 клеток, работа линейная, траектория та же
+   (опорные точки плотнее, но лежат на той же прямой): **5958 → 1743 мкс (3,4x)**.
+3. **`WorldPathFinder.MaxDetourCells = 384`** — грубое урезание дальности в
+   мир-слое (именно то, что запрещено). Заменяется критерием k·L при сносе
+   мир-агентов (фаза 5).
+
+ЗАЩИТА ОТ АБСУРДНЫХ ОБХОДОВ (§118.5, реализовано): `MaxDetourRatio = 6`.
+L = чебышёвское расстояние — математическая нижняя граница числа шагов. Если
+найденный путь длиннее 6·L (и L ≥ 48 клеток), цель считается ФАКТИЧЕСКИ
+недостижимой: возвращаем false, задача садится на кулдаун вызывающего
+(JobValidator/AgentMovementService). Дальность НЕ режется: в сценарии «река без
+моста» все 200 запросов отвергнуты за 147 мкс каждый вместо построения
+1900-клеточного обхода. Диагностика: `DetourRejects`, `FailureStats`,
+`Profile` (время по фазам) — «путь не найден» больше не чёрный ящик.
+
+ОСТАЛОСЬ по бюджету (следующий шаг, честно):
+- Холодный путь 1743 мкс и steady-state 286 мкс не дают 10 000 агентов в 1-2 мс
+  БЕЗ амортизации. Нужен бюджетный гейт: не более ~1,5 мс поиска за кадр,
+  остальные запросы переносятся на следующий кадр (никогда не перезапускаются).
+- Портал-уровневый абстрактный граф (стоимости рёбер портал→портал считаются
+  один раз) уберёт повторный `PickBestPortal` и покадровую сборку 3000 клеток.
+- 242 из 10 000 в steady-state отвергнуты k·L — это ЦЕЛЕВОЕ поведение
+  (цель за рекой далеко от моста), но проверить, что среди них нет ложно
+  недостижимых, надо инструментом `FailureStats`.
+
+ВАЖНО (честно): при правке `HierarchicalPathfinder.cs` через PowerShell была
+испорчена кодировка комментариев, и `git checkout` вернул версию из HEAD, где
+ОТСУТСТВОВАЛА несохранённая работа по публикации снимка `NavGridState`
+(атомарная замена графа). Она восстановлена своей реализацией (`_state` +
+`_dirty` + `Volatile.Write`), но это не побайтово тот код, что был в рабочей
+копии — поведение покрыто бенчмарком и сборкой, а не диффом.
+
+## §119. Зоны-бригадиры на радиусе: Рабочий/Разнорабочий, покрытие, очередь, якорь (старт 2026-10-20)
+
+СПЕКА (источник истины для всех фаз §119; каждая фаза читает этот блок).
+
+**Два класса агентов:**
+* **Разнорабочий** — глобальный пул, СУЩЕСТВУЮЩИЙ путь раздачи (DispatchZones →
+  JobSpatialPyramid, источник истины работ и путь разнорабочих — НЕ трогаем).
+  Берёт неквалифицированные работы сразу; квалифицированные — после 60с простоя.
+* **Рабочий** — привязан к зоне; берёт ТОЛЬКО из очереди СВОЕЙ зоны, ближайшую
+  к себе работу (не FIFO).
+
+**Зона:** центр + РАДИУС 64..512 клеток (НЕ площадь!); ровно ОДИН тип работ
+(ровно один бит JobMask); DesiredWorkers — заявка БЕЗ потолка (0..999);
+PriorityOverride (1..10); Enabled; AnchorBlockId (центральный блок-якорь).
+
+**Покрытие:** битмапа клетка→idЗоны ОТДЕЛЬНО на каждый тип работ, O(1)
+проверка. Пересечение зон ОДНОГО типа: спорные клетки отдаёт зона с БОЛЬШИМ
+AssignedCount (партиция, без гонок); зоны РАЗНЫХ типов друг друга НЕ режут.
+Пересчёт — по событию, не чаще 1р/2с.
+
+**Пуш = уведомление:** работа живёт в реестре домена (JobSpatialPyramid
+остаётся источником истины); зоны лишь уведомляются о новых работах.
+
+**Непокрытые работы:** репуш каждые 30с; мгновенного прохода при создании
+зоны НЕТ.
+
+**Очередь зоны:** ближайшая к рабочему работа (не FIFO). Нужды прерывают:
+работа возвращается в очередь зоны, ПРОГРЕСС сохраняется. Прогресс ВСЕХ работ
+переживает сейв.
+
+**Центральный блок:** постройка 10 дерева, спрайт
+uid://dsiddo1lt1scb (res://ui/assets/textures/objects/central.png); НЕ
+является зоной; зона ставится как сейчас; блок = якорь центра; снос блока =
+снос зоны (RemoveZoneAt), работы падают в непокрытые. Работы уже в очереди
+обрезанной зоны ОСТАЮТСЯ у неё.
+
+**UI (JobDisplay):** слайдер Tiles = РАДИУС 64..512; Worker = желаемое число
+0..999; одна зона = один тип работ.
+
+**ФАЗЫ:**
+* **P0 — модель зон** (task-10, @developer dev-colony-expand): WorkZone —
+  радиус вместо HashSet-диска (при r=512 диск = 823 548 клеток = гигабайты),
+  DesiredWorkers, Enabled, AnchorBlockId, CellCount = πr² (вычисляемое),
+  Contains = dx²+dy² ≤ r² (O(1)); ZoneManager.SetWorkRadius/SetWorkDesiredWorkers,
+  валидация «ровно один бит», заглушка ScheduleRepartition (dirty-флаг),
+  TryGetZoneAt/SelectZoneAt по формуле (перекрытие — ближайший центр),
+  RemoveZoneAtCenter; фасад WorkZoneManager: SetRadius/SetDesiredWorkers/
+  RemoveZoneAt + легаси-алиасы SetTiles/SetWorkers. DispatchZones работает
+  КАК ЕСТЬ (регресс фермы/склада недопустим). ChunkIndices Work-зоны —
+  аналитически пересечённые с диском чанки 16×16 (без материализации).
+* P1 — покрытие (битмапы на тип работ + партиция спорных клеток, репуш 30с).
+* P2 — UI (слайдер Tiles = радиус 64..512, Worker 0..999, очередь в JobDisplay).
+* P3 — Рабочий (привязка к зоне, очередь зоны, ближайшая работа).
+* P4 — прерывание нуждами + сохранение прогресса (сейв).
+* P5 — центральный блок (якорь, спрайт central.png, снос блока = снос зоны).
+* P6 — смоук UI (task-12, dev-streaming-view: JobDisplay.tscn — Tiles 64..512,
+  Worker 0..999, EnabledToggle, RemoveZone).
+
+ПРИЁМКА P0: dotnet build = 0 ошибок; headless-тест tests/run_zone_model_test.gd
+зелёный (эталонная формула покрытия r=64..512, кламп радиуса, один-бит маска,
+RemoveZoneAtCenter, 10 зон r=512 → GC delta < 20 МБ); существующие тесты зон/
+фермы/склада зелёные (run_phase1/2/5_suite.gd, run_activearea_test.gd).
+
+ПРАВИЛА §119: dotnet build Game.csproj = 0 ошибок после каждой правки; Godot
+ТОЛЬКО через godot_run_headless --script tests/run_*.gd (pwsh/bash — signal 11,
+запрещено); C#-файлы — только read/edit/write (НЕ Get-Content/Set-Content —
+ломает UTF-8); тесты по образцу tests/run_pathfinding_bench.gd (@tool extends
+SceneTree, _init() грузит C# класс, зовёт Run(), quit(0|1)).
+
+СТАТУС P0 (2026-10-20, dev-colony-expand): выполнено — Zone.cs/WorkZone.cs на
+радиусе, ZoneManager (SetWorkRadius/SetWorkDesiredWorkers/валидация/заглушка
+репартиции/RemoveZoneAtCenter/FindZoneAt-формула), фасад обновлён. Вынужденные
+кросс-скоп фиксы сборки: WorkZoneController.cs:487 (Tiles.Count → CellCount),
+tests/test_streamingview_jobdisplay_smoke.cs:64 (BaseButton.Text → (as
+Button)?.Text — файл task-12 не собирался). FarmZoneRenderer по-прежнему
+рисует Work-зоны из zone.Tiles — после P0 Work-зоны не отрисовываются
+(визуальный пробел до P2, легаси-рендер оставлен нетронутым).
+
+СТАТУС P1 (2026-10-20, dev-colony-expand, task-15): выполнено.
+* src/simulation/zones/ZoneCoverageMap.cs — битмапа покрытий: ushort[w*h] НА
+  тип работ (лениво: тип без зон памяти не держит); Rebuild по событию
+  (RequestRebuild ← ScheduleRepartition), throttle 2000 мс, атомарная замена
+  словаря карт (читатели видят консистентный снапшот); покраска диска —
+  по формуле по bbox-строкам (сегмент круга, без HashSet); клип: сортировка
+  зон по AssignedCount desc, tie — меньший zoneId; Enabled=false или
+  DesiredWorkers=0 → зона не владеет клетками; TryGetOwner(x,y,type,out) O(1).
+* src/simulation/zones/ZoneJobRouter.cs — пуш-роутер: Push(type,x,y,jobId) —
+  O(1), lock-free, БЕЗ глобального лока (ConcurrentQueue на зону + замок
+  зоны только на дренаж); покрыта → очередь зоны; нет → непокрытые
+  (таймштамп); Sweep(now): репуш непокрытых старше 30с (мгновенного прохода
+  при создании зоны НЕТ) + чистка работ, исчезнувших из реестра; 
+  DequeueNearest(zoneId,wx,wy) — ближайшая (не FIFO), ничья дистанции —
+  меньший jobId, атомарность через дренаж под замком зоны; Unassign(jobId) —
+  lock-free возврат в очередь зоны; OnZoneRemoved — очередь в непокрытые;
+  Reset — смена мира. Домены зовут ТОЛЬКО Push.
+* Интеграция (только вызовы Push, реестр не тронут): JobBroker.cs — все 12
+  Register-точек (дерево/батч, камень/батч, haul, haul-sweep, blueprint/батч,
+  construction, farm/батч, planting, harvest) + ConstructionManager.cs
+  RegisterHaulBatch. Id для батчей — JobSpatialPyramid.TryGetJobIdByPos
+  (новый дешёвый lookup, out bool found → int; JobData не строится).
+* ZoneManager: ScheduleRepartition будит роутер (P0-заглушка → событие),
+  MapWidth/MapHeight наружу, SetWorkEnabled (+ScheduleRepartition),
+  SetWorkDesiredWorkers теперь тоже ScheduleRepartition; фасад SetEnabled
+  (тумблер P6 теперь может пушить состояние). ClearAll/RemoveZone хукают
+  роутер.
+* Тест tests/test_zone_router.cs + tests/run_zone_router_test.gd: (а) 10k
+  пушей — непокрытый путь 1.3–2.6 мс, покрытый 4.96 мс (Debug; спека < 5 мс
+  выполнена, Release будет быстрее); (б) пуш → правильная зона, типы
+  независимы; (в) клип детерминирован (фикс-сценарий, 100 повторов, tie —
+  меньший id, AssignedCount побеждает); (г) 16 потоков Push/DequeueNearest —
+  ноль двойных выдач, ноль потерь (очереди+непокрытые+выданные == запушено);
+  (д) непокрытая репушится ровно после 30с (29_999 мс — нет, 30_000 — да);
+  (е) Enabled/DesiredWorkers гейтят владение; (ж) Unassign возвращает работу.
+* Регресс: run_zone_model_test.gd, run_activearea_test.gd, run_phase3/4/5
+  suites — зелёные; dotnet build 0 ошибок.
+
+СТАТУС P2 (2026-10-20, dev-colony-expand, task-16): выполнено.
+* src/core/agents/AgentDataPool.cs — enum AgentClass { Laborer, Worker };
+  SoA-массивы Classes[] (дефолт Laborer — легаси не меняется) и AssignedZoneId[]
+  (дефолт -1).
+* src/simulation/zones/ZoneJobRouter.cs — 60с-холд: плотный long[] _queuedAt
+  по jobId (+1-кодировка, 0 = нет записи; дешевле ConcurrentDictionary —
+  пуш в зону вернулся с 6.8 до 4.9 мс/10k), IsHeldForWorkerFresh(id),
+  GetQueuedAtMs; Push/Unassign ставят таймштамп, Sweep/OnZoneRemoved/Reset
+  чистят. TestClockOverrideMs/NowMs — тестовые часы.
+* src/simulation/jobs/JobSpatialPyramid.cs — TryClaimJobById(jobId): клейм
+  КОНКРЕТНОЙ работы по id для Worker'а (CAS assignedWorkers, насыщение —
+  unclaimed-счётчики + CdCountingTryRemove + макро-маска, зеркально
+  TryClaimInChunk). Охрана холда в TryClaimInChunk: работа с активным
+  60с-холдом не отдаётся Laborer'у (после 60с — доступна).
+* src/simulation/jobs/JobDispatcher.cs — ReleaseJobWorker: Worker'у работа
+  возвращается в ОЧЕРЕДЬ ЗОНЫ (Unassign) + клейм пирамиды снимается;
+  ReleaseJobWorkerForStuck для Worker'а НЕ ставит кулдаун недостижимости
+  (работа остаётся валидной в зоне); TryAssignWorkerToZoneJob — клейм по id
+  + OnStart с полным откатом; AgentReservedMarker теперь public.
+* src/simulation/agents/WorkerAssignmentSystem.cs — AssignWorkers/
+  BeginAssign: DesiredWorkers = заявка; ровно N ближайших к центру Idle
+  Laborer'ов → Worker зоны (RecruitRadius 64), излишек — дальние → Laborer;
+  ReleaseZoneWorkers, Reconcile (Worker без живой/включённой зоны → Laborer).
+* src/simulation/agents/WorkerZoneJobSystem.cs — выдача Worker'у ТОЛЬКО из
+  очереди его зоны: DequeueNearest → САМОВАЛИДАЦИЯ (реестр TryGetJob + тип +
+  клетка + CanAgentExecute; фантом возвращается в очередь, не клеймится) →
+  TryAssignWorkerToZoneJob. TryInterruptForNeeds — пороги легаси +5
+  гистерезис: ReleaseJobWorker → работа в очереди зоны, прогресс в клетке
+  сохранён (P7б CellProgressStore читается хендлерами при следующем OnStart).
+* src/simulation/jobs/handlers/NeedsJobSystem.cs — закрыта дыра
+  FinishBehavior (тихий сброс CurrentJobId без OnCancel): агент с задачей
+  под нуждой идёт через ReleaseJobWorker (OnCancel + возврат работы).
+* src/simulation/AgentSimulationThread.cs — BookkeepSingleAgentRest:
+  Idle-Worker обслуживается зоной (JobSearchTimer 2с, нужды легаси-путём);
+  работающий Worker прерывается нуждами (тайм-слайсинг i&3); Worker не
+  попадает в общий пул бездельников. Periodic ZoneJobRouter.Sweep у диспатча
+  (репуш 30с + чистка мёртвых + истёкшие холды). Фасад WorkZoneManager:
+  BeginAssign(zoneId, pool, ctx) для слайдера.
+* Тест tests/test_zone_agents.cs + run_zone_agents_test.gd — 7 приёмок
+  зелёные: (а) дефолт Laborer; (г) DesiredWorkers=5 → ровно 5 ближайших
+  Worker'ов, урезание 5→2 разжимает 3; (б) Worker не берёт чужое; (в)
+  самовалидация фантома (возврат в очередь, клейма нет, реальная работа
+  назначается); (д) нужды → возврат в очередь ЗОНЫ + прогресс 0.5 в клетке
+  сохранён, гистерезис +5 работает; (е) Laborer не крадёт свежую (<60с)
+  работу зоны, после 61с — берёт; (ж) watchdog возвращает работу в зону без
+  кулдауна, следующий Worker подбирает.
+* Регресс: run_zone_router_test.gd (P1, 4.9мс/10k < 5мс), run_zone_model_test
+  (P0), run_phase4_suite, run_phase5_suite, run_work_progress_persistence
+  (P7б) — зелёные; dotnet build 0 ошибок. run_job_race_stress (P8-г,
+  task-20, in_progress у dev-generator) — красный по ИХ инварианту
+  Cd-агрегатов (131127 vs 131135); P2 этот путь не трогает (тест не зовёт
+  TryClaimJobById; охрана холда не влияет на Cd-учёт) — владельцу task-20.

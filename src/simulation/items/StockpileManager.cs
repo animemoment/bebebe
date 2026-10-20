@@ -19,11 +19,12 @@ public class StockpileManager
 
     private readonly object _lock = new();
     private readonly HashSet<(int X, int Y)> _zones = new(1024);
+    private readonly HashSet<(int X, int Y)> _pendingZones = new(1024);
     private readonly HashSet<(int X, int Y)>[,] _zoneChunks = new HashSet<(int X, int Y)>[ChunkDim, ChunkDim];
-    private readonly Dictionary<(int X, int Y), (ItemId Item, int Count, int ReservedIncoming)> _storage = new(1024);
+    private readonly Dictionary<(int X, int Y), (ItemId Item, int Count, int ReservedIncoming, int ReservedOutgoing)> _storage = new(1024);
 
     private const int MaxItemTypes = 8;
-    private const int MaxSnapshotItemsPerType = 4096;
+    private const int MaxSnapshotItemsPerType = 16384;
 
     private bool _isDirty = true;
 
@@ -54,6 +55,33 @@ public class StockpileManager
     // Кэш тоталов для HUD без O(N) скана (обновляется под _lock, читается lock-free).
     private readonly int[] _cachedTotals = new int[8];
     public int GetTotalItemCount(ItemId id) => Volatile.Read(ref _cachedTotals[(int)id]);
+
+    public int GetLiveItemCount(ItemId id)
+    {
+        int idx = (int)id;
+        return (idx >= 0 && idx < 8) ? Volatile.Read(ref _liveTotals[idx]) : 0;
+    }
+
+    // §118 фаза 4 (аудит MapDataWriter §2): битмаска быстрого пути IsZoneTile
+    // покрывает ВЕСЬ остров. Было жёстко 512×512, а остров с §117.2 — 1024×1024
+    // (Main.ColonySizeTiles), поэтому склады во второй половине карты шли медленным
+    // путём через _zones.Contains под _lock. Клетки за границей 1024 по-прежнему
+    // обслуживает безопасный fallback, поэтому размер — только про скорость.
+    private const int BitmaskSize = 1024; // 1024*1024/64 = 128 КБ
+
+    private readonly long[] _zoneBitmask = new long[BitmaskSize * BitmaskSize / 64];
+
+    private void SetZoneBit(int x, int y, bool set)
+    {
+        if ((uint)x >= BitmaskSize || (uint)y >= BitmaskSize) return;
+        int idx = y * BitmaskSize + x;
+        int arrayIdx = idx >> 6;
+        long bit = 1L << (idx & 63);
+        if (set)
+            _zoneBitmask[arrayIdx] |= bit;
+        else
+            _zoneBitmask[arrayIdx] &= ~bit;
+    }
 
     /// <summary>Тик троттлинга событий склада. Вызывать из фонового потока раз в тик Phase2.</summary>
     public void TickEventThrottle(float deltaTime)
@@ -113,9 +141,10 @@ public class StockpileManager
             if (_zones.Add((x, y)))
             {
                 Interlocked.Increment(ref _zoneCount);
+                SetZoneBit(x, y, true);
                 if (!_storage.ContainsKey((x, y)))
                 {
-                    _storage[(x, y)] = (ItemId.None, 0, 0);
+                    _storage[(x, y)] = (ItemId.None, 0, 0, 0);
                     _freeSlotsCount++;
                 }
 
@@ -151,9 +180,10 @@ public class StockpileManager
                 if (_zones.Add((x, y)))
                 {
                     Interlocked.Increment(ref _zoneCount);
+                    SetZoneBit(x, y, true);
                     if (!_storage.ContainsKey((x, y)))
                     {
-                        _storage[(x, y)] = (ItemId.None, 0, 0);
+                        _storage[(x, y)] = (ItemId.None, 0, 0, 0);
                         _freeSlotsCount++;
                     }
                     var (cx, cy) = GetChunkCoord(x, y);
@@ -176,6 +206,70 @@ public class StockpileManager
     public event Action<(int X, int Y)[]> OnZoneTilesBatchAdded;
 
     /// <summary>
+    /// Добавление отложенной складской зоны (здание строится со стенами).
+    /// Зона сразу отображается в рендере (фиолетовый слой), но не принимает предметы до конца стройки.
+    /// </summary>
+    public void AddPendingZoneTilesBatch(System.Collections.Generic.List<(int X, int Y)> tiles)
+    {
+        if (tiles == null || tiles.Count == 0) return;
+        var added = new System.Collections.Generic.List<(int X, int Y)>(tiles.Count);
+        lock (_lock)
+        {
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                var (x, y) = tiles[i];
+                if (!_zones.Contains((x, y)) && _pendingZones.Add((x, y)))
+                {
+                    SetZoneBit(x, y, true);
+                    added.Add((x, y));
+                }
+            }
+        }
+        if (added.Count > 0)
+        {
+            var snapshot = added.ToArray();
+            Callable.From(() => OnZoneTilesBatchAdded?.Invoke(snapshot)).CallDeferred();
+        }
+    }
+
+    /// <summary>
+    /// Активация отложенной зоны склада после завершения стен здания.
+    /// Переводит клетки в боевой склад, создавая слоты хранения и запуская хаулинг.
+    /// </summary>
+    public void ActivatePendingZone(System.Collections.Generic.List<(int X, int Y)> tiles)
+    {
+        if (tiles == null || tiles.Count == 0) return;
+        var activated = new System.Collections.Generic.List<(int X, int Y)>(tiles.Count);
+        lock (_lock)
+        {
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                var (x, y) = tiles[i];
+                _pendingZones.Remove((x, y));
+                if (_zones.Add((x, y)))
+                {
+                    Interlocked.Increment(ref _zoneCount);
+                    SetZoneBit(x, y, true);
+                    if (!_storage.ContainsKey((x, y)))
+                    {
+                        _storage[(x, y)] = (ItemId.None, 0, 0, 0);
+                        _freeSlotsCount++;
+                    }
+                    var (cx, cy) = GetChunkCoord(x, y);
+                    _zoneChunks[cx, cy].Add((x, y));
+                    activated.Add((x, y));
+                }
+            }
+            if (activated.Count > 0)
+                _isDirty = true;
+        }
+        if (activated.Count > 0)
+        {
+            JobBroker.Instance.SweepStockpileHaulJobs();
+        }
+    }
+
+    /// <summary>
     /// Батчевое удаление зоны склада: один lock, один sweep не нужен
     /// (удаление не создаёт работ).
     /// </summary>
@@ -183,14 +277,21 @@ public class StockpileManager
     {
         if (tiles == null || tiles.Count == 0) return;
         var removed = new System.Collections.Generic.List<(int X, int Y)>(tiles.Count);
+        var dropped = new System.Collections.Generic.List<(int X, int Y, ItemId Item, int Count)>();
         lock (_lock)
         {
             for (int i = 0; i < tiles.Count; i++)
             {
                 var (x, y) = tiles[i];
+                if (_pendingZones.Remove((x, y)))
+                {
+                    SetZoneBit(x, y, false);
+                    removed.Add((x, y));
+                }
                 if (_zones.Remove((x, y)))
                 {
                     Interlocked.Decrement(ref _zoneCount);
+                    SetZoneBit(x, y, false);
                     var (cx, cy) = GetChunkCoord(x, y);
                     _zoneChunks[cx, cy].Remove((x, y));
                     if (_storage.TryGetValue((x, y), out var entry))
@@ -207,11 +308,17 @@ public class StockpileManager
                             AddLiveTotal(entry.Item, -entry.Count);
                             int total = GetTotalItemCountInternal(entry.Item);
                             QueueItemCountChanged(entry.Item, total);
+                            dropped.Add((x, y, entry.Item, entry.Count));
                         }
                     }
-                    removed.Add((x, y));
+                    if (!removed.Contains((x, y)))
+                        removed.Add((x, y));
                 }
             }
+        }
+        foreach (var (dx, dy, ditem, dcount) in dropped)
+        {
+            GroundItemManager.Instance.SpawnItems(dx, dy, ditem, dcount);
         }
         if (removed.Count > 0)
         {
@@ -225,11 +332,14 @@ public class StockpileManager
 
     public void RemoveZoneTile(int x, int y)
     {
+        (ItemId Item, int Count) toDrop = (ItemId.None, 0);
         lock (_lock)
         {
+            _pendingZones.Remove((x, y));
             if (_zones.Remove((x, y)))
             {
                 Interlocked.Decrement(ref _zoneCount);
+                SetZoneBit(x, y, false);
                 var (cx, cy) = GetChunkCoord(x, y);
                 _zoneChunks[cx, cy].Remove((x, y));
 
@@ -246,21 +356,36 @@ public class StockpileManager
                     if (entry.Item != ItemId.None && entry.Count > 0)
                     {
                         var item = entry.Item;
+                        AddLiveTotal(item, -entry.Count);
                         int total = GetTotalItemCountInternal(item);
                         QueueItemCountChanged(item, total);
+                        toDrop = (item, entry.Count);
                     }
                 }
 
                 Callable.From(() => OnZoneTileRemoved?.Invoke((x, y))).CallDeferred();
             }
+            else
+            {
+                SetZoneBit(x, y, false);
+            }
+        }
+        if (toDrop.Item != ItemId.None && toDrop.Count > 0)
+        {
+            GroundItemManager.Instance.SpawnItems(x, y, toDrop.Item, toDrop.Count);
         }
     }
 
     public bool IsZoneTile(int x, int y)
     {
+        if ((uint)x < BitmaskSize && (uint)y < BitmaskSize)
+        {
+            int idx = y * BitmaskSize + x;
+            return (Volatile.Read(ref _zoneBitmask[idx >> 6]) & (1L << (idx & 63))) != 0;
+        }
         lock (_lock)
         {
-            return _zones.Contains((x, y));
+            return _zones.Contains((x, y)) || _pendingZones.Contains((x, y));
         }
     }
 
@@ -336,15 +461,19 @@ public class StockpileManager
 
                         foreach (var tile in chunk)
                         {
+                            if (ConstructionManager.Instance.IsSiteAt(tile.X, tile.Y) || StructureManager.Instance.IsWallAt(tile.X, tile.Y))
+                                continue;
+
                             if (!_storage.TryGetValue(tile, out var entry))
                             {
-                                entry = (ItemId.None, 0, 0);
+                                entry = (ItemId.None, 0, 0, 0);
                                 _storage[tile] = entry;
                             }
 
                             int totalCount = entry.Count + entry.ReservedIncoming;
+                            bool canAccept = (entry.Count == 0 && entry.ReservedIncoming == 0 && entry.ReservedOutgoing == 0) || entry.Item == itemId;
 
-                            if (totalCount < def.MaxStack && (entry.Item == ItemId.None || entry.Item == itemId))
+                            if (totalCount < def.MaxStack && canAccept)
                             {
                                 float dx = tile.X - agentTileX;
                                 float dy = tile.Y - agentTileY;
@@ -370,7 +499,7 @@ public class StockpileManager
             {
                 var entry = _storage[slot];
                 int newTotal = entry.Count + entry.ReservedIncoming + acceptedCount;
-                _storage[slot] = (itemId, entry.Count, entry.ReservedIncoming + acceptedCount);
+                _storage[slot] = (itemId, entry.Count, entry.ReservedIncoming + acceptedCount, entry.ReservedOutgoing);
 
                 if (newTotal >= def.MaxStack)
                 {
@@ -384,81 +513,215 @@ public class StockpileManager
     }
 
     /// <summary>
-    /// #1: резерв еды со склада для NeedsJobSystem. Складская еда живёт только
-    /// в _storage (DepositItems НЕ пишет в GroundItemManager), поэтому голодный
-    /// агент при полном складе и пустой земле раньше уходил в backoff 30–60с.
-    /// Атомарно резервирует eatCount зерна ближайшей клетки (спираль по чанкам,
-    /// как TryReserveStockpileSlot) и сразу списывает из _storage+тоталов:
-    /// резервация == взятие, отдельного release не нужно (еда съедается сразу).
-    /// Возвращает false — еды на складе нет / не хватило.
+    /// Резервирование предметов со склада для исходящей доставки / посадки / еды.
+    /// Атомарно ищет ближайшую клетку с доступным остатком (Count - ReservedOutgoing > 0)
+    /// и увеличивает ReservedOutgoing. Списание со склада происходит только при фактическом взятии.
     /// </summary>
-    public bool TryTakeStockpileFood(System.Numerics.Vector2 agentPos, ItemId itemId, int eatCount, int maxTileRadius, out (int X, int Y) cell)
+    public bool TryReserveStockpileItem(System.Numerics.Vector2 agentPos, ItemId itemId, int count, int maxChunkRadius, out (int X, int Y) cell, out int acceptedCount)
     {
         cell = (-1, -1);
-        if (eatCount <= 0 || itemId == ItemId.None) return false;
+        acceptedCount = 0;
+        if (count <= 0 || itemId == ItemId.None) return false;
         if (Volatile.Read(ref _zoneCount) <= 0) return false;
-        if (Volatile.Read(ref _liveTotals[(int)itemId]) < eatCount) return false;
+        int idx = (int)itemId;
+        if (idx < 0 || idx >= 8 || Volatile.Read(ref _liveTotals[idx]) <= 0) return false;
 
         lock (_lock)
         {
-            if (_zones.Count == 0) return false;
-            if (Volatile.Read(ref _liveTotals[(int)itemId]) < eatCount) return false;
+            if (_zones.Count == 0 || Volatile.Read(ref _liveTotals[idx]) <= 0) return false;
 
             int agentTileX = (int)(agentPos.X / 64f);
             int agentTileY = (int)(agentPos.Y / 64f);
             int startCx = Math.Clamp((int)(agentPos.X / ChunkSizePx), 0, ChunkDim - 1);
             int startCy = Math.Clamp((int)(agentPos.Y / ChunkSizePx), 0, ChunkDim - 1);
-            int radius = Math.Clamp(maxTileRadius <= 0 ? MaxChunkRadius : (maxTileRadius + ChunkSize - 1) / ChunkSize, 1, MaxChunkRadius);
+            int radius = Math.Clamp(maxChunkRadius <= 0 ? MaxChunkRadius : maxChunkRadius, 1, MaxChunkRadius);
 
             float bestDistSq = float.MaxValue;
             (int X, int Y) best = (-1, -1);
-            for (int r = 0; r < radius; r++)
+            int bestAvail = 0;
+
+            for (int r = 0; r <= radius; r++)
             {
                 int minCx = Math.Max(0, startCx - r);
                 int maxCx = Math.Min(ChunkDim - 1, startCx + r);
                 int minCy = Math.Max(0, startCy - r);
                 int maxCy = Math.Min(ChunkDim - 1, startCy + r);
+
                 for (int cx = minCx; cx <= maxCx; cx++)
                 {
                     for (int cy = minCy; cy <= maxCy; cy++)
                     {
                         if (r > 0 && cx > minCx && cx < maxCx && cy > minCy && cy < maxCy)
                             continue;
+
                         var chunk = _zoneChunks[cx, cy];
                         if (chunk.Count == 0) continue;
+
                         foreach (var tile in chunk)
                         {
                             if (!_storage.TryGetValue(tile, out var entry)) continue;
-                            if (entry.Item != itemId || entry.Count < eatCount) continue;
+                            if (entry.Item != itemId) continue;
+                            int avail = entry.Count - entry.ReservedOutgoing;
+                            if (avail <= 0) continue;
+
                             float dx = tile.X - agentTileX;
                             float dy = tile.Y - agentTileY;
                             float distSq = dx * dx + dy * dy;
+
                             if (distSq < bestDistSq)
                             {
                                 bestDistSq = distSq;
                                 best = tile;
+                                bestAvail = avail;
                             }
                         }
                     }
                 }
                 if (best.X != -1) break;
             }
-            if (best.X == -1) return false;
 
-            var e = _storage[best];
-            if (e.Item != itemId || e.Count < eatCount) return false;
-            var def = ItemRegistry.Get(e.Item);
-            int wasTotal = e.Count + e.ReservedIncoming;
-            int newCount = e.Count - eatCount;
-            var kept = newCount == 0 ? ItemId.None : e.Item;
-            _storage[best] = (kept, newCount, e.ReservedIncoming);
-            _isDirty = true;
-            if (wasTotal >= def.MaxStack && (newCount + e.ReservedIncoming) < def.MaxStack)
-                _freeSlotsCount++;
-            AddLiveTotal(e.Item, -eatCount);
-            QueueItemCountChanged(e.Item, Volatile.Read(ref _liveTotals[(int)e.Item]));
-            cell = best;
-            return true;
+            if (best.X != -1 && bestAvail > 0)
+            {
+                var e = _storage[best];
+                int toReserve = Math.Min(count, bestAvail);
+                _storage[best] = (e.Item, e.Count, e.ReservedIncoming, e.ReservedOutgoing + toReserve);
+                cell = best;
+                acceptedCount = toReserve;
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Резерв еды со склада для NeedsJobSystem.
+    /// Резервирует до eatCount зерна (через ReservedOutgoing) без немедленного списания.
+    /// Списание происходит только в CommitEating, а при застревании колониста
+    /// вызывается CancelWithdrawalReservation, исключая уничтожение еды.
+    /// </summary>
+    public bool TryTakeStockpileFood(System.Numerics.Vector2 agentPos, ItemId itemId, int eatCount, int maxTileRadius, out (int X, int Y) cell, out int reservedCount)
+    {
+        cell = (-1, -1);
+        reservedCount = 0;
+        if (eatCount <= 0 || itemId == ItemId.None) return false;
+        if (Volatile.Read(ref _zoneCount) <= 0) return false;
+        int itemIdx = (int)itemId;
+        if (itemIdx < 0 || itemIdx >= 8 || Volatile.Read(ref _liveTotals[itemIdx]) <= 0) return false;
+
+        lock (_lock)
+        {
+            if (_zones.Count == 0 || Volatile.Read(ref _liveTotals[itemIdx]) <= 0) return false;
+
+            int agentTileX = (int)(agentPos.X / 64f);
+            int agentTileY = (int)(agentPos.Y / 64f);
+            int startCx = Math.Clamp((int)(agentPos.X / ChunkSizePx), 0, ChunkDim - 1);
+            int startCy = Math.Clamp((int)(agentPos.Y / ChunkSizePx), 0, ChunkDim - 1);
+            int maxR = maxTileRadius <= 0 ? 40 : maxTileRadius;
+            float maxRSq = maxR * maxR;
+            int radius = Math.Clamp((maxR + ChunkSize - 1) / ChunkSize, 1, MaxChunkRadius);
+
+            float bestDistSq = float.MaxValue;
+            (int X, int Y) best = (-1, -1);
+            int bestAvail = 0;
+
+            for (int r = 0; r <= radius; r++)
+            {
+                int minCx = Math.Max(0, startCx - r);
+                int maxCx = Math.Min(ChunkDim - 1, startCx + r);
+                int minCy = Math.Max(0, startCy - r);
+                int maxCy = Math.Min(ChunkDim - 1, startCy + r);
+
+                for (int cx = minCx; cx <= maxCx; cx++)
+                {
+                    for (int cy = minCy; cy <= maxCy; cy++)
+                    {
+                        if (r > 0 && cx > minCx && cx < maxCx && cy > minCy && cy < maxCy)
+                            continue;
+
+                        var chunk = _zoneChunks[cx, cy];
+                        if (chunk.Count == 0) continue;
+
+                        foreach (var tile in chunk)
+                        {
+                            if (!_storage.TryGetValue(tile, out var entry)) continue;
+                            if (entry.Item != itemId) continue;
+                            int avail = entry.Count - entry.ReservedOutgoing;
+                            if (avail <= 0) continue;
+
+                            float dx = tile.X - agentTileX;
+                            float dy = tile.Y - agentTileY;
+                            float distSq = dx * dx + dy * dy;
+
+                            if (distSq <= maxRSq && distSq < bestDistSq)
+                            {
+                                bestDistSq = distSq;
+                                best = tile;
+                                bestAvail = avail;
+                            }
+                        }
+                    }
+                }
+                if (best.X != -1) break;
+            }
+
+            if (best.X != -1 && bestAvail > 0)
+            {
+                var e = _storage[best];
+                int toReserve = Math.Min(eatCount, bestAvail);
+                _storage[best] = (e.Item, e.Count, e.ReservedIncoming, e.ReservedOutgoing + toReserve);
+                cell = best;
+                reservedCount = toReserve;
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>Списать зарезервированные исходящие предметы из слота склада (при заборе агентом).</summary>
+    public int WithdrawReservedItem(int x, int y, int count)
+    {
+        lock (_lock)
+        {
+            if (_storage.TryGetValue((x, y), out var entry) && entry.Count > 0)
+            {
+                var def = ItemRegistry.Get(entry.Item);
+                int wasTotal = entry.Count + entry.ReservedIncoming;
+
+                int toTake = Math.Min(entry.Count, count);
+                int newCount = entry.Count - toTake;
+                int newOutgoing = Math.Max(0, entry.ReservedOutgoing - toTake);
+                var item = (newCount == 0 && entry.ReservedIncoming == 0 && newOutgoing == 0) ? ItemId.None : entry.Item;
+                _storage[(x, y)] = (item, newCount, entry.ReservedIncoming, newOutgoing);
+                _isDirty = true;
+
+                if (wasTotal >= def.MaxStack && (newCount + entry.ReservedIncoming) < def.MaxStack)
+                {
+                    _freeSlotsCount++;
+                }
+
+                var oldItem = entry.Item;
+                AddLiveTotal(oldItem, -toTake);
+                int total = GetTotalItemCountInternal(oldItem);
+                QueueItemCountChanged(oldItem, total);
+                return toTake;
+            }
+            return 0;
+        }
+    }
+
+    /// <summary>Отменить исходящий резерв предметов без списания запасов (при застревании / отмене агента).</summary>
+    public void CancelWithdrawalReservation(int x, int y, int count)
+    {
+        lock (_lock)
+        {
+            if (_storage.TryGetValue((x, y), out var entry))
+            {
+                int newOutgoing = Math.Max(0, entry.ReservedOutgoing - count);
+                var item = (entry.Count == 0 && entry.ReservedIncoming == 0 && newOutgoing == 0) ? ItemId.None : entry.Item;
+                _storage[(x, y)] = (item, entry.Count, entry.ReservedIncoming, newOutgoing);
+            }
         }
     }
 
@@ -472,7 +735,8 @@ public class StockpileManager
                 int wasTotal = entry.Count + entry.ReservedIncoming;
 
                 int newReserved = Math.Max(0, entry.ReservedIncoming - count);
-                _storage[(x, y)] = (entry.Item, entry.Count, newReserved);
+                var keptItem = (entry.Count == 0 && newReserved == 0 && entry.ReservedOutgoing == 0) ? ItemId.None : entry.Item;
+                _storage[(x, y)] = (keptItem, entry.Count, newReserved, entry.ReservedOutgoing);
 
                 if (wasTotal >= def.MaxStack && (entry.Count + newReserved) < def.MaxStack)
                 {
@@ -493,7 +757,7 @@ public class StockpileManager
 
                 int newReserved = Math.Max(0, entry.ReservedIncoming - count);
                 int newCount = entry.Count + count;
-                _storage[(x, y)] = (itemId, newCount, newReserved);
+                _storage[(x, y)] = (itemId, newCount, newReserved, entry.ReservedOutgoing);
                 _isDirty = true;
 
                 if (wasTotal >= def.MaxStack && (newCount + newReserved) < def.MaxStack)
@@ -519,8 +783,9 @@ public class StockpileManager
 
                 int toTake = Math.Min(entry.Count, count);
                 int newCount = entry.Count - toTake;
-                var item = newCount == 0 ? ItemId.None : entry.Item;
-                _storage[(x, y)] = (item, newCount, entry.ReservedIncoming);
+                int newOutgoing = Math.Max(0, entry.ReservedOutgoing - toTake);
+                var item = (newCount == 0 && entry.ReservedIncoming == 0 && newOutgoing == 0) ? ItemId.None : entry.Item;
+                _storage[(x, y)] = (item, newCount, entry.ReservedIncoming, newOutgoing);
                 _isDirty = true;
 
                 if (wasTotal >= def.MaxStack && (newCount + entry.ReservedIncoming) < def.MaxStack)
@@ -546,19 +811,18 @@ public class StockpileManager
     /// </summary>
     public void GenerateSnapshot()
     {
-        KeyValuePair<(int X, int Y), (ItemId Item, int Count, int ReservedIncoming)>[] storageCopy;
+        KeyValuePair<(int X, int Y), (ItemId Item, int Count, int ReservedIncoming, int ReservedOutgoing)>[] storageCopy;
         lock (_lock)
         {
             if (!_isDirty) return;
             _isDirty = false;
 
-            storageCopy = new KeyValuePair<(int X, int Y), (ItemId Item, int Count, int ReservedIncoming)>[_storage.Count];
+            storageCopy = new KeyValuePair<(int X, int Y), (ItemId Item, int Count, int ReservedIncoming, int ReservedOutgoing)>[_storage.Count];
             int ci = 0;
             foreach (var kvp in _storage)
                 storageCopy[ci++] = kvp;
         }
 
-        // Finding 6: ring-буфер вместо fresh-аллокации (см. GroundItemManager).
         int slot = _snapCursor % 3;
         _snapCursor++;
         var currentSnap = _snapRing[slot];
@@ -602,19 +866,80 @@ public class StockpileManager
             SnapshotQueue.TryDequeue(out _);
     }
 
+    /// <summary>
+    /// §119 P7б (task-17 п.3-5): снимок НЕПУСТЫХ слотов склада для сейва
+    /// (payload'ы Stockpile-меток). Копия под коротким lock; Reserved НЕ пишем —
+    /// резервы агентов после перезапуска не имеют смысла.
+    /// </summary>
+    public List<(int X, int Y, ItemId Item, int Count)> GetStorageSnapshot()
+    {
+        var result = new List<(int, int, ItemId, int)>(64);
+        lock (_lock)
+        {
+            foreach (var kvp in _storage)
+            {
+                var entry = kvp.Value;
+                if (entry.Item != ItemId.None && entry.Count > 0)
+                    result.Add((kvp.Key.X, kvp.Key.Y, entry.Item, entry.Count));
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// §119 P7б (task-17 п.4): восстановить СОДЕРЖИМОЕ слота склада при загрузке
+    /// колонии (обратная сторона GetStorageSnapshot). Слот обязан существовать
+    /// (тайл зоны уже реплеен через Stockpile-метку) — иначе отказ. Резервы
+    /// агентов после перезапуска не переносятся. Идемпотентно: существующее
+    /// НЕпустое содержимое не затирается.
+    /// </summary>
+    public bool RestoreSlotRaw(int x, int y, ItemId item, int count)
+    {
+        if (item == ItemId.None || count <= 0)
+            return false;
+        lock (_lock)
+        {
+            if (!_storage.TryGetValue((x, y), out var entry))
+                return false; // не тайл зоны — inconsistent сейв
+            if (entry.Item != ItemId.None && entry.Count > 0)
+                return false; // уже есть содержимое (идемпотентность)
+            var def = ItemRegistry.Get(item);
+            int wasTotal = entry.Count + entry.ReservedIncoming;
+            _storage[(x, y)] = (item, count, 0, 0);
+            _isDirty = true;
+            if (wasTotal < def.MaxStack && count + entry.ReservedIncoming >= def.MaxStack)
+                _freeSlotsCount = Math.Max(0, _freeSlotsCount - 1);
+            AddLiveTotal(item, count);
+            int total = GetTotalItemCountInternal(item);
+            QueueItemCountChanged(item, total);
+            return true;
+        }
+    }
+
     /// <summary>Очистить складские зоны и хранилище при смене региона / перезапуске карты.</summary>
     public void ClearAll()
+
     {
         lock (_lock)
         {
             var oldZones = new List<(int X, int Y)>(_zones);
             _zones.Clear();
+            _pendingZones.Clear();
             _storage.Clear();
             for (int cy = 0; cy < ChunkDim; cy++)
                 for (int cx = 0; cx < ChunkDim; cx++)
                     _zoneChunks[cx, cy]?.Clear();
             _freeSlotsCount = 0;
             _zoneCount = 0;
+            Array.Clear(_liveTotals, 0, _liveTotals.Length);
+            Array.Clear(_cachedTotals, 0, _cachedTotals.Length);
+            Array.Clear(_zoneBitmask, 0, _zoneBitmask.Length);
+            lock (_pendingItemLock)
+            {
+                _pendingItemTotals.Clear();
+                _itemEventDirty = false;
+            }
+            while (SnapshotQueue.TryDequeue(out _)) { }
             _isDirty = true;
             if (oldZones.Count > 0)
             {

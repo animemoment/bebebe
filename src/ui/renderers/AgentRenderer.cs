@@ -18,6 +18,21 @@ public partial class AgentRenderer : Node2D
     private MultiMeshInstance2D _shadowInstance;
     private MultiMesh _shadowMultiMesh;
     private float[] _shadowBuffer;
+    // Баг #1 (спайки и нагрузка «Agent Multi Mesh»): в GPU-пути тела и тени рисуются
+    // из ОДНОГО MultiMesh-ресурса. Раньше у теней был свой MultiMesh, и каждый снапшот
+    // заливал в него ТОТ ЖЕ `_gpuInstanceBuffer` (10k x 16 float = 640 КБ) вторым
+    // P/Invoke-маршалингом: по профайлеру реальной игры это ~28 мс пика на кадр-снапшот
+    // в scope `Render: Agent Multi Mesh` (PLAN §33.1 «Двойной P/Invoke маршалинг»).
+    // MultiMeshInstance2D рисует общий MultiMesh (CanvasItem.draw_multimesh), поэтому один
+    // `Buffer=` кормит обе отрисовки, а Material/Modulate/Visible/ZIndex/Texture остаются
+    // по-нодовыми. Следствие: видимость теней выражается ТОЛЬКО через
+    // `_shadowInstance.Visible` — VisibleInstanceCount принадлежит общему ресурсу, и его
+    // обнуление скрыло бы тела агентов.
+    private bool _shadowSharesBodyMultiMesh;
+    // Zero-alloc замер upload-кадра: один переиспользуемый Stopwatch вместо
+    // System.Diagnostics.Stopwatch.StartNew() (тот аллоцировал объект на каждый
+    // upload-кадр в _Process). Elapsed читается и у работающего секундомера.
+    private readonly System.Diagnostics.Stopwatch _uploadStopwatch = new();
     private DayNightCycle.SunState _sun;
     private bool _hasSunState;
     // Шаг G4: вершинный шейдер тени. Растяжение силуэта уехало в GPU
@@ -96,6 +111,13 @@ public partial class AgentRenderer : Node2D
         _prevPositions = new System.Numerics.Vector2[agentCount];
         _targetPositions = new System.Numerics.Vector2[agentCount];
         _facingAngles = new float[agentCount];
+
+        // Повторный Initialize() (смена региона/seed через Main.OnMapApplied) пересоздаёт
+        // буферы нулями, но флаг «первый снапшот уже был» оставался true — и первый кадр
+        // нового мира интерполировал агентов из угла (0,0) вместо мгновенной расстановки.
+        _hasInitialSnapshot = false;
+        _bodiesDirty = true;
+        _shadowsDirty = true;
 
         Shader interpolationShader = null;
         Shader interpolatedShadowShader = null;
@@ -187,19 +209,30 @@ public partial class AgentRenderer : Node2D
         }
         AddChild(_multiMeshInstance);
 
-        // Отдельный MultiMesh теней. При GPU path он использует тот же packed
-        // prev/target buffer, что и тела, а вершинный shader строит клин на GPU.
-        // CPU-вариант сохраняет отдельную матрицу теней для совместимости.
-        _shadowMultiMesh = new MultiMesh
+        // Тени агентов. GPU path: вершинный шейдер строит клин из того же packed
+        // prev/target/angle buffer, что и тела, поэтому второй MultiMesh не нужен —
+        // берём общий ресурс (один Buffer= на снапшот вместо двух: минус дубль
+        // 640 КБ маршалинга на кадр и минус 640 КБ VRAM).
+        // CPU-вариант (шейдеры не загрузились) сохраняет отдельную матрицу теней.
+        if (_gpuInterpolationEnabled)
         {
-            Mesh = quadMesh,
-            TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
-            UseColors = _gpuInterpolationEnabled,
-            UseCustomData = _gpuInterpolationEnabled,
-            InstanceCount = agentCount,
-            VisibleInstanceCount = 0,
-            CustomAabb = mapAabb
-        };
+            _shadowMultiMesh = _multiMesh;
+            _shadowSharesBodyMultiMesh = true;
+        }
+        else
+        {
+            _shadowMultiMesh = new MultiMesh
+            {
+                Mesh = quadMesh,
+                TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
+                UseColors = false,
+                UseCustomData = false,
+                InstanceCount = agentCount,
+                VisibleInstanceCount = 0,
+                CustomAabb = mapAabb
+            };
+            _shadowSharesBodyMultiMesh = false;
+        }
         _shadowInstance = new MultiMeshInstance2D
         {
             Name = "AgentShadowInstance",
@@ -263,7 +296,10 @@ public partial class AgentRenderer : Node2D
         bool shadowsAllowed = speedAllowsShadows && zoom >= LodShadowCutoff && _currentLod == AgentRenderLod.FullWithShadows;
         bool show = shadowsAllowed && sun.Alpha > 0.004f && sun.LengthPx >= 0.5f;
         _shadowInstance.Visible = show;
-        _shadowMultiMesh.VisibleInstanceCount = show ? _agentCount : 0;
+        // Общий с телами MultiMesh: VisibleInstanceCount трогать нельзя — он принадлежит
+        // ресурсу и обнуление скрыло бы тела. Тени гасятся только нодой (_shadowInstance.Visible).
+        if (!_shadowSharesBodyMultiMesh)
+            _shadowMultiMesh.VisibleInstanceCount = show ? _agentCount : 0;
         if (show)
             _shadowInstance.Modulate = sun.ShadowColor;
         if (!show)
@@ -336,7 +372,7 @@ public partial class AgentRenderer : Node2D
                 _multiMeshInstance.Texture = null;
             if (_shadowInstance != null && IsInstanceValid(_shadowInstance))
                 _shadowInstance.Visible = false;
-            if (_shadowMultiMesh != null)
+            if (_shadowMultiMesh != null && !_shadowSharesBodyMultiMesh)
                 _shadowMultiMesh.VisibleInstanceCount = 0;
         }
         else
@@ -352,7 +388,7 @@ public partial class AgentRenderer : Node2D
             {
                 if (_shadowInstance != null && IsInstanceValid(_shadowInstance))
                     _shadowInstance.Visible = false;
-                if (_shadowMultiMesh != null)
+                if (_shadowMultiMesh != null && !_shadowSharesBodyMultiMesh)
                     _shadowMultiMesh.VisibleInstanceCount = 0;
             }
             else if (_hasSunState)
@@ -477,16 +513,24 @@ public partial class AgentRenderer : Node2D
 
                 if (bodiesNeedUpdate)
                 {
-                    var swB = System.Diagnostics.Stopwatch.StartNew();
+                    // Zero-alloc замер: переиспользуемый Stopwatch вместо StartNew().
+                    _uploadStopwatch.Restart();
                     AgentLerpBatch.FillGpuInstanceBuffer(
                         new Span<float>(_gpuInstanceBuffer, 0, _agentCount * 16),
                         new ReadOnlySpan<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
                         new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
                         new ReadOnlySpan<float>(_facingAngles, 0, _agentCount),
                         _agentCount);
+                    // Раздельный замер: fill (упаковка 16 float/инстанс на CPU) vs upload
+                    // (маршалинг float[] -> PackedFloat32Array + команда в RenderingServer).
+                    // По нему видно, что именно даёт пик на upload-кадре.
+                    float msFill = (float)_uploadStopwatch.Elapsed.TotalMilliseconds;
                     _multiMesh.Buffer = _gpuInstanceBuffer;
-                    swB.Stop();
-                    SimEvents.Record("render", "AgentRenderer.bodies_gpu_upload", (float)swB.Elapsed.TotalMilliseconds,
+                    _uploadStopwatch.Stop();
+                    float msUpload = (float)_uploadStopwatch.Elapsed.TotalMilliseconds - msFill;
+                    SimEvents.Record("render", "AgentRenderer.bodies_gpu_fill", msFill,
+                        _agentCount * 16 * 4);
+                    SimEvents.Record("render", "AgentRenderer.bodies_gpu_upload", msUpload,
                         _agentCount * 16 * 4);
                     _bodiesDirty = false;
                     _shadowsDirty = true;
@@ -495,7 +539,7 @@ public partial class AgentRenderer : Node2D
             // CPU fallback: прежняя интерполяция и Transform2D upload каждый lerp-кадр.
             else if (bodiesNeedUpdate)
             {
-                var swB = System.Diagnostics.Stopwatch.StartNew();
+                _uploadStopwatch.Restart();
                 AgentLerpBatch.LerpFill(
                     new ReadOnlySpan<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
                     new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
@@ -504,8 +548,9 @@ public partial class AgentRenderer : Node2D
                     new Span<float>(_renderBuffer, 0, _agentCount * 8),
                     _agentCount);
                 _multiMesh.Buffer = _renderBuffer;
-                swB.Stop();
-                SimEvents.Record("render", "AgentRenderer.bodies_cpu", (float)swB.Elapsed.TotalMilliseconds,
+                _uploadStopwatch.Stop();
+                SimEvents.Record("render", "AgentRenderer.bodies_cpu",
+                    (float)_uploadStopwatch.Elapsed.TotalMilliseconds,
                     _agentCount * 8 * 4);
                 _shadowsDirty = true;
                 if (_lerpFactor >= 1f && !hasNewSnapshot)
@@ -526,7 +571,10 @@ public partial class AgentRenderer : Node2D
             {
                 if (_gpuInterpolationEnabled)
                 {
-                    _shadowMultiMesh.Buffer = _gpuInstanceBuffer;
+                    // Общий с телами MultiMesh уже получил свежий _gpuInstanceBuffer
+                    // в их `Buffer=` выше в этом же кадре — второй маршалинг не нужен.
+                    if (!_shadowSharesBodyMultiMesh)
+                        _shadowMultiMesh.Buffer = _gpuInstanceBuffer;
                 }
                 else
                 {

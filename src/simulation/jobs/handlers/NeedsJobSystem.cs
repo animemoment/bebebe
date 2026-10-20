@@ -76,12 +76,20 @@ public sealed class NeedsJobSystem
             // навсегда вычитается из доступных (утечка _totalAvailableByType).
             // Складская еда уже списана из _storage атомарным взятием —
             // возвращать её некуда без новой кладки, резерв не висит.
-            if (behavior == NeedBehavior.SeekingFood && pool.ReservedItemCount[agentIndex] > 0
-                && !pool.FoodFromStockpile[agentIndex])
+            if (behavior == NeedBehavior.SeekingFood && pool.ReservedItemCount[agentIndex] > 0)
             {
-                GroundItemManager.Instance.ReleaseReservation(
-                    pool.SourceCellX[agentIndex], pool.SourceCellY[agentIndex],
-                    pool.ReservedItemCount[agentIndex]);
+                if (pool.FoodFromStockpile[agentIndex])
+                {
+                    StockpileManager.Instance.CancelWithdrawalReservation(
+                        pool.SourceCellX[agentIndex], pool.SourceCellY[agentIndex],
+                        pool.ReservedItemCount[agentIndex]);
+                }
+                else
+                {
+                    GroundItemManager.Instance.ReleaseReservation(
+                        pool.SourceCellX[agentIndex], pool.SourceCellY[agentIndex],
+                        pool.ReservedItemCount[agentIndex]);
+                }
                 pool.ReservedItemCount[agentIndex] = 0;
                 pool.SourceCellX[agentIndex] = 0;
                 pool.SourceCellY[agentIndex] = 0;
@@ -147,9 +155,10 @@ public sealed class NeedsJobSystem
         // его не видит. Отдельный путь: атомарное взятие eatCount со склада.
         if (StockpileManager.Instance.TryTakeStockpileFood(
                 new System.Numerics.Vector2(pos.X, pos.Y), ItemId.Grain, eatCount,
-                AgentNeedsConfig.FoodSearchRadiusTiles, out var stockCell))
+                AgentNeedsConfig.FoodSearchRadiusTiles, out var stockCell, out int stockRes)
+            && stockRes > 0)
         {
-            StartSeekingFood(a, pool, ctx, stockCell, eatCount, fromStockpile: true);
+            StartSeekingFood(a, pool, ctx, stockCell, stockRes, fromStockpile: true);
             return true;
         }
         // Еды нет ни на земле, ни на складе: backoff 30-60с в отдельном
@@ -226,9 +235,13 @@ public sealed class NeedsJobSystem
         int taken;
         if (pool.FoodFromStockpile[a])
         {
-            // #1: складская еда уже атомарно списана из _storage в
-            // TryTakeStockpileFood — повторный Withdraw не нужен, только съесть.
-            taken = pool.ReservedItemCount[a];
+            taken = StockpileManager.Instance.WithdrawReservedItem(
+                pool.SourceCellX[a], pool.SourceCellY[a], pool.ReservedItemCount[a]);
+            if (taken <= 0)
+            {
+                StockpileManager.Instance.CancelWithdrawalReservation(
+                    pool.SourceCellX[a], pool.SourceCellY[a], pool.ReservedItemCount[a]);
+            }
         }
         else
         {
@@ -242,7 +255,8 @@ public sealed class NeedsJobSystem
         }
         if (taken > 0)
         {
-            float h = pool.Hunger[a] - AgentNeedsConfig.FoodEatHungerRestore;
+            float fraction = Math.Clamp((float)taken / AgentNeedsConfig.FoodEatGrainCount, 0f, 1f);
+            float h = pool.Hunger[a] - AgentNeedsConfig.FoodEatHungerRestore * fraction;
             pool.Hunger[a] = h < 0f ? 0f : h;
         }
         pool.ReservedItemCount[a] = 0;
@@ -267,6 +281,25 @@ public sealed class NeedsJobSystem
         pool.NeedsBehavior[a] = NeedBehavior.None;
         pool.FoodFromStockpile[a] = false;
         pool.States[a] = AgentState.Idle;
+        // §119 P2 (замечание лида): тихий сброс CurrentJobId БЕЗ OnCancel был
+        // дырой — работа теряла клейм мимо ReleaseJobWorker (Worker не возвращал
+        // работу в очередь зоны, Laborer не снимал клейм реестра). Теперь:
+        // если под нуждой вдруг оказался агент с задачей — честное снятие через
+        // ReleaseJobWorker (OnCancel + возврат в очередь зоны для Worker'а /
+        // ReleaseWorkerClaim для Laborer'а). В норме нужды начинаются ТОЛЬКО у
+        // Idle (TryAssignNeedsBehavior гейтится по State==Idle) и CurrentJobId
+        // здесь уже -1 — путь сработает как раньше (ветка пустая).
+        if (pool.CurrentJobId[a] != -1 && pool.CurrentJobId[a] != JobDispatcher.AgentReservedMarker)
+        {
+            pool.States[a] = AgentState.Idle;
+            JobDispatcher.Instance.ReleaseJobWorker(a, pool, null);
+            // ReleaseJobWorker уже выставил Idle/JobSearchTimer/пул бездельников
+            // (кроме Worker'а — его ведёт WorkerZoneJobSystem); здесь только
+            // переопределяем кулдаун поиска под нужду (cooldownSec конкретной ветки).
+            pool.NeedsBehavior[a] = NeedBehavior.None;
+            pool.JobSearchTimer[a] = cooldownSec + (float)ThreadRandom.Value.NextDouble() * 2.0f;
+            return;
+        }
         pool.CurrentJobId[a] = -1;
         pool.CurrentJobType[a] = JobTypeId.None;
         pool.JobSearchTimer[a] = cooldownSec + (float)ThreadRandom.Value.NextDouble() * 2.0f;

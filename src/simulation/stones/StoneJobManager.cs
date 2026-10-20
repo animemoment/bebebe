@@ -16,6 +16,13 @@ public class StoneJobManager
     private readonly object _lock = new();
     private readonly HashSet<(int X, int Y)> _markedStones = new(4096);
 
+    /// <summary>
+    /// P7б §119: per-cell прогресс добычи камня 0..1 — переживает прерывание
+    /// агента. Пишет OnCancel хендлера, читает OnStart, чистят
+    /// Unmark*/CompleteStone/ClearAll.
+    /// </summary>
+    public CellProgressStore MineProgress { get; } = new();
+
     public event Action<(int X, int Y)> OnStoneMarked;
     public event Action<List<(int X, int Y)>> OnStonesBatchMarked;
     public event Action<(int X, int Y)> OnStoneUnmarked;
@@ -70,6 +77,7 @@ public class StoneJobManager
         {
             if (_markedStones.Remove((x, y)))
             {
+                MineProgress.Clear(x, y);
                 JobBroker.Instance.UnregisterStoneMine(x, y);
                 Callable.From(() => OnStoneUnmarked?.Invoke((x, y))).CallDeferred();
             }
@@ -86,7 +94,10 @@ public class StoneJobManager
             foreach (var pos in stones)
             {
                 if (_markedStones.Remove(pos))
+                {
+                    MineProgress.Clear(pos.X, pos.Y);
                     removedList.Add(pos);
+                }
             }
         }
 
@@ -119,6 +130,7 @@ public class StoneJobManager
         lock (_lock)
         {
             _markedStones.Remove((x, y));
+            MineProgress.Clear(x, y);
             JobBroker.Instance.UnregisterStoneMine(x, y);
             Callable.From(() => OnStoneMined?.Invoke((x, y))).CallDeferred();
         }
@@ -131,6 +143,7 @@ public class StoneJobManager
         {
             var oldStones = new List<(int X, int Y)>(_markedStones);
             _markedStones.Clear();
+            MineProgress.ClearAll();
             if (oldStones.Count > 0)
             {
                 JobBroker.Instance.UnregisterStoneMineBatch(oldStones);

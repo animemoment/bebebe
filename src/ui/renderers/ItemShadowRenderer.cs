@@ -1,28 +1,58 @@
 using Godot;
 using System;
+using System.Collections.Generic;
 
 namespace Game.UI;
 
 /// <summary>
 /// Тени мелких штук (предметы на земле, урожай, склад) — как у Syx ShadowBatch:
 /// тот же силуэт рисуется второй раз, чёрным и растянутым вдоль солнца.
-/// Упрощение: силуэт = тёмный квад (не копия текстуры), высота у всех маленькая,
-/// поэтому тень короткая. По Syx-правилам: рисуем только экран (InView),
-/// ночью/в полдень скрываем целиком (early-out), буфер льём одним куском.
-/// +1 draw-call на все мелкие тени разом. Только главный поток.
+/// Геометрия пересчитывается каждый кадр в _Process в соответствии с текущим положением солнца,
+/// а видимость и отсечение по камере динамически обновляются без задержек.
+/// Поддерживает раздельные источники (земля, урожай, склад), исключая их взаимное вытеснение.
 /// </summary>
 public partial class ItemShadowRenderer : Node2D
 {
-    public const int MaxShadows = 4096;
+    public const int MaxShadows = 16384;
     // Мелочь низкая: зерно/бревно/росток почти не отбрасывают.
     // Короткая тень вместо полноценной: длина солнца × 0.35, ширина × 0.5.
     private const float ItemLengthScale = 0.35f;
     private const float ItemWidthScale = 0.5f;
     private const float ItemAlphaScale = 0.5f;
 
+    public enum ShadowSource
+    {
+        Default = 0,
+        Ground = 1,
+        Crop = 2,
+        Stockpile = 3
+    }
+
+    public readonly struct ShadowSpot
+    {
+        public readonly float X;
+        public readonly float Y;
+        public readonly float SizePx;
+
+        public ShadowSpot(float x, float y, float sizePx)
+        {
+            X = x;
+            Y = y;
+            SizePx = sizePx;
+        }
+    }
+
     private MultiMeshInstance2D _instance;
     private MultiMesh _multiMesh;
     private readonly float[] _buffer = new float[MaxShadows * 8];
+
+    private readonly List<ShadowSpot>[] _sourceSpots = new List<ShadowSpot>[4]
+    {
+        new List<ShadowSpot>(4096),
+        new List<ShadowSpot>(4096),
+        new List<ShadowSpot>(4096),
+        new List<ShadowSpot>(4096)
+    };
 
     private DayNightCycle.SunState _sun;
     private bool _shadowOn;
@@ -30,10 +60,13 @@ public partial class ItemShadowRenderer : Node2D
     private Vector2 _viewHalf;
     private bool _hasView;
 
+    public const float ItemShadowZoomCutoff = 0.28f;
+
     public override void _Ready()
     {
         ZIndex = 3; // Под самими предметами (Z 5-6), над землёй.
         float mapPx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
+
         _multiMesh = new MultiMesh
         {
             Mesh = new QuadMesh { Size = new Vector2(1f, 1f) },
@@ -54,8 +87,6 @@ public partial class ItemShadowRenderer : Node2D
         Visible = false;
     }
 
-    public const float ItemShadowZoomCutoff = 0.28f;
-
     /// <summary>Солнце на тик (O(1)). Звать из Main рядом с остальными тенями.</summary>
     public void SetSun(DayNightCycle.SunState sun)
     {
@@ -64,89 +95,137 @@ public partial class ItemShadowRenderer : Node2D
         float zoom = cam?.Zoom.X ?? 1f;
         bool zoomAllowed = zoom >= ItemShadowZoomCutoff;
         _shadowOn = zoomAllowed && sun.Alpha > 0.004f && sun.LengthPx >= 0.5f;
-        Visible = _shadowOn;
-        if (_instance != null)
-        {
-            _instance.Visible = _shadowOn;
-            if (_shadowOn)
-                _instance.Modulate = new Color(0f, 0f, 0f, sun.Alpha * ItemAlphaScale);
-            else if (_multiMesh != null)
-                _multiMesh.VisibleInstanceCount = 0;
-        }
         UpdateView();
     }
 
-    // Аккумулятор за кадр: 3 источника (земля/урожай/склад) раньше каждый
-    // перезаписывали один MultiMesh — виден был только последний тип.
-    // Теперь каждый источник добавляет споты, Flush один раз в конце кадра.
-    private int _accumulated;
-
-    /// <summary>Начать кадр: сбросить аккумулятор (звать до первого PushSpots).</summary>
-    public void BeginFrame()
+    public void ClearSourceSpots(ShadowSource source)
     {
-        _accumulated = 0;
+        int idx = (int)source;
+        if (idx >= 0 && idx < _sourceSpots.Length)
+        {
+            _sourceSpots[idx].Clear();
+        }
     }
 
-    /// <summary>Слить аккумулятор на GPU (звать после последнего PushSpots).</summary>
+    public void AddSourceSpots(ShadowSource source, System.Numerics.Vector2[] positions, int count, float sizePx)
+    {
+        if (positions == null || count <= 0) return;
+        int idx = (int)source;
+        if (idx < 0 || idx >= _sourceSpots.Length) return;
+
+        var list = _sourceSpots[idx];
+        int limit = Math.Min(count, positions.Length);
+        for (int i = 0; i < limit; i++)
+        {
+            list.Add(new ShadowSpot(positions[i].X, positions[i].Y, sizePx));
+        }
+    }
+
+    public void SetSourceSpots(ShadowSource source, System.Numerics.Vector2[] positions, int count, float sizePx)
+    {
+        ClearSourceSpots(source);
+        AddSourceSpots(source, positions, count, sizePx);
+    }
+
+    /// <summary>Начать кадр: сбросить аккумулятор Default-спотов (обратная совместимость).</summary>
+    public void BeginFrame()
+    {
+        ClearSourceSpots(ShadowSource.Default);
+    }
+
+    /// <summary>Слить аккумулятор на GPU немедленно (обратная совместимость).</summary>
     public void Flush()
     {
-        if (_multiMesh == null)
-            return;
-        bool show = _shadowOn && _accumulated > 0;
-        _multiMesh.VisibleInstanceCount = show ? _accumulated : 0;
-        if (show)
-            _multiMesh.Buffer = _buffer;
-        Visible = show;
-        if (_instance != null)
-            _instance.Visible = show;
+        UpdateAndRender();
     }
 
     /// <summary>
     /// Добавить тени из позиций предметов (уже в мировых px, центр спрайта).
-    /// sizePx — размер квада предмета (44 земля, 64 урожай, 28 склад).
-    /// Возвращает число добавленных (обрезано экраном и капом). Upload НЕ делает —
-    /// только Flush() в конце кадра. Между BeginFrame и Flush вызывать из главного потока.
     /// </summary>
     public int PushSpots(System.Numerics.Vector2[] positions, int count, float sizePx)
     {
-        if (!_shadowOn || _multiMesh == null || positions == null || count <= 0)
+        if (positions == null || count <= 0) return 0;
+        AddSourceSpots(ShadowSource.Default, positions, count, sizePx);
+        return Math.Min(count, positions.Length);
+    }
+
+    public override void _Process(double delta)
+    {
+        UpdateAndRender();
+    }
+
+    private void UpdateAndRender()
+    {
+        UpdateView();
+
+        if (!_shadowOn || _multiMesh == null)
         {
-            if (_multiMesh != null)
-                _multiMesh.VisibleInstanceCount = 0;
-            if (_instance != null)
-                _instance.Visible = false;
+            if (_multiMesh != null) _multiMesh.VisibleInstanceCount = 0;
+            if (_instance != null) _instance.Visible = false;
             Visible = false;
-            return 0;
+            return;
         }
+
         float len = _sun.LengthPx * ItemLengthScale;
-        float wdt = _sun.WidthScale * sizePx * 0.5f * ItemWidthScale;
-        float hx = _sun.Dir.X * len * 0.5f, hy = _sun.Dir.Y * len * 0.5f;
-        float px = -_sun.Dir.Y, py = _sun.Dir.X;
-        float qx = px * wdt * 0.5f, qy = py * wdt * 0.5f;
-        // Базис клина: длина вдоль солнца, ширина поперёк (полуквад предмета как старт).
-        float bx = _sun.Dir.X * (len * 0.5f + sizePx * 0.25f);
-        float by = _sun.Dir.Y * (len * 0.5f + sizePx * 0.25f);
-        int written = 0;
-        int limit = Math.Min(count, positions.Length);
-        for (int i = 0; i < limit && _accumulated < MaxShadows; i++)
+        float hx = _sun.Dir.X * len * 0.5f;
+        float hy = _sun.Dir.Y * len * 0.5f;
+        float px = -_sun.Dir.Y;
+        float py = _sun.Dir.X;
+
+        int visibleCount = 0;
+
+        for (int s = 0; s < _sourceSpots.Length && visibleCount < MaxShadows; s++)
         {
-            float ax = positions[i].X;
-            float ay = positions[i].Y + sizePx * 0.25f; // якорь у низа предмета
-            if (!InView(ax, ay))
-                continue;
-            int idx = _accumulated * 8;
-            _buffer[idx + 0] = (bx + _sun.Dir.X * sizePx * 0.25f) * 2f / sizePx;
-            _buffer[idx + 1] = (by + _sun.Dir.Y * sizePx * 0.25f) * 2f / sizePx;
-            _buffer[idx + 2] = 0f;
-            _buffer[idx + 3] = ax + hx;
-            _buffer[idx + 4] = qx * 2f / sizePx * 2f;
-            _buffer[idx + 5] = qy * 2f / sizePx * 2f;
-            _buffer[idx + 6] = 0f;
-            _buffer[idx + 7] = ay + hy;
-            _accumulated++;
-            written++;
+            var list = _sourceSpots[s];
+            if (list == null) continue;
+            int c = list.Count;
+            for (int i = 0; i < c && visibleCount < MaxShadows; i++)
+            {
+                var spot = list[i];
+                float sizePx = spot.SizePx;
+                float ax = spot.X;
+                float ay = spot.Y + sizePx * 0.25f; // якорь у низа предмета
+
+                if (!InView(ax, ay))
+                    continue;
+
+                float wdt = _sun.WidthScale * sizePx * 0.5f * ItemWidthScale;
+                float qx = px * wdt * 0.5f;
+                float qy = py * wdt * 0.5f;
+                // Базис клина: длина вдоль солнца, ширина поперёк
+                float bx = _sun.Dir.X * (len * 0.5f + sizePx * 0.25f);
+                float by = _sun.Dir.Y * (len * 0.5f + sizePx * 0.25f);
+
+                int idx = visibleCount * 8;
+                _buffer[idx + 0] = (bx + _sun.Dir.X * sizePx * 0.25f) * 2f / sizePx;
+                _buffer[idx + 1] = (by + _sun.Dir.Y * sizePx * 0.25f) * 2f / sizePx;
+                _buffer[idx + 2] = 0f;
+                _buffer[idx + 3] = ax + hx;
+                _buffer[idx + 4] = qx * 2f / sizePx * 2f;
+                _buffer[idx + 5] = qy * 2f / sizePx * 2f;
+                _buffer[idx + 6] = 0f;
+                _buffer[idx + 7] = ay + hy;
+
+                visibleCount++;
+            }
         }
-        return written;
+
+        _multiMesh.VisibleInstanceCount = visibleCount;
+        if (visibleCount > 0)
+        {
+            _multiMesh.Buffer = _buffer;
+            Visible = true;
+            if (_instance != null)
+            {
+                _instance.Visible = true;
+                _instance.Modulate = new Color(0f, 0f, 0f, _sun.Alpha * ItemAlphaScale);
+            }
+        }
+        else
+        {
+            Visible = false;
+            if (_instance != null) _instance.Visible = false;
+        }
     }
 
     private void UpdateView()

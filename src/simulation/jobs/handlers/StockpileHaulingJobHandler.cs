@@ -21,7 +21,7 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
         // по зерну создавались Sweep'ом, но вечно фейлились в OnStart.
         // ЖЁСТКИЙ ЭТАП 1: расчистка стройки — только стадия Clearing.
         // Обычный мусор (вне стройки) IsStageAllowed пропускает всегда.
-        if (!ConstructionPipeline.Instance.IsStageAllowed(job.SourceX, job.SourceY, JobTypeId.StockpileHauling))
+        if (!ConstructionManager.Instance.IsStageAllowed(job.SourceX, job.SourceY, JobTypeId.StockpileHauling))
             return false;
         return (GroundItemManager.Instance.HasAvailableLogs ||
                 GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Grain) ||
@@ -31,30 +31,42 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        pool.WaypointCount[agentIndex] = 0;
+        pool.WaypointIndex[agentIndex] = 0;
+
         // P1.1: сначала точечный резерв кучи из самой задачи (job.SourceX/Y) —
         // куча может быть дальше радиуса скана от рабочего; радиус-fallback — вторым.
         if (GroundItemManager.Instance.TryReserveSpecificCell(job.SourceX, job.SourceY, MaxCarryWeight, out var specId, out int specCount) &&
-            specId != ItemId.None && specCount > 0 &&
-            StockpileManager.Instance.TryReserveStockpileSlot(pool.GetPosition(agentIndex), specId, specCount, out var specSlot, out int specAccepted) &&
-            specAccepted > 0)
+            specId != ItemId.None && specCount > 0)
         {
-            if (specAccepted < specCount)
-                GroundItemManager.Instance.ReleaseReservation(job.SourceX, job.SourceY, specCount - specAccepted);
-            pool.States[agentIndex] = AgentState.MovingToSource;
-            pool.SourceCellX[agentIndex] = job.SourceX;
-            pool.SourceCellY[agentIndex] = job.SourceY;
-            pool.TargetCellX[agentIndex] = specSlot.X;
-            pool.TargetCellY[agentIndex] = specSlot.Y;
-            pool.ReservedItemCount[agentIndex] = specAccepted;
-            pool.TargetPositionX[agentIndex] = job.SourceX * ctx.TileSize + 32f;
-            pool.TargetPositionY[agentIndex] = job.SourceY * ctx.TileSize + 32f;
-            pool.StuckTimer[agentIndex] = 0f;
-            return;
-        }
-        else if (specId != ItemId.None && specCount > 0)
-        {
-            // Точечный резерв взяли, но слот склада не дали — откатываем резерв.
-            GroundItemManager.Instance.ReleaseReservation(job.SourceX, job.SourceY, specCount);
+            if (StockpileManager.Instance.TryReserveStockpileSlot(pool.GetPosition(agentIndex), specId, specCount, out var specSlot, out int specAccepted) &&
+                specAccepted > 0)
+            {
+                if (specAccepted < specCount)
+                    GroundItemManager.Instance.ReleaseReservation(job.SourceX, job.SourceY, specCount - specAccepted);
+                pool.States[agentIndex] = AgentState.MovingToSource;
+                pool.SourceCellX[agentIndex] = job.SourceX;
+                pool.SourceCellY[agentIndex] = job.SourceY;
+                pool.TargetCellX[agentIndex] = specSlot.X;
+                pool.TargetCellY[agentIndex] = specSlot.Y;
+                pool.ReservedItemCount[agentIndex] = specAccepted;
+                pool.TargetPositionX[agentIndex] = job.SourceX * ctx.TileSize + 32f;
+                pool.TargetPositionY[agentIndex] = job.SourceY * ctx.TileSize + 32f;
+                pool.StuckTimer[agentIndex] = 0f;
+                return;
+            }
+            else
+            {
+                // Откатываем резерв
+                GroundItemManager.Instance.ReleaseReservation(job.SourceX, job.SourceY, specCount);
+
+                // Если это стройплощадка, а свободного склада нет — сдвигаем предметы на соседнюю клетку (spill),
+                // чтобы расчистка стройки не зависала навечно!
+                if (ConstructionManager.Instance.IsSiteAt(job.SourceX, job.SourceY))
+                {
+                    GroundItemManager.Instance.TrySpillItemsAdjacent(job.SourceX, job.SourceY, ctx.MapWidth, ctx.MapHeight, ctx.SolidWalls);
+                }
+            }
         }
 
         Vector2 pos = pool.GetPosition(agentIndex);
@@ -127,10 +139,11 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
                 var (want, taken) = GroundItemManager.Instance.TakeItemsWithType(sx, sy, reserved);
                 if (taken > 0)
                 {
-                    // #11: TakeItemsWithType списывает физ. стак, но
-                    // ReservedItemCount оставался == reserved. Позже OnCancel
-                    // делал ReleaseReservation(ReservedItemCount) — тоталы
-                    // завышались на (reserved - taken). Синхронизируем сразу.
+                    if (taken < reserved)
+                    {
+                        int diff = reserved - taken;
+                        StockpileManager.Instance.CancelReservation(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex], diff);
+                    }
                     pool.ReservedItemCount[agentIndex] = 0;
                     // Тип берём из факта кучи, а не захардкоженный Log:
                     // иначе зерно доезжало как бревно и терялось/дублировалось.
@@ -142,6 +155,8 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
                 }
                 else
                 {
+                    StockpileManager.Instance.CancelReservation(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex], reserved);
+                    pool.ReservedItemCount[agentIndex] = 0;
                     // Куча разобрана/пуста — транзиентно: работу оставляем,
                     // Sweep/Spawn пересоздадут при появлении предметов.
                     JobDispatcher.Instance.ReleaseJobWorker(agentIndex, pool, ctx);
@@ -172,7 +187,7 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
                     // Этап 1 пайплайна стройки: клетка-источник расчищена —
                     // снять флаг haul (идемпотентно; ищем по Source, т.к.
                     // Target — слот склада).
-                    ConstructionPipeline.Instance.NotifyHaulCleared(
+                    ConstructionManager.Instance.NotifyHaulCleared(
                         pool.SourceCellX[agentIndex], pool.SourceCellY[agentIndex]);
                     JobDispatcher.Instance.TryUnregisterJob(jobId);
                 }

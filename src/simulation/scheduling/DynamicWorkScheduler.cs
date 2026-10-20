@@ -112,16 +112,12 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 	/// DOP=ProcessorCount на 4 ядрах даёт оркестратор+воркеры+Godot = 6 потоков
 	/// на 4 ядра → рендер голодает. P-1 оставляет гарантированное ядро рендеру.
 	/// Тестовая инжекция _forcedDop имеет приоритет (dop==1 → sequential golden-path).
+	/// Мост D (PLAN.md §112.2): тело переехало в листовой Game.Core.CpuTopology —
+	/// здесь остался делегат, чтобы internal-API (AgentSimulationThread,
+	/// EffectiveDopValue) не менялся.
 	/// </summary>
 	internal static int ComputeEffectiveDop(int processorCount)
-	{
-		if (processorCount <= 1)
-			return 1;
-		// 2 ядра: ужиматься до 1 бессмысленно (симуляция встанет) — оставляем 2.
-		if (processorCount <= 2)
-			return 2;
-		return processorCount - 1;
-	}
+		=> Game.Core.CpuTopology.ComputeEffectiveDop(processorCount);
 
 	/// <summary>Эффективный DOP планировщика (P-1: одно ядро под рендер).</summary>
 	internal static int EffectiveDopValue => ComputeEffectiveDop(Environment.ProcessorCount);

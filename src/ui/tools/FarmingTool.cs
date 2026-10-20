@@ -57,21 +57,13 @@ public class FarmingTool : ITool
         _selectionBox?.EndSelection();
         _selectionBox?.ResetDefaultStyle();
 
-        // §28: грядки/зона фермы за кромкой острова — метки мира.
-        if (WorldPlacement != null)
-        {
-            WorldPlacementPass.Run(startTile.X, startTile.Y, endTile.X, endTile.Y, WorldPlacement,
-                isLeftClick ? WorldPlacement.TryPlaceFarmPlot : WorldPlacement.TryRemoveFarmPlot);
-        }
+        int minX = Mathf.Min(startTile.X, endTile.X);
+        int maxX = Mathf.Max(startTile.X, endTile.X);
+        int minY = Mathf.Min(startTile.Y, endTile.Y);
+        int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        // ПЕРЕСЕЧЕНИЕ с островом, а не кламп: драг целиком за кромкой раньше писал/сносил
-        // клетки по краю острова, которых игрок не выбирал.
-        int minX = Mathf.Max(Mathf.Min(startTile.X, endTile.X), 0);
-        int maxX = Mathf.Min(Mathf.Max(startTile.X, endTile.X), MapRenderer.MapWidth - 1);
-        int minY = Mathf.Max(Mathf.Min(startTile.Y, endTile.Y), 0);
-        int maxY = Mathf.Min(Mathf.Max(startTile.Y, endTile.Y), MapRenderer.MapHeight - 1);
-        if (minX > maxX || minY > maxY)
-            return;
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 250_000) return;
 
         _cellBuffer.Clear();
 
@@ -83,7 +75,14 @@ public class FarmingTool : ITool
                 {
                     if (CanDesignateFarmPlot(x, y))
                     {
-                        _cellBuffer.Add((x, y));
+                        if (WorldPlacementPass.IsIslandCell(x, y))
+                        {
+                            _cellBuffer.Add((x, y));
+                        }
+                        else if (WorldPlacement != null)
+                        {
+                            WorldPlacement.TryPlaceFarmPlot(x, y);
+                        }
                     }
                 }
             }
@@ -100,7 +99,14 @@ public class FarmingTool : ITool
             {
                 for (int y = minY; y <= maxY; y++)
                 {
-                    _cellBuffer.Add((x, y));
+                    if (WorldPlacementPass.IsIslandCell(x, y))
+                    {
+                        _cellBuffer.Add((x, y));
+                    }
+                    else if (WorldPlacement != null)
+                    {
+                        WorldPlacement.TryRemoveFarmPlot(x, y);
+                    }
                 }
             }
 
@@ -121,25 +127,47 @@ public class FarmingTool : ITool
 
     private bool CanDesignateFarmPlot(int x, int y)
     {
-        if (_mapData != null && _mapData.Ground[x, y] != TileType.Grass)
-            return false;
+        if (WorldPlacementPass.IsIslandCell(x, y))
+        {
+            // Терраин-гейт строгий и fail-closed. Раньше он был обёрнут в
+            // `if (_mapData != null && координата в окне карты)`: при отсутствии карты (или
+            // координате вне окна) проверка МОЛЧА пропускалась, и чертёж грядки вставал на воду,
+            // гору или песок — «чертёж на рандом». Без карты острова клетку не берём вообще.
+            if (_mapData == null)
+                return false;
+            if ((uint)x >= (uint)_mapData.Width || (uint)y >= (uint)_mapData.Height)
+                return false;
+            if (_mapData.Ground[x, y] != TileType.Grass)
+                return false;
+            // Одного Ground мало: песок (пустыня и прибрежный пляж) имеет Ground == Grass,
+            // но рисуется песком (MapRenderer строит terrain_map: Biome == Desert → Sand).
+            if (_mapData.GetBiome(x, y) == Game.Core.WorldStreaming.BiomeType.Desert)
+                return false;
 
-        if (_wallBuildManager != null && _wallBuildManager.IsWallAt(x, y))
-            return false;
+            if (_wallBuildManager != null && _wallBuildManager.IsWallAt(x, y))
+                return false;
 
-        if (BuildingManager.Instance.HasBuildingAt(x, y))
-            return false;
+            if (StructureManager.Instance.HasStructureAt(x, y))
+                return false;
 
-        if (BlueprintManager.Instance.IsBlueprintAt(x, y))
-            return false;
+            if (BuildingManager.Instance.HasBuildingAt(x, y))
+                return false;
 
-        if (FarmJobManager.Instance.IsGardenBed(x, y) || FarmJobManager.Instance.IsPlotMarked(x, y))
-            return false;
+            if (BlueprintManager.Instance.IsBlueprintAt(x, y))
+                return false;
 
-        // Камень под плуг не годится — сначала добудь (инструмент камня).
-        if (_mapData != null && _mapData.HasStone(x, y))
-            return false;
+            if (FarmJobManager.Instance.IsGardenBed(x, y) || FarmJobManager.Instance.IsPlotMarked(x, y))
+                return false;
 
-        return true;
+            return true;
+        }
+
+        // Вне острова колонии: проверяем через WorldPlacement
+        if (WorldPlacement != null)
+        {
+            return WorldPlacement.CanPlaceFarm(x, y);
+        }
+
+        return false;
     }
 }

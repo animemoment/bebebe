@@ -18,11 +18,13 @@ namespace Game.Core.WorldClimate;
 /// </summary>
 public static class WorldClimateProvider
 {
-    private static readonly ConcurrentDictionary<ulong, WorldClimateParams> ParamsCache = new();
+    private static readonly ConcurrentDictionary<ulong, WorldMacroClimateParams> ParamsCache = new();
 
     /// <summary>Кэш параметров по сиду (20 хешей — считать на каждую клетку нельзя).</summary>
-    public static WorldClimateParams ParamsFor(ulong worldSeed)
-        => ParamsCache.GetOrAdd(worldSeed, WorldClimateParams.FromSeed);
+    public static WorldMacroClimateParams ParamsFor(ulong worldSeed)
+        => ParamsCache.GetOrAdd(worldSeed, WorldMacroClimateParams.FromSeed);
+
+    public static void ClearCache() => ParamsCache.Clear();
 
     /// <summary>Широта региона: 0 = экватор, 65535 = полюс.</summary>
     public static ushort LatitudeQ16(long regionY) => LatitudeBands.LatitudeQ16(regionY);
@@ -37,7 +39,7 @@ public static class WorldClimateProvider
     public static WorldClimateFields SampleRegionClimate(ulong worldSeed, uint generatorVersion,
         long regionX, long regionY)
     {
-        WorldClimateParams p = ParamsFor(worldSeed);
+        WorldMacroClimateParams p = ParamsFor(worldSeed);
         ushort latitude = LatitudeBands.LatitudeQ16(regionY);
         ContinentSample c = ContinentShaper.Shape(p, worldSeed, generatorVersion, regionX, regionY);
 

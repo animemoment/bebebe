@@ -20,6 +20,9 @@ public sealed class HarvestJobHandler : IJobHandler
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        pool.WaypointCount[agentIndex] = 0;
+        pool.WaypointIndex[agentIndex] = 0;
+
         (int X, int Y) stand = (job.TargetX, job.TargetY);
         Game.Simulation.JobBroker.FindStandPosition(job.TargetX, job.TargetY, ctx, out stand);
 

@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Godot;
 using Game.Core;
 
@@ -231,38 +232,58 @@ public sealed class GpuHumiditySimulator : IDisposable
                 HumidityMap.MinMoisture
             };
 
-            // 2. Загрузка данных в GPU Storage Buffers (ноль аллокаций в тике)
-            Buffer.BlockCopy(cur, 0, _curBytes, 0, capacity * sizeof(int));
-            _rd.BufferUpdate(_bufCur, 0, (uint)(capacity * sizeof(int)), _curBytes);
+            bool gpuSuccess = false;
+            using var syncEvent = new ManualResetEventSlim(false);
 
-            Buffer.BlockCopy(_flagsHost, 0, _flagsBytes, 0, capacity * sizeof(uint));
-            _rd.BufferUpdate(_bufFlags, 0, (uint)(capacity * sizeof(uint)), _flagsBytes);
+            RenderingServer.CallOnRenderThread(Callable.From(() =>
+            {
+                try
+                {
+                    // 2. Загрузка данных в GPU Storage Buffers (ноль аллокаций в тике)
+                    Buffer.BlockCopy(cur, 0, _curBytes, 0, capacity * sizeof(int));
+                    _rd.BufferUpdate(_bufCur, 0, (uint)(capacity * sizeof(int)), _curBytes);
 
-            Buffer.BlockCopy(_feedHost, 0, _feedBytes, 0, capacity * sizeof(uint));
-            _rd.BufferUpdate(_bufFeed, 0, (uint)(capacity * sizeof(uint)), _feedBytes);
+                    Buffer.BlockCopy(_flagsHost, 0, _flagsBytes, 0, capacity * sizeof(uint));
+                    _rd.BufferUpdate(_bufFlags, 0, (uint)(capacity * sizeof(uint)), _flagsBytes);
 
-            Buffer.BlockCopy(simParams, 0, _paramBytes, 0, simParams.Length * sizeof(int));
-            _rd.BufferUpdate(_bufParams, 0, (uint)(simParams.Length * sizeof(int)), _paramBytes);
+                    Buffer.BlockCopy(_feedHost, 0, _feedBytes, 0, capacity * sizeof(uint));
+                    _rd.BufferUpdate(_bufFeed, 0, (uint)(capacity * sizeof(uint)), _feedBytes);
 
-            // 3. Вызов Compute Dispatch
-            long computeList = _rd.ComputeListBegin();
-            _rd.ComputeListBindComputePipeline(computeList, _pipeline);
-            _rd.ComputeListBindUniformSet(computeList, _uniformSet, 0);
+                    Buffer.BlockCopy(simParams, 0, _paramBytes, 0, simParams.Length * sizeof(int));
+                    _rd.BufferUpdate(_bufParams, 0, (uint)(simParams.Length * sizeof(int)), _paramBytes);
 
-            uint xGroups = (uint)((width + 15) / 16);
-            uint yGroups = (uint)((height + 15) / 16);
-            _rd.ComputeListDispatch(computeList, xGroups, yGroups, 1);
-            _rd.ComputeListEnd();
+                    // 3. Вызов Compute Dispatch
+                    long computeList = _rd.ComputeListBegin();
+                    _rd.ComputeListBindComputePipeline(computeList, _pipeline);
+                    _rd.ComputeListBindUniformSet(computeList, _uniformSet, 0);
 
-            // 4. Отправка и синхронизация (0.04 мс на GPU)
-            _rd.Submit();
-            _rd.Sync();
+                    uint xGroups = (uint)((width + 15) / 16);
+                    uint yGroups = (uint)((height + 15) / 16);
+                    _rd.ComputeListDispatch(computeList, xGroups, yGroups, 1);
+                    _rd.ComputeListEnd();
 
-            // 5. Чтение результата обратно в nxt
-            byte[] outBytes = _rd.BufferGetData(_bufNxt);
-            Buffer.BlockCopy(outBytes, 0, nxt, 0, Math.Min(outBytes.Length, nxt.Length * sizeof(int)));
+                    // 4. Отправка и синхронизация (0.04 мс на GPU)
+                    _rd.Submit();
+                    _rd.Sync();
 
-            return true;
+                    // 5. Чтение результата обратно в nxt
+                    byte[] outBytes = _rd.BufferGetData(_bufNxt);
+                    Buffer.BlockCopy(outBytes, 0, nxt, 0, Math.Min(outBytes.Length, nxt.Length * sizeof(int)));
+
+                    gpuSuccess = true;
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr($"[GpuHumiditySimulator] Ошибка в потоке рендера: {ex.Message}");
+                }
+                finally
+                {
+                    syncEvent.Set();
+                }
+            }));
+
+            syncEvent.Wait(200);
+            return gpuSuccess;
         }
         catch (Exception ex)
         {
