@@ -21,6 +21,7 @@ _mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 McpInteractionServer="*res://autoload/mcp_interaction_server.gd"
 AgentTools="*res://autoload/agent_tools.gd"
 PerfProbe="*res://autoload/perf_probe.gd"
+LiveBridge="*res://addons/live_bridge/live_bridge.gd"
 
 [display]
 
