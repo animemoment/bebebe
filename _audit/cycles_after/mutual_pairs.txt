@@ -1,0 +1,383 @@
+﻿SCC size=79 inner_edges=395
+MUTUAL_PAIRS=28
+  src/core/common/ProfilerLogService.cs
+    <-> src/simulation/scheduling/DynamicWorkScheduler.cs
+    [type-reference/medium ; namespace-using/low]
+  src/core/common/ProfilerLogService.cs
+    <-> src/simulation/pathfinding/HierarchicalPathfinder.cs
+    [type-reference/medium ; namespace-using/low]
+  src/core/world/MapData.cs
+    <-> src/core/world/generation/UnifiedWorldGenerator.cs
+    [namespace-using/low ; type-reference/medium]
+  src/core/world/WallTileHelper.cs
+    <-> src/simulation/building/WorkProgressTracker.cs
+    [type-reference/medium ; type-reference/medium]
+  src/core/world/WallTileHelper.cs
+    <-> src/ui/controllers/WallMaterialRegistry.cs
+    [type-reference/medium ; type-reference/medium]
+  src/core/world/climate/WorldClimateProvider.cs
+    <-> src/core/world/generation/UnifiedWorldGenerator.cs
+    [namespace-using/low ; type-reference/medium]
+  src/core/world/generation/UnifiedWorldGenerator.cs
+    <-> src/core/world/streaming/integration/ChunkMutations.cs
+    [namespace-using/low ; namespace-using/low]
+  src/core/world/generation/UnifiedWorldGenerator.cs
+    <-> src/core/world/streaming/integration/IWallWorld.cs
+    [namespace-using/low ; namespace-using/low]
+  src/core/world/streaming/generation/RegionTraits.cs
+    <-> src/core/world/streaming/generation/WorldClimateGenerator.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/AgentSimulationThread.cs
+    <-> src/simulation/agents/AgentMovementService.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/SimulationContext.cs
+    <-> src/simulation/agents/AgentMovementService.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/agents/FlowFieldManager.cs
+    <-> src/simulation/pathfinding/HierarchicalPathfinder.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/building/WorkProgressTracker.cs
+    <-> src/ui/controllers/WallMaterialRegistry.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/farming/FarmJobManager.cs
+    <-> src/simulation/items/GroundItemManager.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/items/GroundItemManager.cs
+    <-> src/simulation/structures/ConstructionManager.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/items/GroundItemManager.cs
+    <-> src/simulation/jobs/JobBroker.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/items/GroundItemManager.cs
+    <-> src/simulation/items/StockpileManager.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/items/StockpileManager.cs
+    <-> src/simulation/structures/ConstructionManager.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/items/StockpileManager.cs
+    <-> src/simulation/jobs/JobBroker.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/jobs/JobBroker.cs
+    <-> src/simulation/structures/ConstructionManager.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/jobs/JobBroker.cs
+    <-> src/simulation/jobs/handlers/FarmingJobHandler.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/scheduling/DynamicWorkScheduler.cs
+    <-> src/simulation/scheduling/LoadMonitor.cs
+    [type-reference/medium ; type-reference/medium]
+  src/simulation/structures/ConstructionManager.cs
+    <-> src/simulation/structures/StructureManager.cs
+    [type-reference/medium ; type-reference/medium]
+  src/ui/renderers/DesignationRenderer.cs
+    <-> src/ui/renderers/MapRenderer.cs
+    [type-reference/medium ; type-reference/medium]
+  src/ui/renderers/FertilityOverlayRenderer.cs
+    <-> src/ui/renderers/MapRenderer.cs
+    [type-reference/medium ; type-reference/medium]
+  src/ui/renderers/HumidityOverlayRenderer.cs
+    <-> src/ui/renderers/MapRenderer.cs
+    [type-reference/medium ; type-reference/medium]
+  src/ui/renderers/MapRenderer.cs
+    <-> src/ui/renderers/ShadowCasterRenderer.cs
+    [type-reference/medium ; type-reference/medium]
+  src/ui/renderers/MapRenderer.cs
+    <-> src/ui/renderers/StockpileItemRenderer.cs
+    [type-reference/medium ; type-reference/medium]
+--- inner edges (high/medium only) ---
+  medium src/core/common/ProfilerLogService.cs -> src/simulation/scheduling/DynamicWorkScheduler.cs (type-reference)
+  medium src/core/common/ProfilerLogService.cs -> src/simulation/pathfinding/HierarchicalPathfinder.cs (type-reference)
+  medium src/core/world/BiomeMapper.cs -> src/core/world/streaming/generation/WorldClimateGenerator.cs (type-reference)
+  medium src/core/world/WallTileHelper.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/core/world/WallTileHelper.cs -> src/ui/controllers/WallMaterialRegistry.cs (type-reference)
+  medium src/core/world/climate/LatitudeBands.cs -> src/simulation/zones/Zone.cs (type-reference)
+  medium src/core/world/climate/WorldClimateProvider.cs -> src/core/world/climate/ContinentShaper.cs (type-reference)
+  medium src/core/world/climate/WorldClimateProvider.cs -> src/core/world/climate/LatitudeBands.cs (type-reference)
+  medium src/core/world/generation/UnifiedWorldGenerator.cs -> src/core/world/BiomeMapper.cs (type-reference)
+  medium src/core/world/generation/UnifiedWorldGenerator.cs -> src/core/world/MapData.cs (type-reference)
+  medium src/core/world/generation/UnifiedWorldGenerator.cs -> src/core/world/streaming/generation/WorldClimateGenerator.cs (type-reference)
+  medium src/core/world/generation/UnifiedWorldGenerator.cs -> src/core/world/climate/WorldClimateProvider.cs (type-reference)
+  medium src/core/world/streaming/generation/RegionTraits.cs -> src/core/world/streaming/generation/WorldClimateGenerator.cs (type-reference)
+  medium src/core/world/streaming/generation/WorldClimateGenerator.cs -> src/core/world/climate/ContinentShaper.cs (type-reference)
+  medium src/core/world/streaming/generation/WorldClimateGenerator.cs -> src/core/world/streaming/generation/RegionTraits.cs (type-reference)
+  medium src/core/world/streaming/generation/WorldClimateGenerator.cs -> src/core/world/climate/WorldClimateProvider.cs (type-reference)
+  medium src/core/world/streaming/integration/IBlockWorld.cs -> src/core/world/streaming/integration/IWallWorld.cs (type-reference)
+  medium src/core/world/streaming/integration/WorldCellQuery.cs -> src/core/world/generation/UnifiedWorldGenerator.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/agents/AgentMovementService.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/agents/AgentSpatialGrid.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/ConstructionJobHandler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/farming/CropGrowthManager.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/DynamicWorkBalancer.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/scheduling/DynamicWorkScheduler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/FarmingJobHandler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/gpu/GpuHumiditySimulator.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/HarvestJobHandler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/pathfinding/HierarchicalPathfinder.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/JobRegistry.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/JobSpatialPyramid.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/JobValidator.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/scheduling/LoadMonitor.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/MiningJobHandler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/NeedsJobSystem.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/PlantingJobHandler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/simd/SimdNeedsBatch.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/TreeChoppingJobHandler.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/jobs/handlers/WanderJobSystem.cs (type-reference)
+  medium src/simulation/AgentSimulationThread.cs -> src/simulation/zones/ZoneManager.cs (type-reference)
+  medium src/simulation/DynamicWorkBalancer.cs -> src/simulation/scheduling/DynamicWorkScheduler.cs (type-reference)
+  medium src/simulation/SimulationContext.cs -> src/simulation/agents/AgentMovementService.cs (type-reference)
+  medium src/simulation/SimulationContext.cs -> src/simulation/agents/AgentSpatialGrid.cs (type-reference)
+  medium src/simulation/TimeManager.cs -> src/simulation/AgentSimulationThread.cs (type-reference)
+  medium src/simulation/agents/AgentMovementService.cs -> src/simulation/AgentSimulationThread.cs (type-reference)
+  medium src/simulation/agents/AgentMovementService.cs -> src/simulation/agents/FlowFieldManager.cs (type-reference)
+  medium src/simulation/agents/AgentMovementService.cs -> src/simulation/pathfinding/HierarchicalPathfinder.cs (type-reference)
+  medium src/simulation/agents/AgentMovementService.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/agents/AgentMovementService.cs -> src/core/world/generation/UnifiedWorldGenerator.cs (type-reference)
+  medium src/simulation/agents/AgentMovementService.cs -> src/core/world/streaming/integration/WorldCellQuery.cs (type-reference)
+  medium src/simulation/agents/FlowFieldManager.cs -> src/simulation/gpu/GpuFlowFieldSimulator.cs (type-reference)
+  medium src/simulation/agents/FlowFieldManager.cs -> src/simulation/pathfinding/HierarchicalPathfinder.cs (type-reference)
+  medium src/simulation/agents/FlowFieldManager.cs -> src/simulation/pathfinding/HierarchicalPathfinder.cs (type-reference)
+  medium src/simulation/agents/FlowFieldManager.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/building/BlueprintManager.cs -> src/simulation/building/BuildConfig.cs (type-reference)
+  medium src/simulation/building/BlueprintManager.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/building/BlueprintManager.cs -> src/simulation/structures/StructureRegistry.cs (type-reference)
+  medium src/simulation/building/BuildingManager.cs -> src/simulation/structures/StructureManager.cs (type-reference)
+  medium src/simulation/building/BuildingManager.cs -> src/simulation/structures/StructureRegistry.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/simulation/building/BlueprintManager.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/simulation/building/BuildingManager.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/simulation/structures/ConstructionSite.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/core/world/MapData.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/building/TileClearanceService.cs -> src/simulation/structures/StructureManager.cs (type-reference)
+  medium src/simulation/building/WallBuildManager.cs -> src/simulation/structures/StructureManager.cs (type-reference)
+  medium src/simulation/building/WallBuildManager.cs -> src/simulation/structures/StructureRegistry.cs (type-reference)
+  medium src/simulation/building/WorkProgressTracker.cs -> src/core/world/WallTileHelper.cs (type-reference)
+  medium src/simulation/building/WorkProgressTracker.cs -> src/ui/controllers/WallMaterialRegistry.cs (type-reference)
+  medium src/simulation/farming/CropGrowthManager.cs -> src/simulation/farming/FarmZone.cs (type-reference)
+  medium src/simulation/farming/CropGrowthManager.cs -> src/simulation/farming/FarmZoneManagerFacade.cs (type-reference)
+  medium src/simulation/farming/CropGrowthManager.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/farming/CropGrowthManager.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/farming/CropGrowthManager.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/farming/FarmJobManager.cs -> src/simulation/farming/FarmZoneManagerFacade.cs (type-reference)
+  medium src/simulation/farming/FarmJobManager.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/farming/FarmJobManager.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/farming/FarmJobManager.cs -> src/simulation/stones/StoneJobManager.cs (type-reference)
+  medium src/simulation/farming/FarmJobManager.cs -> src/simulation/trees/TreeJobManager.cs (type-reference)
+  medium src/simulation/farming/FarmZoneManagerFacade.cs -> src/simulation/farming/FarmZone.cs (type-reference)
+  medium src/simulation/farming/FarmZoneManagerFacade.cs -> src/simulation/zones/Zone.cs (type-reference)
+  medium src/simulation/farming/FarmZoneManagerFacade.cs -> src/simulation/zones/ZoneManager.cs (type-reference)
+  medium src/simulation/items/GroundItemManager.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/items/GroundItemManager.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/items/GroundItemManager.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/items/GroundItemManager.cs -> src/core/world/MapData.cs (type-reference)
+  medium src/simulation/items/GroundItemManager.cs -> src/simulation/items/ResourceBroker.cs (type-reference)
+  medium src/simulation/items/GroundItemManager.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/items/ResourceBroker.cs -> src/simulation/items/DemandRegistry.cs (type-reference)
+  medium src/simulation/items/ResourceBroker.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/items/StockpileManager.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/items/StockpileManager.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/items/StockpileManager.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/items/StockpileManager.cs -> src/simulation/structures/StructureManager.cs (type-reference)
+  medium src/simulation/jobs/IJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/JobBroker.cs -> src/simulation/building/BuildConfig.cs (type-reference)
+  medium src/simulation/jobs/JobBroker.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/jobs/JobBroker.cs -> src/simulation/items/DemandRegistry.cs (type-reference)
+  medium src/simulation/jobs/JobBroker.cs -> src/simulation/jobs/handlers/FarmingJobHandler.cs (type-reference)
+  medium src/simulation/jobs/JobBroker.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/JobBroker.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/JobBroker.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/JobBroker.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/jobs/JobDispatcher.cs -> src/simulation/agents/FlatIdleWorkerPool.cs (type-reference)
+  medium src/simulation/jobs/JobDispatcher.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/JobDispatcher.cs -> src/simulation/jobs/JobPriorityManager.cs (type-reference)
+  medium src/simulation/jobs/JobDispatcher.cs -> src/simulation/jobs/JobRegistry.cs (type-reference)
+  medium src/simulation/jobs/JobDispatcher.cs -> src/simulation/jobs/JobSpatialPyramid.cs (type-reference)
+  medium src/simulation/jobs/JobDispatcher.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/JobDispatcher.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/jobs/JobRegistry.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/JobSpatialPyramid.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/JobSpatialPyramid.cs -> src/simulation/jobs/JobPriorityManager.cs (type-reference)
+  medium src/simulation/jobs/JobSpatialPyramid.cs -> src/simulation/jobs/JobRegistry.cs (type-reference)
+  medium src/simulation/jobs/JobSpatialPyramid.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/JobSpatialPyramid.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/building/BlueprintManager.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/jobs/JobRegistry.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/stones/StoneJobManager.cs (type-reference)
+  medium src/simulation/jobs/JobValidator.cs -> src/simulation/trees/TreeJobManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/building/BlueprintManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/building/BuildConfig.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/structures/StructureManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/structures/StructureRegistry.cs (type-reference)
+  medium src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/simulation/jobs/handlers/FarmingJobHandler.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/FarmingJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/handlers/FarmingJobHandler.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/jobs/handlers/FarmingJobHandler.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/FarmingJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/FarmingJobHandler.cs -> src/simulation/building/TileClearanceService.cs (type-reference)
+  medium src/simulation/jobs/handlers/FarmingJobHandler.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/simulation/jobs/handlers/HarvestJobHandler.cs -> src/simulation/farming/CropGrowthManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/HarvestJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/handlers/HarvestJobHandler.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/jobs/handlers/HarvestJobHandler.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/HarvestJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/HarvestJobHandler.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/stones/StoneJobManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/simulation/jobs/handlers/NeedsJobSystem.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/NeedsJobSystem.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/NeedsJobSystem.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/NeedsJobSystem.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/farming/CropGrowthManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/farming/FarmZoneManagerFacade.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/trees/TreeJobManager.cs (type-reference)
+  medium src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/simulation/jobs/handlers/WanderJobSystem.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/jobs/handlers/WanderJobSystem.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/pathfinding/HierarchicalPathfinder.cs -> src/simulation/agents/FlowFieldManager.cs (type-reference)
+  medium src/simulation/pathfinding/HierarchicalPathfinder.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/scheduling/DynamicWorkScheduler.cs -> src/simulation/scheduling/LoadMonitor.cs (type-reference)
+  medium src/simulation/scheduling/LoadMonitor.cs -> src/simulation/scheduling/DynamicWorkScheduler.cs (type-reference)
+  medium src/simulation/stones/StoneJobManager.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/stones/StoneJobManager.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/building/BuildConfig.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/structures/ConstructionSite.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/items/GroundItemManager.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/core/world/MapData.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/stones/StoneJobManager.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/structures/StructureDefinition.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/structures/StructureManager.cs (type-reference)
+  medium src/simulation/structures/ConstructionManager.cs -> src/simulation/trees/TreeJobManager.cs (type-reference)
+  medium src/simulation/structures/ConstructionSite.cs -> src/simulation/structures/StructureDefinition.cs (type-reference)
+  medium src/simulation/structures/StructureInstance.cs -> src/simulation/structures/StructureDefinition.cs (type-reference)
+  medium src/simulation/structures/StructureManager.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/simulation/structures/StructureManager.cs -> src/simulation/agents/FlowFieldManager.cs (type-reference)
+  medium src/simulation/structures/StructureManager.cs -> src/simulation/pathfinding/HierarchicalPathfinder.cs (type-reference)
+  medium src/simulation/structures/StructureManager.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/structures/StructureManager.cs -> src/simulation/structures/StructureDefinition.cs (type-reference)
+  medium src/simulation/structures/StructureManager.cs -> src/simulation/structures/StructureInstance.cs (type-reference)
+  medium src/simulation/structures/StructureRegistry.cs -> src/simulation/building/BuildConfig.cs (type-reference)
+  medium src/simulation/structures/StructureRegistry.cs -> src/simulation/structures/StructureDefinition.cs (type-reference)
+  medium src/simulation/trees/TreeJobManager.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/trees/TreeJobManager.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/zones/ZoneManager.cs -> src/simulation/farming/CropGrowthManager.cs (type-reference)
+  medium src/simulation/zones/ZoneManager.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/simulation/zones/ZoneManager.cs -> src/simulation/jobs/JobBroker.cs (type-reference)
+  medium src/simulation/zones/ZoneManager.cs -> src/simulation/jobs/JobDispatcher.cs (type-reference)
+  medium src/simulation/zones/ZoneManager.cs -> src/simulation/jobs/JobPriorityManager.cs (type-reference)
+  medium src/simulation/zones/ZoneManager.cs -> src/simulation/jobs/JobRegistry.cs (type-reference)
+  medium src/simulation/zones/ZoneManager.cs -> src/simulation/SimulationContext.cs (type-reference)
+  medium src/simulation/zones/ZoneManager.cs -> src/simulation/zones/Zone.cs (type-reference)
+  medium src/ui/controllers/WallMaterialRegistry.cs -> src/core/world/WallTileHelper.cs (type-reference)
+  medium src/ui/controllers/WallMaterialRegistry.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/ui/controllers/WallMaterialRegistry.cs -> src/ui/renderers/MapRenderer.cs (type-reference)
+  medium src/ui/renderers/DesignationRenderer.cs -> src/ui/renderers/MapRenderer.cs (type-reference)
+  medium src/ui/renderers/DesignationRenderer.cs -> src/simulation/stones/StoneJobManager.cs (type-reference)
+  medium src/ui/renderers/DesignationRenderer.cs -> src/simulation/trees/TreeJobManager.cs (type-reference)
+  medium src/ui/renderers/FertilityOverlayRenderer.cs -> src/ui/renderers/MapRenderer.cs (type-reference)
+  medium src/ui/renderers/FertilityOverlayRenderer.cs -> src/core/world/generation/UnifiedWorldGenerator.cs (type-reference)
+  medium src/ui/renderers/FertilityOverlayRenderer.cs -> src/core/world/streaming/integration/WorldCellQuery.cs (type-reference)
+  medium src/ui/renderers/HumidityOverlayRenderer.cs -> src/ui/renderers/MapRenderer.cs (type-reference)
+  medium src/ui/renderers/HumidityOverlayRenderer.cs -> src/core/world/generation/UnifiedWorldGenerator.cs (type-reference)
+  medium src/ui/renderers/HumidityOverlayRenderer.cs -> src/core/world/streaming/integration/WorldCellQuery.cs (type-reference)
+  medium src/ui/renderers/ItemShadowRenderer.cs -> src/ui/DayNightCycle.cs (type-reference)
+  medium src/ui/renderers/ItemShadowRenderer.cs -> src/ui/renderers/MapRenderer.cs (type-reference)
+  medium src/ui/renderers/ItemShadowRenderer.cs -> src/ui/DayNightCycle.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/building/BlueprintManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/building/BuildingManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/structures/ConstructionManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/ui/renderers/DesignationRenderer.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/farming/FarmJobManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/ui/renderers/FertilityOverlayRenderer.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/ui/renderers/HumidityOverlayRenderer.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/core/world/MapData.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/ui/renderers/ShadowCasterRenderer.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/ui/renderers/StockpileItemRenderer.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/stones/StoneJobManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/structures/StructureManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/TimeManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/trees/TreeJobManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/core/world/generation/UnifiedWorldGenerator.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/building/WallBuildManager.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/core/world/WallTileHelper.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/simulation/building/WorkProgressTracker.cs (type-reference)
+  medium src/ui/renderers/MapRenderer.cs -> src/core/world/streaming/integration/WorldCellQuery.cs (type-reference)
+  medium src/ui/renderers/ShadowCasterRenderer.cs -> src/ui/DayNightCycle.cs (type-reference)
+  medium src/ui/renderers/ShadowCasterRenderer.cs -> src/core/world/MapData.cs (type-reference)
+  medium src/ui/renderers/ShadowCasterRenderer.cs -> src/ui/renderers/MapRenderer.cs (type-reference)
+  medium src/ui/renderers/ShadowCasterRenderer.cs -> src/ui/DayNightCycle.cs (type-reference)
+  medium src/ui/renderers/StockpileItemRenderer.cs -> src/ui/renderers/ItemShadowRenderer.cs (type-reference)
+  medium src/ui/renderers/StockpileItemRenderer.cs -> src/ui/renderers/MapRenderer.cs (type-reference)
+  medium src/ui/renderers/StockpileItemRenderer.cs -> src/simulation/items/StockpileManager.cs (type-reference)
+  high src/core/world/streaming/integration/IBlockWorld.cs -> src/core/world/streaming/integration/IWallWorld.cs (inheritance)
+  high src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (inheritance)
+  high src/simulation/jobs/handlers/ConstructionJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (inheritance)
+  high src/simulation/jobs/handlers/FarmingJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (inheritance)
+  high src/simulation/jobs/handlers/HarvestJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (inheritance)
+  high src/simulation/jobs/handlers/MiningJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (inheritance)
+  high src/simulation/jobs/handlers/PlantingJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (inheritance)
+  high src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (inheritance)
+  high src/simulation/jobs/handlers/TreeChoppingJobHandler.cs -> src/simulation/jobs/IJobHandler.cs (inheritance)

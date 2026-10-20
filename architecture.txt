@@ -1,0 +1,1282 @@
+# Архитектура проекта — Colony Simulation Game (Godot 4.7 C# / .NET 8)
+=========================================================================
+
+## Обзор проекта
+Жанр: Колония / Стратегия непрямого контроля (до 10 000+ агентов).
+Движок: Godot Engine 4.x, .NET / C#, рендер: gl_compatibility (Forward compatibility).
+Карта: 512×512 тайлов (64px), с поддержкой бесконечного мира за кромкой острова.
+Мировая карта-обзорка: 2048×1024 регионов по 512×512 клеток (см. КОНСТАНТЫ МИРА ниже).
+Архитектурный паттерн: SoA (Structure of Arrays) для данных агентов, выделенный фоновый поток симуляции, GPU instancing (MultiMeshInstance2D) для массового рендеринга.
+
+===============================================================================
+КОРЕНЬ ПРОЕКТА (bebebe-main/)
+===============================================================================
+
+### bebebe-main/project.godot
+Настройки проекта Godot 4.7. Определяет main_scene=uid://di6gcaep1knur (scenes/main/Main.tscn), renderer/rendering_method="gl_compatibility", features=[PackedStringArray("4.7")]. Подключает аддоны godot-mcp и godot_ai через [application/config/]sections. Задаёт input map (WASD, камера, пауза и т.д.).
+ВАЖНО (изменение): autoload worldmap_button_patch НЕ активен (строка закомментирована/удалена из [autoload]; файл переименован в autoload/worldmap_button_patch.gd.disabled). Раньше он двойной подпиской на кнопку карты глушил toggle («нажал — ничего не происходит»). Активные autoload: _mcp_game_helper, McpInteractionServer.
+
+### bebebe-main/Game.csproj
+C# проект сборки (.NET 8). Содержит include для всех файлов в res://src/, res://autoload/, res://scenes/. Собирает все .cs в DLL для Mono.
+
+### bebebe-main/Game.sln
+Solution файл MSBuild для Visual Studio / Rider. Группирует Game.csproj.
+
+### bebebe-main/AGENTS.md
+Файл управления многоагентной разработкой. Определяет 4 роли: @architect (проектирование), @researcher (поиск оптимизаций), @developer (кодинг в src/), @destroyer (адверсарные тесты). Правила токенов, протокол утверждений.
+
+### bebebe-main/PLAN.md
+Проектный документ — балансировка нагрузки между ядрами (AdaptivePartitioner, WorkStealingQueue, LoadMonitor). Определяет IDynamicWorkScheduler, WorkItem, WorkQuantum, Splittable body, квантование задач по 2мс. Не меняет код — только план для @developer.
+
+### bebebe-main/AI_PROJECT_MAP.md
+Истина-ссылка на структуру проекта. Описывает bootstrap Main.tscn→SimThread, jobs system, handlers, менеджеры, UI цепочки, ловушки, мир за кромкой острова (§33), стриминг чанков. Главный навигационный документ.
+
+### bebebe-main/LICENSE.txt
+Лицензия проекта.
+
+### bebebe-main/cde.txt
+Временный/вспомогательный текстовый файл (не ключевой).
+
+### bebebe-main/окд.txt
+Текстовый файл документации (возможно скриншоты/замечания).
+
+===============================================================================
+SCENES/ — Игровые сцены (.tscn)
+===============================================================================
+
+### scenes/main/Main.tscn + scenes/main/Main.cs
+Главная сцена — точка входа игры. Node2D, создаёт TimeManager, DayNightModulate, CameraController, MapRenderer, AgentRenderer, PlayerInteractionManager, SelectionBox, PerformanceOverlay, StreamingWorldView. Метод _Ready() инициализирует весь пайплайн, OnMapApplied запускает SimThread и HUD. _Process обрабатывает день/ночь, тени, стриминг мира. Настраивает кнопку карты → ToggleWorldMap. Вызывает MapGenerator.GenerateRegion при выборе региона на мировой карте.
+МИРОВАЯ КАРТА В MAIN.CS — СТАТУС НЕПОДТВЕРЖДЁН ЦЕЛИКОМ: файл многократно латился regex-патчами (отключение старого WorldMapOverlay-создания маркерами WM-OFF/WM-DIAG-OFF, замена ToggleWorldMap на WmFix*-блок, добавление полей _worldMapScene/_activeWorldMapInstance, SetupButtonMapBinding, OnRegionSelected, RaiseTimeSpeedControls/SetWorldInputBlocked). Актуальное содержимое этих методов в дампах НЕ ЦЕЛИКОМ (обрезано) — перед любой правкой нужен полный Main.cs с диска; не латить regex'ами вслепую (привело к каше и каскадным CS0246). Кнопка карты привязывается через SetupButtonMapBinding() → HUDController.BindWorldMapButton(ToggleWorldMap). Поля/константы: WorldMapSeed=0x0123456789ABCDEFUL, WorldGeneratorVersion=3, WorldRegionsX=2048, WorldRegionsY=1024, WorldRegionCells=512, _spawnRegion=new(-1,-1), _spawnPending=false, _mapOverlay (старый WorldMapOverlay, создание закомментировано), _worldMapScene, _activeWorldMapInstance, [Export] HUD, [Export] AgentCount=100.
+
+### scenes/ui/hud.tscn + src/ui/controllers/HUDController.cs
+HUD интерфейс — верхняя панель с контейнерами выбора, строительства, заказов, зон, промышленности. Кнопки WoodWall/Warehouse/Farming/WorkTable/TreeFelling/Prioritet/Speed buttons. Связан с PlayerInteractionManager, MapRenderer, WorldPlacement, TimeManager. Обновляет Population, WoodAmount (coalesced 200ms), WorldTimeLabel (0.5s tick).
+КНОПКА ОТКРЫТИЯ МИРОВОЙ КАРТЫ В HUD: заказчик переименовал узел в BtnOpenWorldMap; в дампе hud.tscn строка `[node name="ButtonMap"...]` не показана целиком — РАСХОЖДЕНИЕ дамп/слова, контролировать по диску. Привязка — HUDController.BindWorldMapButton(Action) с защитой от двойной подписки (поле _buttonMap); тело метода в дампе обрезано — нужен полный файл. Кнопки скорости времени биндятся BindTimeButton(_stopButton,Paused)/(_speed1x,Normal)/(_speed5x,Fast5)/(_speed25x,Fast25)/(_speed100x,Fast100); имена узлов кнопок времени и карты в дампе hud.tscn ЦЕЛИКОМ НЕ ВИДНЫ (обрезано) — в discovery-листинге folders фигурировали StopTime/1xTime/5xTime/25xTime/100xTime, но это НЕ подтверждение текущего дампа, требует контроля по диску. ext_script id=1_hqnrr → HUDController.cs; ext_texture id=2_8qguk → MapIcon.png.
+
+### scenes/ui/Garden.tscn + src/ui/controllers/GardenController.cs
+Модальное окно фермы — показывает выбранную зону, автосажение (AutoPlant). Связан с FarmZoneManager.OnZoneSelected.
+
+### scenes/ui/Prioritet.tscn + src/ui/controllers/PriorityBoardController.cs
+Панель приоритетов работ — 4 строки +/- для JobPriorityManager. Влияет на Dispatcher' приоритеты.
+
+### scenes/ui/villager.tscn
+Прескет персонажа фермера (для MultiMesh атласа).
+
+### scenes/ui/Build.tscn
+Прескет чертежа постройки.
+
+### scenes/ui/Farm.tscn
+Прескет грядки/фермы.
+
+### scenes/ui/JobDisplay.tscn
+Дисплей текущих работ.
+
+### scenes/infinite_world/infinite_world_game_demo.tscn
+Обновлённая демо-сцена бесконечного игрового режима (мир за кромкой). Заменяет устаревшую infinite_world_game.tscn. Использует обновлённые компоненты WorldJobTicker и InfiniteWorldGame.
+
+### scenes/legacy/MainIsland.tscn
+Устаревшая сцена одного острова (сохранена для совместимости).
+
+### scenes/ui/WorldMap.tscn   (ЗАМЕНА строки «### scenes/ui/worldmap.tscn» из оригинала)
+(файл на диске ровно WorldMap.tscn, заглавная W; uid://h42atxu84asy; в .godot нет дублей по регистру — discovery подтвердил единственный editstate/folding WorldMap.tscn и imported ForWorldMap.png). Отдельный UI-интерфейс мировой карты-обзорки. Структура по дампу tscn:
+  [node name="Control" type="Control" unique_id=592006178] layout_mode=3 anchors_preset=15 anchor_right=1.0 anchor_bottom=1.0 grow_horizontal=2 grow_vertical=2 script = ExtResource("1_jbcnj") -- id 1_jbcnj = res://src/ui/streaming/WorldMapController.cs
+  [node name="TileMapLayer" type="TileMapLayer" parent="." unique_id=1708470742] tile_set = SubResource("TileSet_u0ya7")
+  [node name="ButtonMap" type="Button" parent="." unique_id=1009530629] layout_mode=0 offset_left=1844 offset_right=1919 offset_bottom=75 theme_override_styles/normal=SubResource("StyleBoxFlat_jbcnj") icon=ExtResource("2_bs3n3") expand_icon=true -- кнопка ЗАКРЫТИЯ карты внутри оверлея (иконка MapIcon.png).
+  TileSet_u0ya7: sources/0 = SubResource("TileSetAtlasSource_bs3n3"); tile_size в дампе НЕ задан явно (у других тайлсетов проекта tile_size=Vector2i(64,64); у этого — только sources/0). Рантайм-лог подтвердил tileSize=(16,16) ПОСЛЕ пересоздания источников маппером => маппер обязан выставлять tile_size=16 (иначе сетка клеток не совмещена с атласом 16px).
+  TileSetAtlasSource_bs3n3: texture = ExtResource("1_x36aw") (= res://ui/assets/textures/map/ForWorldMap.png, uid://dr60ndnocpdxe, 160×160); тайлы 0:0..9:0, 0:1..2:1, 0:2..2:2, 0:3 — сетка 10×N по 16px. Строка ext_resource для 1_x36aw в дампе tscn не показана целиком — подразумевается из маппера и discovery imported ForWorldMap.png.
+Открытие — кнопкой в HUD (BtnOpenWorldMap); закрытие — этой кнопкой ButtonMap внутри оверлея или Esc. Путь загрузки в коде: res://scenes/ui/WorldMap.tscn (держать имя ровно так).
+
+===============================================================================
+SRC/CORE/COMMON — Общие утилиты и профилировщик
+===============================================================================
+
+### src/core/common/GameProfiler.cs
+Статический профилировщик: Scope()/ScopeCustom() с помощью Stopwatch.GetTimestamp(), ThreadLocal стек скоупов через SimEvents.SnapshotMetrics() выдаёт метрики TotalMs/MsPerFrame/AvgMs/MaxMs/Calls/CallsPerSec/PercentLoad. Используется во всём проекте: фазах симуляции, рендерере, днях/ночах. База для PerformanceOverlay.
+
+### src/core/common/ProfilerLogService.cs
+Сервис логирования профайлера — Accumulate/BuildReport, запись CSV, снапшоты в очередь. Связан с GameProfiler и PerformanceOverlay.
+
+### src/core/common/SimEvents.cs
+Единый канал событий для симуляции: иерархические скоупы (ThreadLocal Stack), tick-trace, счётчики ошибок, аллокаций, batched samples. Используется GameProfiler, GameProfiler.ScopeSample(), FlowFieldManager, HotPathProfiler. Буферизирует данные для PerformanceOverlay и лог-сервиса.
+
+### src/core/common/ToolRequirement.cs
+Перечисление требований инструментов к ресурсам/зданям. Используется BlueprintManager, Handler'ами, инструментами.
+
+### src/simulation/GameSpeed.cs
+Перечисление скоростей: Paused(0x), Normal(1x), Fast(5x), Turbo(25x), Insane(100x). Связан с TimeManager.SetSpeed и AgentSimulationThread.IsPaused. ПРИМЕЧАНИЕ: файл лежит в src/simulation/, а не в src/core/common/ как было задокументировано ранее.
+
+### src/core/common/ResourceRef.cs
+Референс ресурсов (UID-based). Используется в рендерах для загрузки текстур.
+
+### src/simulation/WorldTime.cs
+Утилиты времени: HoursToSeconds(500), SecondsPerHour(500), TimeOfDaySeconds. Сутки = 12000с. Применяется во всех длительностах работ (рубка 3000с=6ч, стройка 2000с=4ч). Используется DayNightCycle, TimeManager, AgentSimulationThread. ПРИМЕЧАНИЕ: файл лежит в src/simulation/, а не в src/core/common/ как было задокументировано ранее.
+
+### src/core/common/ResourceTypes.cs
+Типы ресурсов экономики (ResourceType enum). Legacy/расширяемая система.
+
+### src/core/common/CityState.cs
+Городское состояние (legacy). Только читается HUDController для отображения информации о городе.
+
+===============================================================================
+SRC/CORE/ITEMS — Система предметов
+===============================================================================
+
+### src/core/items/ItemDefinition.cs
+Определение предмета: Name, Weight, MaxStack, IconUID. ItemId.None/Log/Grain/Stone. Используется ItemRegistry, GroundItemManager, StockpileManager.
+
+### src/core/items/ItemRegistry.cs
+Справочник всех предметов: вес зерна 0.15кг, брёвен 0.85кг, MaxStack 100. Static singleton. Читается GroundItemManager.SpawnItems, StockpileManager.Deposit/Withdraw, Handler'ами при Take/Deposit.
+
+===============================================================================
+SRC/CORE/JOBSTYPE — Типы работ
+===============================================================================
+
+### src/core/jobs/JobCategory.cs
+Категории: None, Lumberjack, Construction, Farming, Logistics. Маппится JobPriorityManager на приоритеты.
+
+### src/core/jobs/JobData.cs
+Структура данных работы: TypeId, Category, PriorityTier, ExecutionType, AssignedWorkerId, WorkerClaimTimer, TargetX/Y. Хранится в GenericJobSpatialIndex. Создаётся JobBroker, читается JobDispatcher.
+
+### src/core/jobs/JobExecutionType.cs
+Enum: IdleWorker, Hauling, SingleAgent. Varies behavior in dispatcher and commit phases.
+
+### src/core/jobs/JobTypeId.cs
+Все типы работ (32): TreeChop, Construction, Farming, Planting, Harvest, BlueprintDelivery, StockpileHauling, Wander, SeekingFood, Resting, Migrating, Evacuating, Mining. Register в JobRegistry массив[32].
+
+### src/core/jobs/JobPriorityTier.cs
+Приоритеты (7 уровней): Emergency до Low. JobPriorityManager.MapCategoryToTier maps category to tier.
+
+### src/core/jobs/NeedBehavior.cs
+Поведения потребностей: None, SeekingFood, Resting, Migrating. Set NeedsJobSystem.TryAssignNeedsBehavior, влияет ExecuteParallel path through AgentState.
+
+===============================================================================
+SRC/CORE/WORLD — Карта, тайлы, генерация
+===============================================================================
+
+### src/core/world/TileType.cs
+Основные типы тайлов: Grass, Water, Mountain. Используется всеми менеджерами для проходимости и строительства. IsTileBlocked в AgentMovementService, CanPlace в Tool'ах.
+
+### src/core/world/BiomeType.cs
+Тип биомов для бесконечного мира (за пределами острова).
+
+### src/core/world/BiomeMapper.cs
+Маппинг биомов по координатам мира. Используется WorldCellQuery при генерации мирового террейна.
+
+### src/core/world/MapData.cs
+Структурированные данные карты: Ground[], TreeOnGrass[], StoneOnGrass[], Fertility[], Humidity[], BiomeSeed, LakeCount, RiverBranchCount, LandConnectivity. Создается MapGenerator.Generate/GenerateOnce, передаётся в MapRenderer.StartAsync() и AgentSimulationThread.Start().
+
+### src/core/world/MapGenerator.cs
+Генератор карты: fBm высот (4-5 октав, scale 90-140), island-falloff, порог воды 0.38-0.42, река downhill, связность >=92%, лес Poisson-disc, старт-поляна R12. Генерирует Ground/TreeOnGrass/Stones/Fertility/Humidity. Retry до 4 раз. Использует NoiseGenerator, RiverGenerator. ПРИМЕЧАНИЕ: на диске есть только MapGenerator.cs.uid, физического .cs файла нет — возможно удалён или включён в другой модуль.
+
+### src/core/world/NoiseGenerator.cs
+Шум Perlin/simplex для генерации карт высот, влажности, плодородия. Используется MapGenerator.
+
+### src/core/world/RiverGenerator.cs
+Карving реки: downhill from heightMap, source at top, mouth at edge/lake, width 1-2, up to 2 tributaries. Modifies Ground array. Вызывается MapGenerator.GenerateOnce. ПРИМЕЧАНИЕ: на диске только .uid файл — физический .cs отсутствует.
+
+### src/core/world/GridHelper.cs
+Utility функции для сетки: TryFindAdjacentWalkable, TryFindNearestFreeTile, BoundsSafe checks. Используется MovementService, JobBroker, GridHelper.
+
+### src/core/world/BuildingType.cs
+Типы зданий: WoodWall (15 logs), WorkTable (25 logs). blueprintManager AddBatch uses these types, Handler'ами for construction.
+
+### src/core/world/WallTileHelper.cs
+Автотайлинг стен: 16 mask→atlas mapping (Up=1, Right=2, Down=4, Left=8). Used by WallBuildManager.Add/Remove, MapRenderer.wall layer cell updates. ПРИМЕЧАНИЕ: на диске только .uid — физический .cs отсутствует.
+
+### src/core/world/MountainTileHelper.cs
+Автотайлинг гор: аналогично стенам (16 клеток 4×4 atlas). Горы = blocked (как стены), not water-slow. Created by MapRenderer after generate mountains > threshold. ПРИМЕЧАНИЕ: на диске только .uid — физический .cs отсутствует.
+
+### src/core/world/HumidityMap.cs
+Влажность почвы: flat int[] double-buffered, тик every 30 game seconds (~6 ticks per minute). Forestry slightly humidifies, farming dries out. Used by FarmJobManager, CropGrowthManager (growth rate influenced by moisture).
+
+### src/core/world/FertilityMap.cs
+Плодородие: max 200 (black soil), flat int[] double-buffered, тик every 60 game minutes. Forest fertilizes, garden depletes. Used by FarmJobManager when checking plot quality.
+
+### src/core/world/FarmYield.cs
+Выход фермерства: Grain per tile based on fertility/moisture stages. Used in CropGrowthManager.HarvestCrop.
+
+### src/core/world/streaming/generation/WorldCoordinates.cs
+Мировая координатная система: TileToChunk()/ChunkToLocalForTile(), floor division. Used everywhere across infinite world module.
+
+### src/core/world/streaming/generation/WorldChunk.cs
+One chunk (64×64 tiles): terrain cell enum, moisture/forest flags, delta mutations list. No Godot dependencies. Persisted via WorldChunkCodec. Created by ChunkWindowPlanner requests, filled by ParallelChunkGenerator or GpuChunkGenerator.
+
+### src/core/world/streaming/generation/GeneratedCell.cs
+Single cell metadata: terrain + moisture/forest flags. Lightweight struct used by WorldChunk and generator pipelines.
+
+### src/core/world/streaming/generation/WorldChunkGenerator.cs
+CPU генератор чанков: noise-based terrain, moisture, forest placement for a single chunk. Called by ChunkWindowPlanner. Uses NoiseGenerator patterns. Zero alloc in hot path.
+
+### src/core/world/streaming/generation/ParallelChunkGenerator.cs
+Multi-threaded chunk generation: parallel per-tile noise evaluation using ThreadPool. Faster than sequential.
+
+### src/core/world/streaming/generation/GpuChunkGenerator.cs
+Compute shader variant: uses RenderingDevice compute pipeline (chunk_gen_compute.compute). Not active in production (gl_compatibility mode lacks RenderingDevice access). Present as future option.
+
+### src/core/world/streaming/generation/WorldFeatureGenerator.cs
+Forest planting (Poisson disc), stone distribution, lake limits enforcement. Post-processing step after base terrain. Shared between island and streaming world.
+
+### src/core/world/streaming/generation/WorldRegions.cs   (ОБНОВЛЕНО — источник истины констант)
+namespace Game.Core.WorldStreaming. Константы: WorldRegionsX=2048, WorldRegionsY=1024, RegionSize=512, ChunkCells=64, TilesPerRegionAxis=RegionSize/ChunkCells=8. Методы FloorDiv/FloorMod (корректны для отрицательных), RegionForCell, LocalForCell, RegionOrigin, RegionBounds, IsInsideWorld. ВЫНЕСЕННЫЕ ЗИСИМОСТИ: WorldCell/WorldRect объявлены в том же namespace Game.Core.WorldStreaming (подтверждено диагностикой), поэтому WorldRegions.cs компилируется без внешних using; compat-файл WorldRegionsCompatTypes.cs НЕ нужен (exists=False). ВАЖНО: раньше в этом файле был комментарий «1024×2048 регионов» — это ИНВЕРСИЯ относительно целевой схемы заказчика (2048×1024); истинные значения констант — X=2048, Y=1024. Перед использованием любых consumer-ов сверять оси по этому источнику истины.
+
+### src/core/world/streaming/generation/RegionKey.cs   (НОВЫЙ ФАЙЛ)
+namespace Game.Core.WorldStreaming; public readonly record struct RegionKey(long X, long Y); Вынесен в отдельный файл, чтобы ошибка компиляции WorldRegions.cs не каскадила CS0246 по всему проекту (реальный инцидент: пока WorldRegions.cs не компилировался, RegionKey «исчезал» для Main.cs/RegionTraits.cs/WorldMapOverlay.cs).
+
+### src/core/world/streaming/generation/RegionTraits.cs
+Trait per region: biome seed, elevation profile. Influences terrain generation parameters. Используется WorldMapOverlay.BuildPixels и WorldMapTileMapper.PopulateFromChunks (через RegionTraitProvider.Sample/SampleBlended).
+
+### src/core/world/streaming/generation/WorldFeatures.cs
+Collection of feature data: forest density, stone clusters, lake basins. Serialized into WorldChunkStore.
+
+### src/core/world/streaming/generation/WorldChunkGeneratorTiming.cs
+Контроллер таймингов генерации чанков: регулирует частоту вызовов ParallelChunkGenerator/WorldChunkGenerator, предотвращает перегрузку CPU при быстрой камере. Использует adaptive scheduling. НОВЫЙ ФАЙЛ.
+
+### src/core/world/streaming/runtime/WorldChunkStreamer.cs
+Main streaming controller: loads/unloads chunks around camera viewport. Coordinates with ChunkWindowPlanner. Exposes IWorldCellSource API to tools and agents.
+
+### src/core/world/streaming/runtime/ChunkWindowPlanner.cs
+Adaptive window (3..16 chunks side): budget-based load/unload decisions. Balances loading budget against frame time. Avoids unloading too aggressively near camera. Tracks Desired/Entered/Exited chunk states.
+
+### src/core/world/streaming/storage/WorldChunkStore.cs
+Persistent storage backend: reads/writes .res files to user://infinite_world_lab_cache/. Manages chunk UID cache. Used by WorldSaveCoordinator.
+
+### src/core/world/streaming/storage/WorldChunkCodec.cs
+Serialization/deserialization: converts WorldChunk ↔ bytes for disk storage. Deterministic format versioned by WorldGeneratorVersion.
+
+### src/core/world/streaming/storage/WorldChunkDeltaCodec.cs
+Delta encoding: only changed cells are serialized (WorldChunkDelta). Much smaller payload than full chunks. Used by WorldSaveCoordinator for incremental saves.
+
+### src/core/world/streaming/storage/WorldManifestStore.cs
+Manifest of stored chunks: tracks which chunk keys exist on disk. Used during load/validation/recovery.
+
+### src/core/world/streaming/storage/WorldSaveMetadata.cs
+Version + seed info for saved worlds. Ensures consistency between generators and loaded data.
+
+### src/core/world/streaming/coordinator/WorldSaveCoordinator.cs
+Batch save coordinator: collects pending deltas, writes asynchronously to disk. Prevents main thread stalls. Handles concurrent save attempts safely.
+
+### src/core/world/streaming/integration/StreamingWorldManager.cs
+Public API surface for tools and AI workers: Open(), CanPlace(x,y), IsBlocked(x,y), TryPlaceBlock(x,y,kind), TryRemoveBlock(x,y,kind). Wraps ChunkStreamer + SaveCoordinator. Connects to tool placement pass.
+
+### src/core/world/streaming/integration/IWorldCellSource.cs
+Interface for terrain/moisture queries at arbitrary world coordinates. Implemented by StreamingWorldView. Used by WorldGameRules, PlacementPass, and offline simulation.
+
+### src/core/world/streaming/integration/IBlockWorld.cs
+Interface for block/mutation operations: add/remove walls, buildings, stockpiles, crops as persistent deltas.
+
+### src/core/world/streaming/integration/IWallWorld.cs
+Wall-specific interface: track placed wall tiles, check can-place-before-commit, build continuous ring at edge boundary.
+
+### src/core/world/streaming/integration/ChunkMutations.cs
+Internal mutable representation of chunk-level changes (deltas). Aggregated by SaveCoordinator before persisting.
+
+### src/core/world/streaming/integration/WorldCellQuery.cs
+Read-only query helper: reads terrain/moisture/forest procedurally or from loaded chunks. Validates placements without mutating state. Used by WorldGameRules.CanCommitZoneCell, PlacementPass.CanPlace*.
+
+### src/core/world/streaming/integration/WorldGameRules.cs
+Gate rules for placement: chunk must be loaded + terrain is grass + cell not occupied. Extra gates for seeds (moisture range), forests (>30k density), walls/buildings/stockpiles (grass only). Centralized in one place to avoid scattered logic bugs.
+
+### src/core/world/streaming/integration/WorldDeltaKind.cs
+All possible mutation kinds: Block(Wall/Building/Stockpile/Crop) + Plan(WallPlan/BuildingPlan/CropPlan/StockpilePlan) + OnePhase(MinedStone/CutTree). Defines blocking vs non-blocking categories. Used by IWorldCellSource and WorldGameRules.
+
+### src/core/world/streaming/integration/WorldPlan.cs
+Blueprint plan descriptor: kind, target position, associated job/worker. Bridges between planned state (blueprint half) and committed state (finished half).
+
+### src/core/world/streaming/integration/WorldDecor.cs
+Декорации мира: размещение декоративных объектов (кусты, камни, деревья вне основных биомах) на загруженных чанках. Используется для визуального обогащения бесконечного мира. НОВЫЙ ФАЙЛ.
+
+### src/core/world/access/IWorldAccess.cs
+Unified access interface combining island (fixed 512×512) and streaming (infinite) worlds. Allows subsystems to work with both seamlessly.
+
+### src/core/world/access/IslandWorldAccess.cs
+Concrete impl for island territory only. Direct array lookups on ctx.Ground etc.
+
+### src/core/world/access/ChunkWorldAccess.cs
+Concrete impl for individual chunks. Delegates to ChunkStreamer + IWorldCellSource.
+
+### src/core/world/access/CompositeWorldAccess.cs
+Combines Island + Chunk access. Routing logic: if coords are within island bounds → use Island; otherwise → delegate to Chunk. Primary access point for sim thread agents.
+
+===============================================================================
+SRC/SIMULATION — Игровая симуляция (фоновый поток)
+===============================================================================
+
+### src/simulation/AgentSimulationThread.cs
+Центральная симуляция (Task.Run background thread). Фиксированный шаг 0.05с. Цикл: accumulator += realDelta × speed, max 5 substeps/iteration. Three phases per step: Phase1 (ParallelMove — Pathfinding + MoveTowards), Phase2_Dispatch (Jobs), Phase3a_ParallelBookkeeping (needs update), Phase3b_SequentialCommit (spatial grid rebuild + handler commits). GameTimeSeconds accumulates real sim time. Pushes snapshot to PositionQueue ConcurrentQueue. Sleep management: Sleep(0) hot, Sleep(1) cold at high speeds. Handles humidity/fertility timers. Contains AgentSimTickGate static volatile counter.
+
+### src/simulation/TimeManager.cs
+Node-based timer: SyncGameTime(float) throttled at 10Hz from Main._Process. Public properties: GameTimeSeconds, TimeOfDaySeconds, DayNumber, CurrentSpeed. Triggers OnSpeedChanged events. Connected to AgentSimulationThread.IsPaused, SpeedMultiplier. Used by HUDController, DayNightCycle, HUD buttons.
+
+### src/simulation/SimulationContext.cs
+Shared read-only context passed to agents: Ground array, TreeOnGrass, SolidWalls, Walkable mask, AgentSpatialGrid, AgentMovementService, Random instance, TileSize, MapWidth/Height. Populated once at Start(), immutable thereafter (except walls update triggers Invalidate).
+
+### src/simulation/DynamicWorkBalancer.cs
+Existing dynamic work balancer: atomic cursor (Interlocked.Add), adaptive batch size 32-512 via EMA, ThreadLocal<ThreadState>, records balance snapshots. Currently acts as facade delegating to DynamicWorkScheduler methods. Planned replacement: AdaptivePartitioner + WorkStealingQueue (see PLAN.md §4).
+
+### src/simulation/ParallelRng.cs
+Parallel-safe RNG: [ThreadStatic] XorShift implementation. Replaces Random.Shared contention in parallel loops. Used throughout simulation worker bodies.
+
+### src/simulation/scheduling/IDynamicWorkScheduler.cs
+Interface for dynamic work scheduler: ForEach(int count, Action<int> body), ForEachRange, ForEachSplittable(int count, Action<int,int,WorkQuantum> body), GetStats(), Reset(). Designed for zero-allocation per-element dispatch.
+
+### src/simulation/scheduling/WorkItem.cs
+Zero-alloc struct: Start, Count, CostHint, WorkKind(Fast/Heavy). Passed by value to queues/deques.
+
+### src/simulation/scheduling/WorkQuantum.cs
+Cooperative quantum descriptor: DeadlineTicks (Stopwatch threshold), YieldEveryN elements checked interval. Body checks ShouldYield(token) every N items to split long tasks.
+
+### src/simulation/scheduling/AdaptivePartitioner.cs
+OrderablePartitioner for Parallel.ForEach: SupportsDynamicPartitions=true, cut [0,count) into variable-size batches based on cost hints. Heavy-kind starts smaller (minBatch), fast-kind starts larger.
+
+### src/simulation/scheduling/WorkStealingQueue.cs
+Lock-free Chase-Lev deque: per-worker ThreadLocal queue. Owner pushes/pops LIFO at bottom, thieves steal-half FIFO from top. Used when central cursor empties but other threads still running.
+
+### src/simulation/scheduling/LoadMonitor.cs
+EWMA-based phase imbalance measurement: RecordWorkerBatch(workerId, batchMs, batchSize), EndPhase(wallMs, cpuMs, DOP), returns SchedulerStats { ImbalancePct, MaxBatchMs, EmaBatchMs, StragglerCount }. Published once per phase via GameProfiler.RecordPhaseBalance.
+
+### src/simulation/scheduling/DynamicWorkScheduler.cs
+Default implementation: Static Shared singleton. Combines central cursor + per-worker deque + LoadMonitor. Provides forward-compatibility facade over DynamicWorkBalancer.
+
+### src/simulation/scheduling/WorkStealingQueue.cs
+Deque implementation: T[] buffer, volatile top/bottom indices, masked ring buffer, Interlocked.CompareExchange for CAS operations. Bounded capacity (1024 default), fallback to global cursor on overflow.
+
+### src/simulation/agents/AgentDataPool.cs
+SoA agent pool: flat arrays for all 10000+ agents: PositionX/Y, SpeedX/Y, States, JobType, JobId, StuckTimer, WorkProgress, CellStay, CarriedItem/Count, NextInSpatialCell, WaypointX/Y/Count/Index, Hunger/Sleep/Fatigue/EnvironmentSatisfaction/Mood/NeedsBehavior/NeedsRetryTimer. Zero objects allocated per-agent. Mutated exclusively in simulation thread.
+
+### src/simulation/agents/AgentMovementService.cs
+Per-agent movement logic: MoveTowards(targetX,targetY,reachedCB), IsTileBlocked(x,y), MoveToPoint(position, reachedCB), EjectFromWall, PushAway, Fatigue slowdown x0.85 when >80%. Uses AgentSpatialGrid for collision, HierarchicalPathfinder for waypoints, FlowFieldManager for local detours. Calls request path if distance >= 4 tiles.
+
+### src/simulation/agents/AgentSpatialGrid.cs
+Spatial hash grid: O(1) proximity queries. Cells keyed by floor(pos / CellSize). Double-buffered: rebuild every ~12 ticks (configurable). Insert/Delete under lock. Read-only during worker phases. Used by Overcrowd checks, StandValidation, PushAway, AgentMovementService neighbor lookup.
+
+### src/simulation/agents/AgentState.cs
+Enum: Idle, Moving, Working, Carrying, Returning, Waiting, SeekingFood, Resting, Migrating, Evacuating. Determines behavior in Bookkeep, Speed modifiers, Dispatcher filtering.
+
+### src/simulation/agents/FlowFieldManager.cs
+Local detour BFS on 33×33 window (max 100 steps). ThreadLocal scratch buffers. Returns direction vector avoiding walls/trees/other agents. Early exit ≤5 tiles (no BFS needed). Calculated in Phase3a bookkeeping loop. Previously had GameProfiler scope removed (contention fix).
+
+### src/simulation/agents/IdleWorkerSpatialGrid.cs
+Separate spatial grid tracking idle workers only. Used by Dispatcher CollectIdle for quick assignment. Striped 32-shard locks instead of global lock. Updates BookKeepSingleAgent's UpdateWorkerChunk calls.
+
+### src/simulation/agents/AgentDataPool.cs
+SoA agent pool: all position/state/job data in flat parallel arrays (float[], int[], byte[], etc.). Zero-object allocation model. Authoritative source during simulation. Committed back to renderers via snapshot queues.
+
+### src/simulation/pathfinding/HierarchicalPathfinder.cs
+Hierarchical A* pathfinding: coarse regions (16×16) + fine window (3×3 windows), B-Smooth Bresenham smoothing post-A*, cached paths in ConcurrentDictionary. Build graph once at start, invalidate when walls change. Used by AgentMovementService when waypoints requested ≥4 tiles away. Heavy work item (kind: WorkKind.Heavy). Optimizations: ArrayPool/T-stack allocations, ThreadLocal scratch buffers replacing List<> allocations.
+
+### src/simulation/offline/OfflineCatchUpPolicy.cs
+Offline catch-up strategy: determines how many simulation steps to process when returning from pause/idle to prevent spiral-of-death. Configurable max catch-up steps.
+
+### src/simulation/offline/OfflineAgentNeeds.cs
+Snapshot of agent needs for offline computation: hunger/sleep/etc values preserved during pause periods.
+
+### src/simulation/offline/OfflineCropGrowth.cs
+Standalone crop growth calculation for offline tick processing: processes crop stage advancement without requiring live world state.
+
+### src/simulation/offline/OfflineWorldTicker.cs
+World ticker for offline simulation runs: manages step scheduling outside normal thread lifecycle. Used by OfflineCatchUpTests and similar test scenarios.
+
+### src/simulation/simd/SimdNeedsBatch.cs
+SIMD-оптимизация пакетной обработки потребностей агентов. Обрабатывает массивы hunger/sleep/fatigue через SIMD инструкции для ускорения Phase3a bookkeeping. НОВЫЙ ФАЙЛ, значительно ускоряет расчёт нужд при 1000+ агентах без GC аллокаций.
+
+### src/simulation/jobs/IJobHandler.cs
+Interface contract: CanAgentExecute(ctx,job), OnStart(ctx,agent,job), ExecuteParallel(ctx,agent,job,deltaTime), Commit(ctx,agent,job), OnCancel(ctx,agent,job). Implementations registered in JobRegistry.
+
+### src/simulation/jobs/JobBroker.cs
+Facade for registering/unregistering jobs: RegisterTreeChop/Batch, RegisterFarmPlot/Batch, RegisterBlueprint/Batch, RegisterPlanting/Harvest, RegisterStockpileHaul, DeliverLogsToBlueprint, FindStandPosition. Writes to JobDispatcher.JobIndex. Called by managers, tools, and manual commands.
+
+### src/simulation/jobs/JobDispatcher.cs
+Primary job assignment engine: dispatches unclaimed jobs to idle workers via chunk-based scan (ChunksPerBatch × dynamic scaling). CollectIdle + TryClaim + OnStart per chunk. SpillOverPass (unclaimed jobs to secondary workers) + GlobalRedistributePass (serial, bounded budgets). ReleaseJobWorker on completion or stuck timeout. Uses GenericJobSpatialIndex for location-based lookups. Integrated with DynamicWorkScheduler.ForRange.
+
+### src/simulation/jobs/JobPriorityManager.cs
+Priority tier management: int[4] default tiers mapped per category (Logistics→0, Lumberjack→1, Construction→2, Farming→3). Adjustable via PriorityBoardController +/- buttons. Used by FillPrioritizedUnclaimed order.
+
+### src/simulation/jobs/JobRegistry.cs
+Array[32] registry indexed by JobTypeId. Stores active jobs, provides quick lookup and unregister support. Synchronized via locks.
+
+### src/simulation/jobs/JobValidator.cs
+Periodic validation: ensures no job data corruption, orphaned claims, stale state. Runs at real-time intervals (not game time). Reports fixed counts.
+
+### src/simulation/jobs/GenericJobSpatialIndex.cs
+SoA job index: free-list with chunk buckets 1024×256, position map for deduplication. Register/Unregister under lock, Claim via CAS. Methods: FillPrioritizedUnclaimed (sort by priority tier), FromCandidateList, GetJobData, MarkJobUnreachable. Used by Dispatcher and Handler implementations.
+
+### src/simulation/jobs/handlers/TreeChoppingJobHandler.cs
+3000s tree chopping: Stand → Working → CompleteTree → TreeOnGrass=false + Spawn log 21-38 + Release. Registers via TreeJobManager.MarkBatch, unregisters on complete.
+
+### src/simulation/jobs/handlers/ConstructionJobHandler.cs
+2000s construction: Can=!HasItemsAt → Stand → Working → CompleteConstruction → SolidWalls=true + Invalidate spatial grid + ClearCache. Consumes delivered logs, builds wall segments continuously.
+
+### src/simulation/jobs/handlers/FarmingJobHandler.cs
+125s tilling: CompletePlot → FarmJobManager marks plot completed, removes designation, activates farmLayer tile update.
+
+### src/simulation/jobs/handlers/PlantingJobHandler.cs
+10s hauling + plant: Reserve grain 1 unit → Source Take → Target Working → PlantCrop(tx,ty,zoneId) + Release. Requires stockpile has grain available.
+
+### src/simulation/jobs/handlers/HarvestJobHandler.cs
+5s harvest: Can=Stage==4 ready → HarvestCrop (drops 5-40 grain auto-plants next season) + Release. Registered automatically by CropGrowthManager when stage reaches 4.
+
+### src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs
+Hauling 25kg logs: Reserve log → Source Take Carried → Target DeliverLogsToBlueprint (or spawn ground if full) + Release. Triggers ConstructionJobHandler registration when enough materials arrive.
+
+### src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs
+Hauling 25kg any item: Reserve ground item + slot in zone → Target DepositItems (or spawn if no zone) + Unregister once-off job + Release. Sweep triggered by GroundItemManager.HasFreeSpace alerts.
+
+### src/simulation/jobs/handlers/MiningJobHandler.cs
+Объединённый обработчик добычи камня: 5s mining operation. Работает через StoneJobManager для маркировки залежей. Заменил отдельные StoneMiningJobHandler/TreeFellingJobHandler в единый pipeline. НОВЫЙ ФАЙЛ.
+
+### src/simulation/jobs/handlers/NeedsJobSystem.cs
+Lightweight need-based jobs: SeekFood (grain reserve 2 units, -60 hunger), Resting (stationary, -10 sleep/-15 fatigue per sec), Migrating (radius 24 flee overcrowded), Evacuating (dispatched away). Triggered by Idle workers when Hunger>70, Sleep>80, Fatigue>80. Does NOT use JobType enum — operates directly via AgentState transitions.
+
+### src/simulation/jobs/handlers/WanderJobSystem.cs
+70% stand still, 30% move ±2 tiles at 60px/s. Evacuating → Idle. Simple fallback when no meaningful job available.
+
+===============================================================================
+SRC/SIMULATION/BUILDING — Менеджеры построек
+===============================================================================
+
+### src/simulation/building/BlueprintManager.cs
+Blueprint tracking: Site{Type, DeliveredCount, TargetMaterials} — 15 walls, 25 workbenches. AddBatch/RemoveBatch/Complete. Events fire to MapRenderer blueprint layer. Draws semi-transparent preview tiles. Triggers DeliveryJobHandler when materials needed.
+
+### src/simulation/building/BuildingManager.cs
+Completed building registry: Add/Remove events → buildingLayer tile updates. Stores built structures inventory.
+
+### src/simulation/building/WallBuildManager.cs
+Wall-specific manager: owns reference to MapRenderer.WallLayer. Add/Remove tiles triggers OnTilesUpdated for wall neighbors (wall + 4 adjacent tiles) → calls WallTileHelper.GetTile for autotiling mask→atlas mapping. Builds continuous wall rings at world edges.
+
+### src/simulation/building/BuildConfig.cs
+Configuration constants: material costs per building type, build duration, placement rules. Read-only during gameplay.
+
+### src/simulation/building/BuildObstacles.cs
+Collision detection for building placement: checks ground items, trees, solid walls, existing blueprints, zones. Returns true/false can-place at position.
+
+### src/simulation/building/ConstructionPipeline.cs
+Sequential construction progress tracker: monitors ongoing builds, reports percentage complete, handles partial completions on abort. НОВЫЙ ФАЙЛ.
+
+### src/simulation/building/WorkProgressTracker.cs
+Track individual agent work progress: elapsed time vs required duration. Updated each ExecuteParallel tick. Displays percentage in HUD/UI. НОВЫЙ ФАЙЛ.
+
+### src/simulation/building/ConstructionPipeline.cs
+Sequential construction progress tracker: monitors ongoing builds, reports percentage complete, handles partial completions on abort.
+
+### src/simulation/building/WorkProgressTracker.cs
+Track individual agent work progress: elapsed time vs required duration. Updated each ExecuteParallel tick. Displays percentage in HUD/UI.
+
+===============================================================================
+SRC/SIMULATION/FARMING — Фермерство
+===============================================================================
+
+### src/simulation/farming/CropData.cs
+Individual crop object: ZoneId, Stage(1-4), TimerRemaining. Stored in CropGrowthManager dictionary. Planted by PlantingHandler, harvested when Stage==4.
+
+### src/simulation/farming/CropGrowthManager.cs
+Crop lifecycle: Plant/UpdateGrowth(60s per stage)/HarvestCrop/Remove. Dictionary<pos, CropData>. Stage advances every 60 game seconds. Stage 4 triggers automatic RegisterHarvest job. GenerateSnapshot sends data to CropRenderer. Throttled interval scales with speed (*max(1,speed/16)).
+
+### src/simulation/farming/FarmJobManager.cs
+Farm plot management: Mark/Unmark/Batch plots, CompletePlot (converts marked beds to completed farms). Events → MapRenderer farmLayer green tint. Creates FarmZone on first mark in area.
+
+### src/simulation/farming/FarmZone.cs
+Logical farm zone container: id, collection of tile coordinates, AutoPlant flag. Owned by FarmZoneManager. Used by GardenController for display.
+
+### src/simulation/farming/FarmZoneManagerFacade.cs
+Facade for FarmZone CRUD: CreateZone(BFS split on contiguous marks), RemoveTiles, SetAutoPlant(bulk register/unregister planting jobs), SelectZoneAt. Events fire to FarmZoneRenderer.
+
+===============================================================================
+SRC/SIMULATION/ITEMS — Управление предметами
+===============================================================================
+
+### src/simulation/items/GroundItemManager.cs
+Ground-held items: _groundItems(ItemId, Count), Reserved amounts, _totalAvailable. Spawn/TryReserve/Take/Release operations under lock. GenerateSnapshot → SnapshotQueue → GroundItemRenderer. Spawn outside stockpile triggers Sweep haul-job alert. Coalesced totals use Interlocked/Volatile instead of nested locks.
+
+### src/simulation/items/StockpileManager.cs
+Warehouse/stockpile zones: _zones(zoneId→list of tiles), _storage(Item, Count, ReservedIncoming), _freeSlots. AddZoneTile (triggers immediate Sweep), TryReserveSlot/Deposit/Withdraw/Cancel in rings. Events → stockpileLayer purple tint, HUD OnItemCountChanged (coalesced 200ms throttle). High-performance lock-free HasAvailableTotal cache.
+
+===============================================================================
+SRC/SIMULATION/TREES & STONES — Ресурсные менеджеры
+===============================================================================
+
+### src/simulation/trees/TreeJobManager.cs
+Tree marking and chopping coordination: _markedTrees HashSet, Mark/Unmark/Batch/CompleteTree → unregisters TreeChop job, fires event to DesignationRenderer + MapRenderer. Used by TreeFellingTool and automated systems.
+
+### src/simulation/stones/StoneJobManager.cs
+Stone mining coordination: Similar pattern to TreeJobManager. Tracks mined stone locations, registers StoneMiningJobHandler work.
+
+===============================================================================
+SRC/SIMULATION/ZONES — Зоны работы
+===============================================================================
+
+### src/simulation/zones/ZoneManager.cs
+Единый менеджер зон: создаёт Zone.Farm для фермерства и Zone.Work для универсальных рабочих зон-бригадиров. Использует HashSet<(int X, int Y)> для хранения тайлов зоны. Farm-зоны поддерживают AutoPlant и RequiredSeedItem; Work-зоны имеют радиус, маску jobMask и приоритетные оверрайды. Заменяет устаревшие WorkZone + FarmZoneManagerFacade в единую CRUD-систему с BFS-сплитом на смежные ячейки. Методы: CalcRadius(tilesTarget), BuildDisc(cx, cy, r) для круговой геометрии через диск. Интегрирован через WorkZoneManagerFacade.
+
+### src/simulation/zones/WorkZone.cs
+Бывший базовый класс зон — теперь legacy/обёртка. Содержит id и список тайлов. Сохранён для обратной совместимости с существующими UI-контроллерами.
+
+### src/simulation/zones/WorkZoneManagerFacade.cs
+Фасад для CRUD-операций над зонами: Create, RemoveTiles, Hover, Select. Фактически делегирует работу новому ZoneManager. Сохранён как слой абстракции для связи с UI.
+
+===============================================================================
+SRC/UI — Пользовательский интерфейс (главный поток)
+===============================================================================
+
+### src/ui/CameraController.cs
+Camera navigation: WASD/arrows movement, Shift ×2.5 speed, scroll wheel zoom (0.12-4×), middle mouse drag pan. Auto-registers camera_up/down/left/right actions in InputMap at scene startup. Maps to Viewport boundaries set by Main. Clamp enforced to world/map bounds.
+
+### src/ui/PlayerInteractionManager.cs
+Input router: receives Hover/Click/Drag/Release/Cancel events, dispatches to active ITool. Esc key resets tool → SelectTool. Middle mouse button ignored. Connected to MapRenderer, SelectionBox, CameraController in Main.Initialize.
+
+### src/ui/SelectionBox.cs
+Visual selection rectangle: Z-index 100. Start/Update/End mouse drag. Visible overlay on TileMapLayers. Provides tile coordinate list to ITool implementations.
+
+### src/ui/PerformanceOverlay.cs
+Debug performance panel: SnapshotMetrics table from GameProfiler sorted by MsPerFrame descending. Shows trends over 60s window. Buttons: </>/Pause/Reset/Copy clipboard. Publishes BalanceSnapshot (ImbalancePct per phase) from GameProfiler.AccumulateSchedulerStats. Saves logs to user:// on _ExitTree.
+
+### src/ui/DayNightCycle.cs
+Day/night tint via CanvasModulate: tint colors keyed by hour — night <5h, dawn 6.5 (1,0.78,0.58), day 8-17 (1,1,1), dusk 18.5 (1,0.55,0.35), night ≥20 (0.23,0.27,0.46). Tick at 10Hz with eps 0.002 per channel. SampleTint(gameTime) returns Vector3. Also samples sun position (Dir, LengthPx, WidthScale, Alpha) for shadow renderer. O(1) GPU, zero draw-calls.
+
+### src/ui/controllers/HUDController.cs
+Main HUD controller: BindWorldMapButton, Setup(PlayerInteractionManager, MapRenderer, AgentCount). Manages cascading build menus (WoodWall→Warehouse→Farm→WorkTable). Connects to TimeManager for speed buttons. Monitors wood amount via StockpileManager.OnItemCountChanged (coalesced 200ms). Displays population count, WorldTime label, game stats (throttled 1s). Text= assignments only on actual value changes (avoid unnecessary GUI updates).
+ВАЖНО: BindWorldMapButton ищет кнопку карты (имя узла — расхождение дамп/слова, см. SCENES/hud.tscn выше) с защитой от двойной подписки (поле _buttonMap); тело метода в дампе обрезано — перед правкой нужен полный файл. При открытой мировой карте кнопки скорости времени должны оставаться кликабельны поверх оверлея (Вариант A — поднимать HUD-слой времени над картой, а не дублировать кнопки внутри карты).
+
+### src/ui/controllers/FarmController.cs
+Farm detail panel: Garden.tscn binding. Shows current zone ID, auto-plant toggle, crop status. Opens on FarmZoneManager.OnZoneSelected. Escape closes panel.
+
+### src/ui/controllers/BuildMenuController.cs
+Cascading build menu: Tier 1 (WoodWall, Warehouse, Farm), Tier 2 (WorkTable, Bed/Bench/Nightstand sub-containers), Industrial tab. Each button sets active tool in PlayerInteractionManager. Sub-containers show additional buildings.
+
+### src/ui/controllers/PriorityBoardController.cs
+Priority board UI: 4 rows (+/-) controlling JobPriorityManager tier assignments. Each row shows category icon and current level. Changes propagate to Dispatch ordering immediately.
+
+### src/ui/controllers/GardenController.cs
+Legacy/alternative name for FarmController functionality — dual bindings may exist depending on scene loading order.
+
+### src/ui/controllers/WorkZoneController.cs
+Generic work zone control panel: hover highlights, selection feedback, remove confirmation dialog. Bound to FarmZone/Stockpile zone events.
+
+### src/ui/controllers/WallMaterialRegistry.cs
+Registry of wall material variants: wood wall texture UID, placeholder entries for future materials. Used by BuildTool ghost previews.
+
+### src/ui/tools/ITool.cs
+Base interface: Hover(tileX,tileY), Click(tileX,tileY,btnMask), DragBegin/Continue/End, Cancel. All tools implement this interface. PlayerInteractionManager routes input to active tool.
+
+### src/ui/tools/SelectTool.cs
+Default selection tool: hover highlights tile, click selects FarmZone/Stockpile at position (via FarmZoneManager.SelectZoneAt / StockpileManager.FindZoneAt). No markings drawn.
+
+### src/ui/tools/BuildTool.cs
+Building tool: draws ghost/blueprint preview rectangles on MapRenderer. CanPlace checks: not water, not wall, not existing building, not existing blueprint. AddBatch/RemoveBatch calls BlueprintManager.
+
+### src/ui/tools/FarmingTool.cs
+Farming tool: draws green selection outlines, calls FarmJobManager.MarkBatch/CreateZone on click, Unmark/RemoveTiles on right-click. Zone creation uses BFS to split contiguous marked areas.
+
+### src/ui/tools/TreeFellingTool.cs
+Tree felling tool: draws black selection outlines, calls TreeJobManager.MarkBatch/UnmarkBatch. Highlights target trees visually.
+
+### src/ui/tools/WarehouseTool.cs
+Stockpile zone tool: draws purple selection outlines, calls StockpileManager.AddZoneTile/RemoveZoneTile on drag.
+
+### src/ui/tools/StoneMiningTool.cs
+Stone mining designation tool: marks stone deposits for harvesting. Calls StoneJobManager.
+
+### src/ui/tools/TreeFellingTool.cs
+Tree felling tool: draws black selection outlines, calls TreeJobManager.MarkBatch/UnmarkBatch. Highlights target trees visually.
+
+### src/ui/tools/ZoneDraftTool.cs
+Global zone drafting tool: accumulates _worldZoneCells and _worldWallCells for places outside island boundary. HasDraft property must account for both island and world cells (historical bug fix). Ghost renders world cells + active drag under same gates as Commit. Ring walls at world edge receive both island and world portions. Discard() cancels preview.
+
+### src/ui/tools/WorldPlacementPass.cs
+Bridge between IToolWorldPlacement and StreamingWorldManager: Run(cellList) applies deferred placements to off-island world. Limits: 4096 applied / 250k scanned per pass. Reports LastTruncated on overflow.
+
+### src/ui/tools/IToolWorldPlacement.cs
+Extended interface for world-beyond-island tools: CanPlaceStockpile/CanPlaceFarm queries against StreamingWorldManager gate rules.
+
+===============================================================================
+SRC/UI/RENDERERS — Слои рендеринга (главный поток)
+===============================================================================
+
+### src/ui/renderers/MapRenderer.cs
+Core map renderer: creates 8 TileMapLayer layers (ground=farm/stockpile/object/wall/building/blueprint/ghost) programmatically in _Ready. Builds TileSet from UIDs at runtime. Subscribe to all manager events (OnBlueprintCompleted, OnTreeChopped, OnWallTilesUpdated, OnZoneTileAdded, OnPlotCompleted, OnItemCountChanged), marshal them to main thread via CallDeferred. TileBatcher optimization: ConcurrentQueue<PendingCell> flush ≤2048/frame, QueueBlueprintRefresh instead of RefreshAll per event. ShadowCasterRenderer child (Z-order 4, rebuild on sun changes). CustomAabb=(32768,32768,1000) mandatory for frustum culling. Properties: WallLayer, GhostLayer, MapData, TileSizePx. Sends wall-layer cells to WallTileHelper for autotiling.
+
+### src/ui/renderers/AgentRenderer.cs
+MultiMeshInstance2D agent visualization: QuadMesh 32px farmer sprite. Drain PositionQueue ConcurrentQueue<Vector2[]> → lerp between prev/target positions (LerpFactor 25, 45 at speed≥5). Buffer Transform2D[count*8] per frame. ApplyShadow(sun) applies rotated stretch shadows from feet. ShowBehindParent=true, Z-1. Nighttime hidden (Visible=false). CustomAabb required. Initialize(agentThread, count).
+
+### src/ui/renderers/AgentShadowRenderer.cs (inline or separate)
+Shadow agent renderer: separate MultiMesh buffer for agent silhouettes stretched by sun direction. Rendered in same _Process call alongside agent transforms. Y-offset -1 from base.
+
+### src/ui/renderers/GroundItemRenderer.cs
+MultiMesh for ground items: 2 instances (Log + Grain). Cap 4096. Drain GroundItemManager.SnapshotQueue → build Transform2D buffer. Shadow support: ItemShadows property references ItemShadowRenderer for unified shadow casting.
+
+### src/ui/renderers/CropRenderer.cs
+MultiMesh for crop stages: 4 instances (stage 1 seed, stage 2 sprout, stage 3 mature, stage 4 ready). Texture UIDs referenced. Cap 4096. Drain CropGrowthManager.SnapshotQueue. Shadow support via ItemShadows reference.
+
+### src/ui/renderers/DesignationRenderer.cs
+MultiMesh red marker (ImageTexture 64px border + cross): indicates marked trees/plots, pending constructions. Throttled redraw 100ms (previously 33ms, reduced contention). Draw calls only when markings change.
+
+### src/ui/renderers/FarmZoneRenderer.cs
+Farm zone drawing: fills zone tiles green tint, draws borders. QueueRedraw throttled 100ms via _redrawPending flag. Reduces redundant canvas redraws during batch zone operations.
+
+### src/ui/renderers/ShadowCasterRenderer.cs
+Static shadow caster (trees, walls, buildings): AddCaster/RemoveCaster adds to dirty buffer. PushBuffer debounce 150ms (only pushes to GPU when buffer actually changed). Tick(sun, delta) rotates and stretches shadow polygons from anchor points. Cap 65536 casters. Batch Transform2D buffer upload via MultiMesh. Scale modifiers: 0.65 length, 0.7 width, 0.45 alpha for tree clumps to prevent blob appearance.
+
+### src/ui/renderers/ItemShadowRenderer.cs
+Unified shadow renderer for ground items, crops, and stockpile items: single MultiMesh buffer aggregates all shadow quads. SetSun(sun) called each _Process. Reduces draw calls by combining multiple item shadow sources.
+
+### src/ui/renderers/StockpileItemRenderer.cs
+Stockpile contents visualization: renders stored item icons within stockpile zone boundaries. Integrates with ItemShadowRenderer for unified shadow.
+
+### src/ui/renderers/TerrainTileLayer.cs
+Layer abstraction: abstracts TileMapLayer creation, cell clearing, refresh batching. Base class potentially inherited by MapRenderer layers.
+
+### src/ui/renderers/FertilityOverlayRenderer.cs
+Fertility heatmap overlay: TextureRect displaying color-coded soil fertility values. Toggleable visual debug aid. Values mapped from 0-200 scale.
+
+### src/ui/renderers/HumidityOverlayRenderer.cs
+Humidity heatmap overlay: TextureRect displaying moisture levels. Toggleable debug view. Helps identify optimal farming zones.
+
+===============================================================================
+SRC/UI/STREAMING — Бесконечный мир UI
+===============================================================================
+
+### src/ui/streaming/StreamingWorldView.cs
+Node2D implementing IWallWorld, IBlockWorld, IWorldCellSource. Main visual layer for off-island world. TileMapLayer terrain rendered at ZIndex=-1 (under island). Loads/chunks adaptively follows camera viewport. Update(WorldRect visibleRect) triggers ChunkWindowPlanner. Shutdown disposes resources.
+
+### src/ui/streaming/InfiniteWorldLab.cs
+Debug/lab mode for infinite world: allows stepping through world gen, viewing raw chunk data, testing edge cases. Not part of normal gameplay pipeline.
+
+### src/ui/streaming/InfiniteWorldGame.cs
+Alternative starting scene for infinite world mode: skips traditional island, spawns directly in generated region. Connected to WorldMapOverlay teleport destinations. ОБНОВЛЕНО: используется в infinite_world_game_demo.tscn вместо старой сцены.
+
+### src/ui/streaming/StreamingWorldView.cs
+Node2D implementing IWallWorld, IBlockWorld, IWorldCellSource. Main visual layer for off-island world. TileMapLayer terrain rendered at ZIndex=-1 (under island). Loads/chunks adaptively follows camera viewport. Update(WorldRect visibleRect) triggers ChunkWindowPlanner. Shutdown disposes resources.
+
+### src/ui/streaming/StreamingToolPlacement.cs
+Adapter connecting tools to StreamingWorldManager: intercepts BuildTool, FarmTool, WarehouseTool, ZoneDraftTool operations occurring outside island bounds. Applies IToolWorldPlacement gate checks via WorldGameRules before committing to world.
+
+### src/ui/streaming/WorldJobBoard.cs
+UI display for dispatched world workers: shows pending job list, agent assignments, progress tracking for off-island labor.
+
+### src/ui/streaming/WorldJobTicker.cs
+Spawns/recalls workers for world missions: Dispatch(count), Recall(count), ManualMode switch. Spawns at island edge near player focus. Renders tiny human dots on world tiles via dedicated agent renderer pass. ClearFocus() returns camera following. Max 8 auto-dispatched workers unless manual mode overrides.
+
+### src/ui/streaming/WorldAgentRenderer.cs
+Renderer for world-dispatched worker dots: small colored points at agent positions on world tiles. Z-order 1. Refreshed by WorldJobTicker ticks, not self-updating.
+
+### src/ui/streaming/WorldPathFinder.cs
+A* pathfinding for world workers navigating between regions. MaxExpanded=24000 nodes, MaxDetourCells=384, diagonal allowed without corner-cutting. Waters and mountains绕行 (avoided). Abstract goal targeting for sea crossings when land destination unreachable (maritime skip).
+
+### src/ui/streaming/WorldMapOverlay.cs   (Ветка 1 — LEGACY/резерв, конструктивно целен для обзорки)
+Full-screen map overlay: displays overview map of entire world region grid. Teleport callback OnRegionSelected(region) → Main.OnRegionSelected → generates new map at that region. CameraCenterProvider/CameraHalfExtentProvider feed current viewport bounds.
+ДЕТАЛИ (фрагменты дампа): CanvasLayer + Control FullRect + TextureRect(_map, StretchMode.Scale) + ColorRect(_viewMarker рамка обзора камеры) + Label(_info). BuildTextureAsync() -> await Task.Run(BuildPixels) -> if(!IsInsideTree())return -> Image.CreateFromData(MapWidth, MapHeight, false, Image.Format.Rgba8, pixels) -> _map.Texture=ImageTexture.CreateFromImage -> LayoutBorders(); Open(): if(!_textureRequested){_textureRequested=true;_=BuildTextureAsync();}; Close()=>Visible=false; Toggle(){if(Visible)Close();else Open();}; UpdateInfo(): mouse=GetViewport().GetMousePosition(); regionX=(mouse.X-_map.Position.X)/_map.Size.X*MapWidth; regionY=...*MapHeight; rx/ry=floor; вне [0..MapWidth/MapHeight) -> _info.Text=empty+return; иначе RegionTraitProvider.Sample(WorldSeed,GeneratorVersion,new RegionKey(rx,ry)) -> _info.Text = «Регион (rx,ry)» + Влага/Вода/Лес/Камень/Рельеф через t.*Q16*100/ushort.MaxValue% + «Клик — телепорт, O/Esc — закрыть»; ClampRegionX(x)=>Math.Clamp(x,0L,MapWidth-1L); комментарий «1 px = регион 512²», «пиксели в фоне: чистая C#-арифметика (CoordinateHash + SummaryColor)». Это и есть ПРАВИЛЬНЫЙ UI-подход для обзорки (картинка, не Node2D; покрывает ВЕСЬ мир без дыр и без стыка Control/Node2D).
+НЕ ПОДТВЕРЖДЕНО ДАМПОМ (обрезано): значения MapWidth/MapHeight (см. КОНСТАНТЫ МИРА — проверить инверсию 1024(X)×2048(Y) против истины 2048×1024), Layer у CanvasLayer, полное тело BuildPixels, конструктор/_Ready, подписка OnTeleport в Main. В текущей сборке инстанцирование overlay в Main закомментировано маркерами WM-OFF/WM-DIAG-OFF; восстановлен как резерв/эталон для Пути 1.
+
+### src/ui/streaming/WorldMapTileMapper.cs   (Ветка 2 — тайловая)
+Maps WorldMapOverlay pixels to tile positions: interpolates region coordinates onto TileMapLayer. Initializes with seed/version, binds to target TileMapLayer node. Converts screen-space clicks to WorldCoordinates.
+ДЕТАЛИ (фрагменты дампа): Node. Initialize(seed,ver,tml): грузит res://ui/assets/textures/map/ForWorldMap.png (uid://dr60ndnocpdxe), atlasTex.GetImage() (лог [WMTileMapper] Atlas loaded: 160x160); если img==null — warning «compressed texture, CreateTile may fail»; берёт/создаёт tml.TileSet, удаляет ВСЕ предзагруженные источники (лог Cleared N), пересоздаёт 16 через AddSingleTileSource(tileSet, atlasTex, name, col, row) с offset=(col*16,row*16), texture_region_size=TileSizePx=16, src.CreateTile(offset), проверка выхода offset за текстуру (texW/texH, maxX/maxY; при выходе — RemoveSource(lastIdx)+skip). Порядок (col,row -> src idx): Desert(0,0)=0, DesertV1(0,1)=1, DesertV2(0,2)=2, Steppe(1,0)=3, SteppeV1(1,1)=4, SteppeV2(1,2)=5, Water(2,0)=6, WaterV1(2,1)=7, WaterV2(2,2)=8, Mountain(3,0)=9, Plains(4,0)=10, Swamp(5,0)=11, Forest0(6,0)=12, Forest1(7,0)=13, Forest2(8,0)=14, Forest3(9,0)=15. Лог «Built 16 sources successfully» подтверждён. PopulateFromChunks(seed,ver,layer) — хвост виден в дампе: для единицы раскладки берёт 6 сэмплов {origin.X+0,Y+63},{+63,+63},{+32,+0},{+32,+63},{+0,+32},{+63,+32} -> RegionTraitProvider.SampleBlended(seed,ver,sx,sy) -> BiomeMapper.Pick(seed,ver,sx,sy,traits) -> голоса votes[sp.Biome]++ -> dominant=BiomeType с maxVotes (дефолт Plains). ТЕЛО SetCell и КООРДИНАТНАЯ ФОРМУЛА тайла в дампе ОБРЕЗАНЫ (не видны).
+ИЗВЕСТНЫЙ ДЕФЕКТ (подтверждён рантайм-диагностикой, НЕ прочитан в коде напрямую): положенные тайлы образуют РЕРЕЖЕННУЮ сетку с шагом 64 (=ChunkCells) вместо плотной: лог [WMC-COORD] usedCells=289 uniqX=17 uniqY=17 X range[-512..512] steps min=64 max=64 => 17×17=289 тайлов разбросаны по bbox 1025×1025 клеток с 63 пустыми между каждыми заполненными. Следствие: авто-fit подгоняет весь bbox под viewport => scale≈0.0659, pxPerTile≈1.05 => каждый тайл ≈1px с дырами => «пусто» на backdrop. Вероятная причина в обрезанной строке SetCell: координата = chunkIndex*64 (или regionIndex*ChunkCells) вместо плотной regionIndex / chunkIndex. ФИКС Пути 2 = прочитать полное тело PopulateFromChunks и убрать лишний множитель + сделать окно = видимые регионы вокруг камеры (не фикс 17×17 вокруг нуля) + pan/zoom/стриминг 2048×1024.
+
+### src/ui/streaming/WorldMapController.cs   (Ветка 2 — контроллер корня WorldMap.tscn)
+Control (script на корне WorldMap.tscn, id 1_jbcnj). Self-contained по текущему патчу: _Ready() — (а) если родитель не CanvasLayer, переселяет себя в новый CanvasLayer(Layer=100) на GetTree().Root для гарантированно экранных координат поверх игры; (б) FullRect + MouseFilter.Stop + ClipContents + ZIndex=1000; (в) первым ребёнком непрозрачный ColorRect-backdrop (0.05,0.06,0.08,1) MoveChild(0) — перекрывает старый интерфейс; (г) ищет MapLayer=GetNodeOrNull<TileMapLayer>("TileMapLayer") и CloseButton с цепочкой fallback GetNodeOrNull<Button>("BtnOpenWorldMap") -> ("ButtonMap") -> любая Button-ребёнок; (д) CloseButton.Pressed += CloseSelf; (е) new WorldMapTileMapper -> AddChild -> mapper.Initialize(WorldSeed, GeneratorVersion, MapLayer); (ж) RepackDense() + FitByUsedCells(). Сигналы region_selected(int,int), close_requested; CloseSelf()->EmitSignal("close_requested")+QueueFree (закрытие не зависит от подписки Main). _Input: Esc -> CloseSelf + GetViewport().SetInputAsHandled (Godot4 C# НЕ имеет InputEvent.SetHandled — использовать SetInputAsHandled/AcceptEvent; инцидент CS1061 был именно на .SetHandled()). _GuiInput: ЛКМ -> TryGetRegion -> AcceptEvent + EmitSignal("region_selected"). TryGetRegion: MapLayer.LocalToMap(ToLocal(global)) -> tile; деление на WorldRegions.TilesPerRegionAxis; смещение на _absBase окна; clamp к 0..WorldRegionsX/Y.
+RepackDense (МОСТ ВИДИМОСТИ, не боевая логика): берёт MapLayer.GetUsedCells(), снимает снимок (x,y,GetCellSourceId,GetCellAtlasCoords,GetCellAlternativeTile), считает уникальные отсортированные X/Y и шаг (xs[1]-xs[0]), EraseCell по старым координатам, SetCell плотно (dx=FloorDiv(x-minX,step)), запоминает _absBase=FloorDiv(min,step) и _winCount; затем FitByUsedCells() растягивает плотный bbox на viewport. Скомпилировался после фикса LINQ (OrderBy() без ключа -> OrderBy(v=>v); инцидент CS1501/CS0019/CS0428 был именно на этом). РАНТАЙМ-ЛОГ ПОСЛЕ ФИКСА ORDERBY НЕ ПОЛУЧЕН — не подтверждено, устранил ли репак пустоту. Даже если устранил — репак НЕ делает карту боевой: окно = 17×17 регионов вокруг нуля (absBase=(-8,-8) по диагностике), не привязано к камере, не покрывает 2048×1024; клик вернёт индексы чанков окна, а не регионы мира 0..2048 (IsInsideWorld по ним = false). Репак — временный мост «увидеть тайлы», финал = выбор пути (см. раздел СТАТУС НИЖЕ).
+
+### src/ui/streaming/StreamingWorldView.cs
+Node2D implementing IWallWorld, IBlockWorld, IWorldCellSource. Main visual layer for off-island world. TileMapLayer terrain rendered at ZIndex=-1 (under island). Loads/chunks adaptively follows camera viewport. Update(WorldRect visibleRect) triggers ChunkWindowPlanner. Shutdown disposes resources.
+
+### src/ui/streaming/InfiniteWorldLab.cs
+Debug/lab mode for infinite world: allows stepping through world gen, viewing raw chunk data, testing edge cases. Not part of normal gameplay pipeline.
+
+### src/ui/streaming/InfiniteWorldGame.cs
+Alternative starting scene for infinite world mode: skips traditional island, spawns directly in generated region. Connected to WorldMapOverlay teleport destinations. ОБНОВЛЕНО: используется в infinite_world_game_demo.tscn вместо старой сцены.
+
+### src/ui/streaming/StreamingWorldView.cs
+Node2D implementing IWallWorld, IBlockWorld, IWorldCellSource. Main visual layer for off-island world. TileMapLayer terrain rendered at ZIndex=-1 (under island). Loads/chunks adaptively follows camera viewport. Update(WorldRect visibleRect) triggers ChunkWindowPlanner. Shutdown disposes resources.
+
+### src/ui/streaming/StreamingToolPlacement.cs
+Adapter connecting tools to StreamingWorldManager: intercepts BuildTool, FarmTool, WarehouseTool, ZoneDraftTool operations occurring outside island bounds. Applies IToolWorldPlacement gate checks via WorldGameRules before committing to world.
+
+### src/ui/streaming/WorldJobBoard.cs
+UI display for dispatched world workers: shows pending job list, agent assignments, progress tracking for off-island labor.
+
+### src/ui/streaming/WorldJobTicker.cs
+Spawns/recalls workers for world missions: Dispatch(count), Recall(count), ManualMode switch. Spawns at island edge near player focus. Renders tiny human dots on world tiles via dedicated agent renderer pass. ClearFocus() returns camera following. Max 8 auto-dispatched workers unless manual mode overrides.
+
+### src/ui/streaming/WorldAgentRenderer.cs
+Renderer for world-dispatched worker dots: small colored points at agent positions on world tiles. Z-order 1. Refreshed by WorldJobTicker ticks, not self-updating.
+
+### src/ui/streaming/WorldPathFinder.cs
+A* pathfinding for world workers navigating between regions. MaxExpanded=24000 nodes, MaxDetourCells=384, diagonal allowed without corner-cutting. Waters and mountains绕行 (avoided). Abstract goal targeting for sea crossings when land destination unreachable (maritime skip).
+
+### src/ui/streaming/WorldMapOverlay.cs
+Full-screen map overlay: displays overview map of entire world region grid. Teleport callback OnRegionSelected(region) → Main.OnRegionSelected → generates new map at that region. CameraCenterProvider/CameraHalfExtentProvider feed current viewport bounds.
+
+### src/ui/streaming/WorldMapTileMapper.cs
+Maps WorldMapOverlay pixels to tile positions: interpolates region coordinates onto TileMapLayer. Initializes with seed/version, binds to target TileMapLayer node. Converts screen-space clicks to WorldCoordinates.
+
+===============================================================================
+AUTOLOAD/ — Singleton autoloads
+===============================================================================
+
+### autoload/mcp_interaction_server.gd
+GDScript autoload: MCP (Model Context Protocol) interaction server. Handles communication between Godot editor plugin (godot-mcp) and game instance. Listens on port 9090, exposes RPC-style commands for debugging, scene inspection, property editing. Connected to godot_ai addon for AI IDE integration.
+
+### autoload/_mcp_gpu_bridge.gd
+GDScript autoload: bridges GPU-related MCP operations. Coordinates between RenderingDevice calls and MCP server requests. Enables remote GPU resource inspection/debugging.
+
+### autoload/worldmap_button_patch.gd   (ОТКЛЮЧЕН — изменено)
+Patch script: patches HUD's ButtonMap widget to properly toggle WorldMap overlay. Ensures correct initialization order regardless of scene instantiation path.
+СТАТУС: ОТКЛЮЧЁН. Строка удалена/закомментирована из [autoload] в project.godot; физический файл переименован в autoload/worldmap_button_patch.gd.disabled. Причина отключения: двойная подписка на кнопку карты -> один клик вызывал ToggleWorldMap дважды (open+close) = «ничего не происходит». Логи [WM] BUTTON CLICKED / Patch applied больше не появляются. НЕ включать обратно без удаления альтернативной привязки в HUDController.BindWorldMapButton.
+
+===============================================================================
+ADDONS/ — Плагины
+===============================================================================
+
+### addons/godot-mcp/ — MCP (Model Context Protocol) Plugin
+#### addons/godot-mcp/plugin.cfg + plugin.gd
+Godot plugin entry: autoloads McpInteractionServer singleton. Registers RPC endpoints for debugger interaction.
+
+#### addons/godot-mcp/runtime_bridge.gd
+Runtime bridge: translates MCP protocol messages into Godot EditorPlugin operations (get_scene_tree, get_ui_elements, screenshot, eval GDScript). Enables external AI tools to inspect/control running game.
+
+### addons/godot_ai/ — AI Integration Plugin
+#### addons/godot_ai/plugin.cfg + plugin.gd
+AI plugin manifest: provides dock panel integration for AI coding assistants.
+
+#### addons/godot_ai/connection.gd
+Connection management: establishes WebSocket/MCP connections to AI backend servers. Handles reconnection logic.
+
+#### addons/godot_ai/dispatcher.gd
+Request dispatcher: routes incoming AI tool requests to appropriate handlers. Matches schemas to registered capabilities.
+
+#### addons/godot_ai/mcp_dock.gd
+Editor dock UI: collapsible panel showing MCP connection status, log output, error reporting.
+
+#### addons/godot_ai/migration_bridge.gd + migration_coordinator.gd + migration_fallback.gd
+Migration infrastructure: bridges old godot-mcp APIs to new MCP standard gracefully. Fallback paths for compatibility.
+
+#### addons/godot_ai/telemetry.gd
+Telemetry collection: tracks usage statistics, error rates, response latency for analytics.
+
+#### addons/godot_ai/tool_catalog.gd
+Tool catalog: enumerates available MCP tools (get_scene_tree, screenshot, eval, instantiate_scene, remove_node, change_scene, raycast, etc.). Maintains capability registry.
+
+#### addons/godot_ai/vision_routing.gd
+Vision/image routing: captures screenshots, processes images for computer-vision-capable AI models.
+
+### addons/godot_ai/clients/ — AI Client Strategy Implementations
+Each client implements a specific AI IDE/backend protocol:
+- **deepseek_harness.gd** — DeepSeek Harness integration (primary client for this session)
+- **cursor.gd** — Cursor IDE
+- **claude_code.gd / claude_desktop.gd** — Claude Code / Desktop
+- **cline.gd** — Cline extension
+- **codebuddy.gd** — Code Buddy
+- **codex.gd** — OpenAI Codex CLI
+- **gemini_cli.gd** — Google Gemini CLI
+- **grok.gd** —xAI Grok
+- **hermes.gd** — Hermes CLI
+- **kilo_code.gd** — Kilo Code
+- **kimi_code.gd** — Kimi Code
+- **kiro.gd** — Kiro
+- **opencode.gd** — OpenCode
+- **pi.gd** — Pi
+- **qwen_code.gd** — Qwen Code
+- **roo_code.gd** — Roo Code
+- **trae.gd** — Trae
+- **vscode.gd / vscode_insiders.gd** — VS Code extensions
+- **windsurf.gd** — Windsurf
+- **zed.gd** — Zed editor
+- **zoo_code.gd** — Zoo Code
+- **antigravity.gd** — Antigravity IDE
+- **_base.gd** — Abstract base class for all clients
+- **_atomic_write.gd** — Atomic file write utility
+- **_cli_exec.gd / _cli_finder.gd / _cli_strategy.gd** — CLI execution helpers
+- **_json_strategy.gd / _toml_strategy.gd / _yaml_strategy.gd** — Configuration format parsers
+- **_manual_command.gd** — Manual command injection
+- **_path_template.gd** — Template path resolution
+- **_registry.gd** — Client registry/discovery
+- **_dsh_strategy.gd** — DSH-specific strategy
+
+### addons/godot_ai/custom_tools/ — Custom MCP Tool Support
+- **custom_tool_wrapper.gd** — Wraps arbitrary scripts as MCP-callable tools
+- **mcp_call_context.gd** — Execution context for custom tool invocations
+- **mcp_custom_tool_spec.gd** — Schema/spec for custom tool definitions
+- **mcp_service_locator.gd** — Service discovery for custom tool providers
+- **mcp_tool_registry.gd** — Registry storing and resolving custom tool names→implementations
+
+### addons/godot_ai/debugger/ — Debugging Infrastructure
+- **mcp_debugger_plugin.gd** — Debugger integration plugin: hooks into Godot's debugger subsystem, exposes breakpoint/variable inspection via MCP.
+
+### addons/godot_ai/dock_panels/ — Editor Dock Components
+- **log_viewer.gd** — Scrollable log viewer panel showing MCP conversation history, errors, tool invocations
+- **port_picker_panel.gd** — Port selection UI for MCP server configuration
+
+### addons/godot_ai/export/ — Export-Time Processing
+- **mcp_export_plugin.gd** — Strip/enhance MCP assets during export builds. Optionally disable AI features in shipped games.
+
+### addons/godot_ai/handlers/ — MCP Request Handlers (Editor-side)
+Each handler implements one or more MCP method handlers:
+- **api_handler.gd** — Raw API passthrough for unsupported methods
+- **animation_handler.gd** — PlayAnimation, TweenProperty, AnimationTree operations
+- **audio_handler.gd** — Audio bus, audio play, environment manipulation
+- **autoload_handler.gd** — Manage autoload singletons
+- **batch_handler.gd** — Batch operations (multiple commands in one request)
+- **camera_handler.gd** — Get/Set camera, presets, values
+- **client_handler.gd** — Client identification and capability negotiation
+- **command_handler.gd** — Generic command execution wrapper
+- **control_draw_recipe_handler.gd** — Control-level draw instructions
+- **csg_handler.gd** — CSG shape operations
+- **curve_handler.gd** — Curve resource manipulation
+- **editor_handler.gd** — Editor-specific operations (file browser, scene tree access)
+- **environment_handler.gd** — Environment settings, sky, atmosphere
+- **filesystem_handler.gd** — File read/write/dir listing (sandboxed)
+- **gridmap_handler.gd** — GridMap operations
+- **input_handler.gd** — Input action management, input map modification
+- **material_handler.gd** — Material creation/editing, presets, values
+- **node_handler.gd** — Node CRUD: instantiate, reparent, connect signal, emit signal, await_signal
+- **particle_handler.gd** — Particles: spawn, set parameters, presets
+- **physics_shape_handler.gd** — Physics body shapes, collision layers
+- **project_handler.gd** — Project settings management
+- **resource_handler.gd** — Resource loading/saving/import management
+- **scene_handler.gd** — Scene: change_scene, instantiate_scene, serialize_state
+- **script_handler.gd** — Script attachment, evaluation, validation
+- **signal_handler.gd** — Signal connect/disconnect/emit/await
+- **test_handler.gd** — Test execution harness
+- **texture_handler.gd** — Texture loading, UV adjustments
+- **theme_handler.gd** — Theme resource management
+- **tilemap_handler.gd** — TileMap layer operations, cell manipulation
+- **tileset_handler.gd** — TileSet resource editing
+- **ui_handler.gd** — UI element inspection and manipulation (positions, text, visibility)
+
+### addons/godot_ai/runtime/ — Runtime Helper Scripts
+- **draw_recipe.gd** — Structured draw instruction format for complex rendering passes
+- **editor_logger.gd** — Logger writing to Godot editor debug console
+- **game_helper.gd** — Utility functions callable from MCP during runtime
+- **game_logger.gd** — Runtime game log buffering (user://accessible)
+- **validation_logger.gd** — Validation result logging for MCP-requested checks
+
+### addons/godot_ai/testing/ — Testing Framework
+- **script_error_capture.gd** — Captures GDScript compilation/runtime errors during testing
+- **test_runner.gd** — Executes test suites, reports pass/fail
+- **test_suite.gd** — Defines test case structure
+
+### addons/godot_ai/utils/ — Utility Classes
+Extensive utility library supporting the entire addon:
+- **allow_hosts.gd** — Network host allowlisting for MCP server connectivity
+- **class_introspection.gd** — Runtime class reflection utilities
+- **client_job_owner.gd** — Tracks which client owns which background job
+- **client_mutation_lock.gd** — Prevents concurrent conflicting mutations from different clients
+- **diagnostics_capture.gd** — System diagnostics collection
+- **editor_log_buffer.gd / game_log_buffer.gd / log_buffer.gd** — Ring-buffer log storage
+- **error_codes.gd** — Standardized error code constants
+- **fuzzy_suggestions.gd** — Fuzzy matching for node names, property names
+- **json_values.gd** — JSON serialization/deserialization helpers
+- **log_backtrace.gd** — Stack trace formatting
+- **mcp_adoption_label.gd / mcp_client_refresh_state.gd / mcp_server_state.gd / mcp_startup_path.gd** — MCP lifecycle state tracking
+- **path_validator.gd / port_resolver.gd / release_verifier.gd** — Input validation and network setup
+- **plugin_reload.gd / resource_io.gd / screenshot_encode.gd** — Plugin management, IO, image handling
+- **script_work.gd / server_authority.gd / server_lifecycle.gd / server_version_check.gd** — Server management
+- **settings.gd** — Persistent addon settings persistence
+- **structured_log_ring.gd** — Ring buffer for structured JSON logs
+- **surfaced_error_tracker.gd** — Error deduplication and surface tracking
+- **transport_capability.gd / update_activation_runner.gd / update_installer.gd / update_manager.gd / update_mixed_state.gd** — Update mechanism for addon itself
+- **uv_cache_cleanup.gd / uv_resolution_policy.gd** — Unity Package Manager cache management (if applicable)
+- **variant_serializer.gd** — Godot Variant ↔ JSON conversion
+- **windows_port_reservation.gd** — Windows-specific port acquisition/reservation
+
+### addons/scene_exported_properties_dashboard/ — Scene Inspector Plugin
+#### addons/scene_exported_properties_dashboard/plugin.cfg + plugin.gd
+Dashboard plugin manifest and entry point. Adds a new inspector panel for exported node properties.
+
+#### addons/scene_exported_properties_dashboard/core/property_collector.gd
+Collects @export/@export_var properties from all nodes in current scene via node.get_property_list(). 100% compatible with both GDScript @export and C# [Export].
+
+#### addons/scene_exported_properties_dashboard/core/property_editor.gd
+Edit-in-place editor: parses property values, shows dropdowns for enums/flags, numeric spinners. Uses EditorUndoRedoManager for undo support.
+
+#### addons/scene_exported_properties_dashboard/core/snapshot_manager.gd
+Snapshot creation/restoration: saves full property state of scene, restores later. Useful for comparing AI-generated edits.
+
+#### addons/scene_exported_properties_dashboard/ui/dashboard_panel.tscn + dashboard_panel.gd
+Main dashboard UI layout. Table view with filter/search columns.
+
+#### addons/scene_exported_properties_dashboard/ui/filter_dialog.tscn + filter_dialog.gd
+Filter popup: apply filters to property table by name pattern, type, node path.
+
+#### addons/scene_exported_properties_dashboard/ui/snapshot_dialog.tscn + snapshot_dialog.gd
+Create/load snapshot dialogs. Name snapshots, restore previous states.
+
+#### addons/scene_exported_properties_dashboard/ui/snapshot_list.tscn + snapshot_list.gd
+List view of saved snapshots with metadata (timestamp, node count).
+
+===============================================================================
+RESOURCES/ — Ресурсы
+===============================================================================
+
+### resources/map_tileset.tres
+Pre-built TileSet resource for map terrain tiles. Referenced by MapRenderer during runtime TileSet creation. May be overridden by dynamically built sets.
+
+===============================================================================
+UI/ASSETS/ — Графика и текстуры
+===============================================================================
+
+### ui/assets/textures/tiles/ — Terrrain tiles
+- **grass.png** — Green grass tile
+- **water.png** — Blue water tile
+- **sand.png** — Sandy shore/beach tile
+- **mountains.png** — Mountain tile atlas (4×4 autotile, uid://de7mit41ukuoq)
+- **GardenBeds/** — Cultivated garden bed sprites
+- **map/ForWorldMap.png** — Атлас биомов мировой карты-обзорки (uid://dr60ndnocpdxe, 160×160 = сетка 10×10 по 16px). Используется ВЕТКОЙ 2 (WorldMapTileMapper/WorldMap.tscn). Порядок колонок/рядов: Desert(0,0..2), Steppe(1,0..2), Water(2,0..2), Mountain(3,0), Plains(4,0), Swamp(5,0), Forest(6..9,0). НЕ используется Веткой 1 (WorldMapOverlay рисует цвета биомов программно, не спрайты).
+
+### ui/assets/textures/objects/ — Building/objekt textures
+- **tree.png / tree_1.png / tree_2.png / tree_3.png** — Tree variants (different sizes/shapes)
+- **bed.png / bench.png / nightstand.png** — Furniture pieces
+- **work_table.png** — Workbench
+- **stone.png** — Stone resource icon
+- **wooden_wall.png** — Wooden wall segment
+
+### ui/assets/textures/icons/ — UI icons
+- **Bread_icon.png / Wheat.png** — Food/grain icons
+- **farming.png / farming.png** — Farming tab icon
+- **IndustrialIcon.png** — Industry tab
+- **MapIcon.png / ZonesIcon.png** — Map/zones navigation
+- **priority Icons/** — Priority board icons
+- **BuildIcon/** — Construction building icons (door, material variants)
+- **people_icon.png / people_icon.png** — Population/count indicators
+- **checkMark.png / stop.png / info.png / no.png** — Status indicators
+
+### ui/assets/textures/food/
+- **corn.png** — Corn/wheat crop sprite
+- **fish.png** — Fish resource
+
+### ui/assets/textures/drop/
+- **logs.png** — Cut log dropped on ground
+- **StoneDrope.png** — Mined stone dropped
+
+### ui/assets/textures/essence/
+- **people.png** — Farmer character sprite (for MultiMesh)
+
+### ui/assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf
+Custom variable font for game UI text. Imported by Godot, compiled into fontdata cache.
+
+===============================================================================
+SHADERS/ — Шейдеры и Compute shaders
+===============================================================================
+
+### shaders/chunk_gen.shader / chunk_gen.frag / chunk_gen_compute.compute
+GPU compute shaders for chunk terrain generation. Process noise evaluations in parallel on GPU. Not active in gl_compatibility mode (requires RenderingDevice / Forward+ renderer). Included as potential optimization path.
+
+### src/ui/renderers/AgentShadow.gdshader / AgentShadowInterpolated.gdshader / AgentInterpolation.gdshader
+GDShader shaders for agent shadow rendering and position interpolation. Applied to agent MultiMesh transform matrices. Use sun angle and time for dynamic shadow stretching.
+
+===============================================================================
+TESTS/ — Тесты (сценарии + C# код)
+===============================================================================
+
+Tests run headless: `godot --headless --path . tests/<name>.tscn` expecting [PASS] output and exit code 0.
+
+### tests/WorldChunkCodecTests.tscn + WorldChunkCodecTests.cs
+Serialize/deserialize roundtrip for WorldChunk. Validates data integrity across codec versions. Tests empty/full chunks, various terrain combinations.
+
+### tests/ChunkWindowPlannerTests.tscn + ChunkWindowPlannerTests.cs
+ChunkWindowPlanner behavior: budget enforcement, window size adaptation, load/unload decisions. Verifies desired/entered/exited sets remain consistent.
+
+### tests/WorldGenerationTests.tscn + WorldGenerationTests.cs
+Procedural world generation tests: noise outputs plausible terrain, no artifacts at chunk boundaries, moisture/forest correlations reasonable.
+
+### tests/WorldChunkStreamerTests.tscn + WorldChunkStreamerTests.cs
+Full streaming pipeline: camera moves, chunks load/unload correctly, no gaps or duplicates in visible area. Boundary crossing at chunk edges tested.
+
+### tests/WorldManifestStoreTests.tscn + WorldManifestStoreTests.cs
+Manifest store CRUD: save list of known chunks, detect missing/damaged chunks on recovery.
+
+### tests/WorldChunkDeltaCodecTests.tscn + WorldChunkDeltaCodecTests.cs
+Delta compression: verify deltas contain only changed cells, full reconstruction works from delta+base.
+
+### tests/adversarial/*.tscn — Edge-case / adversarial tests
+- **CorruptChunkTests.cs** — What happens when chunk file is corrupted/damaged?
+- **ExtremeCoordinateTests.cs** — Very large world coordinates beyond normal ranges?
+- **DeltaCodecStressTests.cs** — Massive delta payloads, rapid change sequences
+- **StreamerChurnTests.cs** — Rapid camera movement causing constant chunk churn
+- **OceanRingDiscontinuityTests.cs** — Procedural ocean at extreme distances
+
+### tests/benchmarks/*.tscn — Performance benchmarks
+- **WorldStreamBenchmarks.cs** — Measure chunk load/unload timing under various conditions
+- **WorldGenBenchmark.cs** — Measure CPU vs GPU chunk generation throughput
+
+### tests/integration/ — Integration tests
+- **StreamingWorldManagerTests.cs** — Full manager lifecycle: open/close/reopen
+- **StreamingWorldBlockTests.cs** — Block placement/removal persists across sessions
+- **WorldGameRulesTests.cs** — Gate rule validation: can't place on water/mountains, respects moisture thresholds
+
+### tests/world-access/ — World access interface tests
+- **WorldAccessTests.cs** — IWorldAccess routing: island vs chunk, composite fallback
+- **WorldAccessInterfaceTests.cs** — Interface contract adherence
+- **ToolWorldPlacementTests.cs** — Tools placing beyond island boundaries
+- **ZoneWorldDraftTests.cs** — Zone draft accumulation and commit
+- **WorldJobTickerTests.cs** — Worker spawn/recall/dispatch mechanics
+- **WorldNavigationTests.cs** — Pathfinding across world boundaries
+- **WorldFarmBandCensusTests.cs** — Farm band statistics accuracy
+
+### tests/save-coordinator/ — Save coordinator tests
+- **WorldSaveCoordinatorTests.cs** — Async save completes, doesn't block main thread
+- Data written to disk matches expected content
+
+### tests/offline-ticker/ — Offline ticking tests
+- **OfflineWorldTickerTests.cs** — Offline tick processing: step accumulation, game time advancement during paused state
+
+### tests/validate_gdscript.gd
+Validate GDScript syntax correctness. Used during CI/pre-release checks.
+
+### tests/AgentGpuInterpolationTests.tscn + AgentGpuInterpolationTests.cs
+GPU-based agent position interpolation test. Measures lerp quality between frame n and n+1.
+
+### tests/OfflineCatchUpTests.tscn + OfflineCatchUpTests.cs
+Offline catch-up policy: verifies spiral-of-death prevention, correct step capping.
+
+### tests/world-map/WorldMapRegionsTests.cs   (НОВЫЙ — обнаружен в discovery)
+Тесты констант/логики регионов мировой карты (RegionKey/WorldRegions/IsInsideWorld/FloorDiv/FloorMod). Файл присутствует на диске (tests\world-map\WorldMapRegionsTests.cs + .uid). Использовать как регрессию при правке констант мира.
+
+### tests/world-map/WorldOceanRingProbe.tscn
+Новый тест для проверки кольца океана на краях мира (probes ocean ring generation at extreme coordinates).
+
+===============================================================================
+.GODOT/ — Generated/editor cache (auto-managed by Godot, do not edit manually)
+===============================================================================
+
+Contains shader cache binaries, mono temp DLLs (.dll, .pdb), import metadata (.ctex, .md5), uid_cache.bin, editor scene folding configs, filesystem cache files. Auto-regenerated on project load. Should be gitignored.
+ЗАМЕТКА ПО МИРОВОЙ КАРТЕ: в .godot/editor есть единственные editstate/folding для WorldMap.tscn (без дублей по регистру); в .godot/imported — ForWorldMap.png (.ctex/.md5) и world_map_overlay.png (резерв Ветки 1). После серии regex-патчей Main.cs/HUDController.cs рекомендуется полная очистка obj/bin/.godot/mono/temp и перезапуск редактора (Project -> Reload Current Project), иначе C#-кэш может показывать старые ошибки.
+
+===============================================================================
+КОНСТАНТЫ МИРА (новый блок, источник истины)
+===============================================================================
+- Playable-остров/регион: 512×512 клеток, тайл 64px => 32768px. MapRenderer.TileSizePx=64, MapWidth/MapHeight=512.
+- Мировая карта-обзорка (целевая схема, подтверждена заказчиком): 2048×1024 РЕГИОНОВ; 1 регион = 512×512 клеток. Чанк = 64 клетки => TilesPerRegionAxis = 512/64 = 8 тайлов мировой карты на ось региона.
+- Источник истины констант: src/core/world/streaming/generation/WorldRegions.cs — WorldRegionsX=2048, WorldRegionsY=1024, RegionSize=512, ChunkCells=64, TilesPerRegionAxis=8; FloorDiv/FloorMod (корректны для отрицательных); RegionForCell, LocalForCell, RegionOrigin, RegionBounds, IsInsideWorld.
+- RegionKey вынесен в отдельный файл src/core/world/streaming/generation/RegionKey.cs (`public readonly record struct RegionKey(long X, long Y);`) — чтобы ошибка компиляции WorldRegions.cs не каскадила CS0246 по всему проекту (реальный инцидент: пока WorldRegions.cs не компилировался, RegionKey «исчезал» для Main.cs/RegionTraits.cs/WorldMapOverlay.cs).
+- global using Game.Core.WorldStreaming; — src/GlobalUsings.cs (RegionKey/WorldRegions видны всем C# без локальных using).
+- ВНИМАНИЕ (не подтверждено текущим дампом): в WorldMapOverlay.cs константы MapWidth/MapHeight в дампе ОБРЕЗАНЫ (значения не видны). В доках/рассуждениях всплывала инверсия 1024(X)×2048(Y) относительно истины 2048×1024 — это НЕ факт дампа, а непроверенная догадка; перед использованием overlay обязателен контроль по диску, что MapWidth=2048 (X), MapHeight=1024 (Y), и что ClampRegionX/UpdateInfo мапят мышь→регион по тем же осям (иначе транспонированная карта и неверный выбор региона).
+
+===============================================================================
+ПОТОКИ ДАННЫХ И ВЗАИМОДЕЙСТВИЕ КОМПОНЕНТОВ
+===============================================================================
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                      MAIN THREAD (UI/Render)                         │
+│                                                                      │
+│  Main.tscn                                                         │
+│    ├── CameraController ───→ Viewport clamping                     │
+│    ├── MapRenderer ───→ 8 TileMapLayers                            │
+│    │     ├── subscribes to all Manager events (CallDeferred)        │
+│    │     ├── ShadowCasterRenderer (add/remove static casters)       │
+│    │     └── DesignationRenderer (markings multiMesh)               │
+│    ├── AgentRenderer ───→ drain PositionQueue → lerp → MultiMesh   │
+│    ├── DayNightCycle ───→ CanvasModulate tint + sun position       │
+│    ├── StreamingWorldView ───→ ZIndex=-1 background                │
+│    ├── HUDController ───→ UI panels, tool activation               │
+│    ├── PlayerInteractionManager ───→ route to ITool                │
+│    ├── PerformanceOverlay ───→ GameProfiler metrics                │
+│    ├── WorldMapOverlay ───→ fullscreen map toggle                  │
+│    └── SelectionBox ───→ Z=100 drag selection                      │
+│                                                                      │
+│  _Process(dt):                                                      │
+│    1. SyncGameTime (10Hz) ← AgentSimulationThread.GameTimeSeconds   │
+│    2. DayNightCycle.Tick(gameTime)                                  │
+│    3. Sun.sample → ShadowRenderer.Tick + AgentRenderer.ApplyShadow  │
+│    4. StreamingWorldView.Update(viewport)                           │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SIMULATION THREAD (Task.Run)                       │
+│                                                                      │
+│  AgentSimulationThread                                               │
+│    ├── Phase1: ParallelMove (Pathfinding + MoveTowards)              │
+│    │     ↑ HierarchicalPathfinder (region A* + window A*)            │
+│    │     ↑ FlowFieldManager (local BFS detour 33×33)                 │
+│    │     ↑ AgentSpatialGrid (collision/proximity)                    │
+│    │     ↑ DynamicWorkBalancer / DynamicWorkScheduler                │
+│    ├── Phase2: Dispatch                                              │
+│    │     ↑ JobDispatcher → JobIndex + IdleWorkers                   │
+│    │     ↑ GenericJobSpatialIndex (position index)                   │
+│    │     ↑ CropGrowthManager.UpdateGrowth (every N ticks)            │
+│    │     ↑ GroundItemManager.GenerateSnapshot                        │
+│    ├── Phase3a: ParallelBookkeeping                                  │
+│    │     ↑ AgentDataPool.Hunger/Sleep/Fatigue/Env/Mood               │
+│    │     ↑ NeedsJobSystem (SeekingFood/Resting/Migrating)            │
+│    ├── Phase3b: SequentialCommit                                     │
+│    │     ↑ SpatialGrid.Rebuild                                       │
+│    │     ↑ handler.Commit (TakeItems/SpawnItems/Release)             │
+│    │     ↑ TreeJobManager.CompleteTree                               │
+│    │     ↑ FarmJobManager.CompletePlot                               │
+│    │     ↑ BlueprintManager.DeliverLogs                              │
+│    ├── PushSnapshot → PositionQueue ConcurrentQueue                  │
+│    └── Sleep(0)/Sleep(1) at high speeds                             │
+│                                                                      │
+│  Output channels:                                                    │
+│    ├── PositionQueue → AgentRenderer (main thread drain)             │
+│    ├── GroundItemManager.SnapshotQueue → GroundItemRenderer           │
+│    ├── CropGrowthManager.SnapshotQueue → CropRenderer                 │
+│    └── GameProfiler.Records (per-phase balance via Accumulate)      │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                      JOB SYSTEM FLOW                                  │
+│                                                                      │
+│  Tool.Click/Register → JobBroker                                    │
+│    → JobDispatcher.DispatchPendingJobs                              │
+│      → CollectIdle Workers → TryClaim(JobIndex CAS)                 │
+│      → OnStart(handler): reserves items/materials                   │
+│      → ExecuteParallel(handler): worker does work each step         │
+│      → Commit(handler): completes work, releases items              │
+│      → ReleaseJobWorker / ReleaseForStuck                           │
+│                                                                      │
+│  Handler chain examples:                                            │
+│  Tree Chop: TreeFellingTool → TreeJobManager.MarkBatch →             │
+│    JobBroker.RegisterTreeChop → Dispatcher → TreeChopHandler         │
+│    → CompleteTree → Spawn Logs → GroundItemManager                   │
+│                                                                      │
+│  Farm: FarmingTool → FarmJobManager.MarkBatch →                      │
+│    JobBroker.RegisterFarmPlot → FarmingHandler (125s) →              │
+│    CompletePlot → farmLayer tile update → FarmZoneManager.CreateZone │
+│    → AutoPlant Register → PlantingHandler(10s, grain 1) →           │
+│    CropGrowthManager.Plant(60s × 4 stages) → Stage 4 →              │
+│    HarvestJobHandler(5s) → Drop Grain + AutoPlant cycle             │
+│                                                                      │
+│  Build: BuildTool → BlueprintManager.AddBatch →                      │
+│    JobBroker.RegisterBlueprint → DeliveryHandler(reserve logs) →     │
+│    StockpileHaulingHandler(haul logs) → Deliver →                    │
+│    at 15/25 logs: ConstructionHandler(2000s) →                       │
+│    CompleteConstruction → SolidWalls=true → WallBuildManager         │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                  INFINTIE WORLD STREAMING                             │
+│                                                                      │
+│  Camera viewport center                                             │
+│    → StreamingWorldView.Update(visibleRect)                         │
+│      → ChunkWindowPlanner (adaptive window 3-16 chunks)             │
+│        → WorldChunkStreamer.LoadNearbyChunks                        │
+│          → ParallelChunkGenerator (noise evaluation)                │
+│          → WorldChunkStore.Save (async, via SaveCoordinator)         │
+│        → WorldCellQuery.CellAt (procedural reads)                   │
+│                                                                      │
+│  Tools outside island bounds:                                       │
+│    BuildTool/FarmingTool/WarehouseTool → StreamingToolPlacement     │
+│      → WorldGameRules gate checks (terrain=must be grass)           │
+│      → WorldPlacementPass.Run(applying deltas)                      │
+│        → WorldDeltaKind (plans → committed state)                   │
+│        → WorldSaveCoordinator(batch-write to disk)                  │
+│                                                                      │
+│  World workers (dispatched):                                        │
+│    WorldJobTicker.Dispatch(N) → spawn at island edge                │
+│      → WorldPathFinder(A*) to target region                         │
+│        → WorldAgentRenderer(dots on target tiles)                   │
+│        → Do work → Report to JobTicker                              │
+└─────────────────────────────────────────────────────────────────────┘
+
+===============================================================================
+КЛЮЧЕВЫЕ АРХИТЕКТУРНЫЕ РЕШЕНИЯ
+===============================================================================
+
+1. SOA Pattern (Structure of Arrays): All agent data stored in flat parallel
+   arrays (float[] PositionX, float[] PositionY, etc.) instead of individual
+   objects. Zero GC pressure, maximum L1/L2 cache hit rate. Implemented in
+   AgentDataPool, used by all worker-phase methods.
+
+2. Dedicated Simulation Thread: Task.Run isolates simulation from main thread.
+   Fixed timestep 0.05s prevents spiral of death (max 5 substeps). Communication
+   via ConcurrentQueue (snapshots), volatile fields (GameTimeSeconds),
+   CallDeferred (events to main thread). NEVER calls Godot Node methods from
+   simulation thread.
+
+3. GPU Instancing: All mass-rendered entities use MultiMeshInstance2D with
+   CustomAABB=(32768,32768,1000). Agents, items, crops, crops, designations,
+   zone markers all batched into single draw calls per type.
+
+4. Space Chunking: 512×512 map divided into 32×32 chunks of 16×16 tiles each.
+   Used by JobBroker (spatial indexing for targets), GroundItemManager,
+   StockpileManager for O(k) rather than O(n) proximity queries.
+
+5. Lock-Free Where Possible: Interlocked/Atomic operations for counters,
+   CAS for job claiming, volatile for shared state. Locks only where strictly
+   necessary (manager internal dictionaries).
+
+6. Event Marshalling: All manager events that affect UI/renderers MUST marshal
+   to main thread via Callable.From(()=>Event?.Invoke(...)).CallDeferred().
+   Internal state protected by lock(_lock).
+
+7. Time Scaling: Speed *max(1, speed/16) scaling for dispatch/growth intervals
+   prevents call frequency explosion at high speeds (100x ≈ 56 dispatch calls/s
+   instead of 333). Sleep(1) for cold iterations at speed>=25 prevents busy-loop.
+
+8. МИРОВАЯ КАРТА = UI-СЛОЙ, НЕ ИГРОВОЙ 2D-УЗЕЛ (новый пункт). Обзорка строится
+   как CanvasLayer+Control поверх игры. Две реализованные ветки, СМЕШИВАТЬ
+   НЕЛЬЗЯ (наложение давало «пусто / старый интерфейс не закрывается»):
+     (Ветка 1) WorldMapOverlay.cs — TextureRect+Image, 1px=регион, BuildPixels по
+       RegionTraitProvider.SummaryColor, покрывает весь 2048×1024, Esc/O, OnTeleport,
+       рамка обзора. Рекомендован для «взглянуть на мир как в RimWorld/SoS, без
+       границ». ForWorldMap.png НЕ участвует (рисуются цвета биомов, не спрайты).
+     (Ветка 2) WorldMap.tscn+WorldMapController+WorldMapTileMapper — TileMapLayer+атлас
+       биомов 16px (ForWorldMap.png). Нужна ТОЛЬКО при зуме до отдельных тайлов с pan.
+       Требует: плотный SetCell (убрать шаг 64), tile_size=16, окно по видимым регионам
+       камеры, явный Scale/Position слоя под viewport (ловушка Node2D-в-Control: без
+       трансформа тайлы улетают за экран / сжимаются в 1px).
+   ToggleWorldMap в Main.cs должен вести РОВНО ОДНУ ветку и обязательно Connect
+   region_selected+close_requested; блокировать игровой ввод под картой
+   (ProcessMode.Disabled у interaction/camera/selection) и поднимать кнопки скорости
+   времени поверх оверлея (Вариант A = отдельный CanvasLayer/поднятие ZIndex HUD-слоя;
+   НЕ латать в HUD вслепую). OnRegionSelected(region): до старта SimThread —
+   MapGenerator.GenerateRegion(центр региона) + запуск; после старта — телепорт камеры
+   в центр региона (стриминг мира продолжается). autoload worldmap_button_patch.gd
+   ОТКЛЮЧЕН в project.godot и физически переименован в .gd.disabled — раньше двойной
+   подпиской на кнопку глушил toggle (open+close за один клик = «ничего не происходит»).
+   НЕ тестировать мировую карту через F6 на WorldMap.tscn (нет Main/камеры/HUD —
+   артефакты «пусто/не закрывается»); только F5 + клик кнопки в HUD.
+
+===============================================================================
+СТАТУС МИРОВОЙ КАРТЫ — ИЗВЕСТНЫЕ ПРОБЛЕМЫ (новый раздел для навигации)
+===============================================================================
+РАБОТАЕТ (факты логов последних прогонов): события toggle/open/close/Esc; подписка
+HUD-кнопки (BindWorldMapButton) и привязка ToggleWorldMap (SetupButtonMapBinding);
+инстанцирование WorldMap.tscn в CanvasLayer; mapper.Initialize строит 16 источников
+атласа; тайлы кладутся (usedCells=289); сигналы region_selected+close_requested
+подключаются ([MAIN] WorldMap controller connected); CloseSelf вызывается и кнопкой,
+и Esc ([WMC] CloseSelf invoked); каскад CS0246 по RegionKey устранён выносом RegionKey
+в отдельный файл + GlobalUsings + переписыванием WorldRegions.cs без зависимости от
+обрезанных типов; CS1061 .SetHandled устранён (SetInputAsHandled/AcceptEvent); CS1501
+OrderBy устранён (OrderBy(v=>v)); сборка dotnet build проходила [PASS] на этапе до
+репака.
+СЛОМАНО ВИЗУАЛЬНО (факт лога): при открытой карте экран пустой/чёрный; тайлы невидимы
+(сжаты в ~1px из-за разреженной сетки шаг=64 + авто-fit); ранее (до введения
+непрозрачного backdrop) additionally «старый интерфейс не закрывается» — игра/HUD
+просвечивали сквозь прозрачные области оверлея; после backdrop — тайлы не видны по той
+же причине сжатия.
+НЕ ПОДТВЕРЖДЕНО: эффект RepackDense после фикса OrderBy (рантайм-лог не получен);
+целостность Main.cs/HUDController.cs после серии regex-патчей (нужны полные файлы);
+значения MapWidth/MapHeight/Layer/BuildPixels в WorldMapOverlay (обрезаны); точное имя
+узла кнопки карты в hud.tscn на диске (ButtonMap vs BtnOpenWorldMap — расхождение);
+точная строка SetCell/координатная формула в PopulateFromChunks (обрезана; дефект шаг=64
+выведен из диагностики, не прочитан в коде).
+ТРЕБУЕТ РЕШЕНИЯ ЗАКАЗЧИКА (развилка, от неё зависит финальная правка): Путь 1 (обзорка
+картинкой, overlay, ForWorldMap не участвует, быстро/надёжно, чинить инверсию констант
+и перевести ToggleWorldMap на _mapOverlay.Open/Close + слой времени поверх) ИЛИ Путь 2
+(тайловый зум+pan, ForWorldMap участвует, переписать PopulateFromChunks: плотный SetCell
++ окно по камере + стриминг 2048×1024 + pan/zoom в контроллере + корректный клик→регион
+мира 0..2048). Смешивать пути нельзя.
+Минимальный набор файлов для финальной правки (без них = гадание): полные с диска
+scenes/main/Main.cs (ToggleWorldMap/SetupButtonMapBinding/OnRegionSelected/наличие
+_mapOverlay и WmFix*/поля _worldMapScene/_activeWorldMapInstance/_spawnRegion/
+_agentThread/_camera/_interactionManager/WorldMapSeed/WorldGeneratorVersion);
+src/ui/controllers/HUDController.cs (BindWorldMapButton целиком + имена узлов кнопки
+карты и кнопок времени); src/ui/streaming/WorldMapTileMapper.cs (ПОЛНОЕ тело
+PopulateFromChunks + строка SetCell + координатная схема + окно + BiomeToSourceIndex +
+AddSingleTileSource); src/ui/streaming/WorldMapOverlay.cs (значения MapWidth/MapHeight,
+Layer, полное BuildPixels, конструктор/_Ready, OnTeleport); scenes/ui/hud.tscn и
+scenes/ui/WorldMap.tscn (фактические имена/типы узлов кнопок, connections); project.godot
+(подтверждение отключения autoload). Без полного Main.cs/HUDController.cs не латить
+regex'ами — именно это привело к текущей каше и каскадным CS0246.
+
+===============================================================================
+ДОКУМЕНТАЦИЯ И ПЛАНИРОВАНИЕ
+===============================================================================
+
+- AGENTS.md — Многоагентная система разработки (4 роли)
+- PLAN.md — Проект планировщика динамической балансировки
+- AI_PROJECT_MAP.md — Полный обзор структуры и логики проекта
+- ARCHITECTURE_AND_DEV_NOTES.txt — Технические заметки по архитектуре
+- PROJECT_CODE.txt — УСТАРЕЛ, НЕ ИСПОЛЬЗОВАТЬ
+- docs/lab_screenshots/* — Скриншоты разработки
+- docs/screenshots-24/* — Ранние скриншоты прототипов

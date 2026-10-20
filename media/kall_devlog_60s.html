@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Дневник разработчика калла — 60 секунд</title>
+<style>
+  :root{
+    --bg:#06070a;
+    --panel:#0d0f15;
+    --line:rgba(255,255,255,.08);
+    --line2:rgba(255,255,255,.14);
+    --text:#f3f4f6;
+    --muted:#9aa1ad;
+    --dim:#5f6672;
+    --accent:#ffc857;
+    --accent2:#7dd3fc;
+    --danger:#ff6b6b;
+    --ok:#5eead4;
+    --sans:ui-sans-serif,-apple-system,"Segoe UI",Inter,Roboto,Arial,sans-serif;
+    --mono:"SF Mono","Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    display:flex;align-items:center;justify-content:center;
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* ---------- ambient background ---------- */
+  .bg{position:fixed;inset:0;pointer-events:none;overflow:hidden}
+  .bg::before{
+    content:"";position:absolute;inset:-20%;
+    background:
+      radial-gradient(60% 50% at 20% 10%, rgba(255,200,87,.07), transparent 60%),
+      radial-gradient(50% 45% at 85% 90%, rgba(125,211,252,.06), transparent 60%),
+      radial-gradient(70% 60% at 50% 50%, #0b0d13 0%, #06070a 70%);
+  }
+  .bg::after{
+    content:"";position:absolute;inset:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px);
+    background-size:44px 44px;
+    mask-image:radial-gradient(ellipse at 50% 50%,#000 30%,transparent 78%);
+    -webkit-mask-image:radial-gradient(ellipse at 50% 50%,#000 30%,transparent 78%);
+  }
+  .noise{
+    position:fixed;inset:0;pointer-events:none;opacity:.05;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='.55'/></svg>");
+  }
+
+  /* ---------- stage 9:16 ---------- */
+  .stage{
+    position:relative;
+    width:min(92vw, calc(92vh * 9 / 16));
+    height:min(92vh, calc(92vw * 16 / 9));
+    background:linear-gradient(180deg,#0a0c11 0%,#07080b 100%);
+    border:1px solid var(--line);
+    border-radius:30px;
+    overflow:hidden;
+    box-shadow:
+      0 40px 120px rgba(0,0,0,.65),
+      0 0 0 1px rgba(255,255,255,.02) inset,
+      0 1px 0 rgba(255,255,255,.06) inset;
+  }
+  .stage::before{ /* top sheen */
+    content:"";position:absolute;left:0;right:0;top:0;height:42%;
+    background:linear-gradient(180deg,rgba(255,255,255,.045),transparent);
+    pointer-events:none;
+  }
+  .frame{
+    position:absolute;inset:0;
+    display:flex;flex-direction:column;
+    padding:clamp(16px,3.4%,30px);
+  }
+
+  /* ---------- chrome ---------- */
+  .meta{
+    display:flex;justify-content:space-between;align-items:center;
+    font-family:var(--mono);font-size:clamp(9px,1.55vw,11px);
+    letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+    flex:none;z-index:5;
+  }
+  .meta .brand{display:flex;align-items:center;gap:8px;color:var(--muted)}
+  .dot{width:5px;height:5px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  .scene{position:relative;flex:1;display:flex;flex-direction:column;justify-content:center;min-height:0;z-index:4}
+
+  /* ---------- typography ---------- */
+  .kicker{
+    font-family:var(--mono);font-size:clamp(9px,1.6vw,11px);letter-spacing:.22em;
+    text-transform:uppercase;color:var(--accent);margin-bottom:clamp(8px,1.6vh,14px);
+  }
+  .kicker.dim{color:var(--dim)}
+  .huge{
+    font-family:var(--mono);
+    font-size:clamp(46px,11.5vw,86px);
+    font-weight:800;line-height:.92;letter-spacing:-.03em;
+    font-variant-numeric:tabular-nums;
+    background:linear-gradient(180deg,#ffffff 0%,#d9dde5 55%,#9aa1ad 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .huge.gold{
+    background:linear-gradient(180deg,#ffe7b0 0%,var(--accent) 55%,#e8962e 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .huge.cy{background:linear-gradient(180deg,#e0f7ff,var(--accent2) 60%,#3aa7d6);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .huge.red{background:linear-gradient(180deg,#ffd5d5,var(--danger) 60%,#c03d3d);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .huge .gold{background:linear-gradient(180deg,#ffe7b0 0%,var(--accent) 55%,#e8962e 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .unit{font-size:.34em;letter-spacing:.08em;color:var(--muted);font-weight:600;margin-left:.18em}
+  .lead{
+    font-size:clamp(15px,3.1vw,21px);line-height:1.42;color:var(--text);
+    font-weight:500;max-width:34ch;margin-top:clamp(10px,2.4vh,20px);
+  }
+  .lead b{color:var(--accent);font-weight:700}
+  .sub{font-size:clamp(12px,2.4vw,15px);color:var(--muted);line-height:1.5;margin-top:10px;max-width:38ch}
+
+  /* ---------- components ---------- */
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:clamp(12px,2.6vh,22px);max-width:34ch}
+  .chip{
+    font-family:var(--mono);font-size:clamp(9px,1.7vw,11px);letter-spacing:.06em;
+    color:var(--muted);border:1px solid var(--line2);border-radius:999px;
+    padding:5px 10px;background:rgba(255,255,255,.03);
+  }
+  .chip.on{color:#1a1405;background:var(--accent);border-color:var(--accent);font-weight:700}
+
+  .badge{
+    display:inline-flex;align-items:center;gap:8px;
+    font-family:var(--mono);font-size:clamp(10px,1.9vw,13px);letter-spacing:.1em;
+    border:1px solid var(--line2);border-radius:999px;padding:8px 14px;
+    color:var(--muted);background:rgba(255,255,255,.03);margin-top:16px;
+  }
+  .badge .ok{color:var(--ok)}
+
+  .bars{display:flex;align-items:flex-end;gap:14px;height:clamp(90px,20vh,150px);margin-top:clamp(12px,2.6vh,22px)}
+  .bar{
+    width:clamp(38px,9vw,58px);border-radius:8px 8px 3px 3px;position:relative;
+    background:linear-gradient(180deg,rgba(255,107,107,.85),rgba(255,107,107,.25));
+    transform-origin:bottom;transform:scaleY(0);
+  }
+  .bar.good{background:linear-gradient(180deg,var(--accent),rgba(255,200,87,.22))}
+  .bar span{
+    position:absolute;top:-22px;left:50%;transform:translateX(-50%);
+    font-family:var(--mono);font-size:clamp(9px,1.7vw,11px);color:var(--muted);white-space:nowrap;
+  }
+  .bars .cap{font-family:var(--mono);font-size:clamp(9px,1.7vw,11px);color:var(--dim);margin-top:6px}
+
+  .gridchunks{
+    display:grid;grid-template-columns:repeat(12,1fr);gap:4px;
+    margin-top:clamp(12px,2.6vh,22px);max-width:340px;
+  }
+  .gridchunks i{
+    display:block;aspect-ratio:1;border-radius:2px;
+    background:rgba(125,211,252,.16);opacity:0;
+  }
+  .gridchunks i.hot{background:rgba(255,200,87,.55)}
+
+  .quote{
+    font-size:clamp(19px,4.2vw,30px);line-height:1.32;font-weight:600;letter-spacing:-.01em;
+    max-width:30ch;
+  }
+  .quote em{color:var(--danger);font-style:normal}
+  .quote .sig{display:block;margin-top:14px;font-family:var(--mono);font-size:clamp(9px,1.7vw,11px);letter-spacing:.16em;color:var(--dim);text-transform:uppercase}
+
+  .checks{display:flex;flex-direction:column;gap:9px;margin-top:clamp(12px,2.4vh,20px)}
+  .check{
+    display:flex;align-items:center;gap:10px;
+    font-family:var(--mono);font-size:clamp(10px,2vw,13px);color:var(--muted);
+    border:1px solid var(--line);border-radius:12px;padding:9px 12px;
+    background:rgba(255,255,255,.025);
+  }
+  .check b{color:var(--text);font-weight:600}
+  .check .tick{color:var(--ok);font-weight:800}
+  .check .sev{
+    font-size:9px;letter-spacing:.1em;padding:2px 6px;border-radius:5px;
+    background:rgba(255,107,107,.15);color:var(--danger);border:1px solid rgba(255,107,107,.3);
+  }
+
+  .cta{
+    display:flex;flex-direction:column;align-items:flex-start;gap:14px;margin-top:clamp(12px,2.6vh,22px);
+  }
+  .handle{
+    font-family:var(--mono);font-size:clamp(22px,5vw,36px);font-weight:800;letter-spacing:-.02em;
+    color:var(--text);
+  }
+  .handle span{color:var(--accent)}
+  .linkline{
+    font-family:var(--mono);font-size:clamp(11px,2.2vw,14px);color:var(--accent2);
+    text-decoration:none;border-bottom:1px solid rgba(125,211,252,.4);padding-bottom:2px;
+  }
+  .pill{
+    display:inline-flex;align-items:center;gap:9px;
+    background:var(--accent);color:#1a1405;font-weight:800;
+    font-size:clamp(11px,2.2vw,14px);letter-spacing:.06em;text-transform:uppercase;
+    padding:12px 20px;border-radius:999px;box-shadow:0 10px 30px rgba(255,200,87,.25);
+  }
+  .pill .arrow{transition:transform .25s}
+  .pill:hover .arrow{transform:translateX(3px)}
+
+  /* ---------- subtitle ---------- */
+  .subtitle{
+    flex:none;z-index:6;display:flex;justify-content:center;padding-top:10px;
+  }
+  .subtitle .box{
+    max-width:92%;text-align:center;
+    font-size:clamp(11px,2.1vw,14px);line-height:1.4;color:#cfd4dc;
+    background:rgba(10,12,17,.72);border:1px solid var(--line);
+    border-radius:14px;padding:8px 14px;backdrop-filter:blur(8px);
+    opacity:0;transform:translateY(6px);transition:opacity .35s,transform .35s;
+  }
+  .subtitle .box.show{opacity:1;transform:none}
+
+  /* ---------- footer ---------- */
+  .foot{flex:none;display:flex;align-items:center;gap:12px;padding-top:clamp(10px,2vh,16px);z-index:6}
+  .track{flex:1;height:2px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}
+  .fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),#ff9a3c);transition:width .5s ease}
+  .counter{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.1em;min-width:52px;text-align:right}
+
+  /* ---------- controls ---------- */
+  .controls{
+    position:absolute;right:14px;bottom:64px;display:flex;flex-direction:column;gap:8px;z-index:20;
+  }
+  .ctl{
+    width:36px;height:36px;border-radius:10px;border:1px solid var(--line2);
+    background:rgba(13,15,21,.8);color:var(--muted);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    font-size:14px;backdrop-filter:blur(8px);transition:.2s;
+  }
+  .ctl:hover{color:var(--text);border-color:rgba(255,255,255,.3)}
+
+  /* ---------- start overlay ---------- */
+  .overlay{
+    position:absolute;inset:0;z-index:50;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+    background:radial-gradient(80% 60% at 50% 30%,rgba(20,23,31,.94),rgba(6,7,10,.98));
+    backdrop-filter:blur(6px);text-align:center;padding:30px;
+    transition:opacity .6s;
+  }
+  .overlay.hide{opacity:0;pointer-events:none}
+  .overlay .title{font-size:clamp(22px,4.6vw,32px);font-weight:800;letter-spacing:-.02em;line-height:1.1}
+  .overlay .title span{color:var(--accent)}
+  .overlay .desc{font-size:clamp(12px,2.2vw,14px);color:var(--muted);max-width:32ch;line-height:1.5}
+  .overlay .btns{display:flex;flex-direction:column;gap:10px;margin-top:8px;width:min(260px,80%)}
+  .btn{
+    border-radius:14px;padding:14px 18px;font-size:13px;font-weight:700;letter-spacing:.04em;
+    cursor:pointer;border:1px solid var(--line2);transition:.2s;font-family:var(--sans);
+  }
+  .btn.primary{background:var(--accent);color:#1a1405;border-color:var(--accent);box-shadow:0 12px 34px rgba(255,200,87,.22)}
+  .btn.primary:hover{transform:translateY(-1px);box-shadow:0 16px 40px rgba(255,200,87,.3)}
+  .btn.ghost{background:rgba(255,255,255,.04);color:var(--muted)}
+  .btn.ghost:hover{color:var(--text);border-color:rgba(255,255,255,.28)}
+  .overlay .hint{font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--dim);margin-top:6px}
+  .overlay .hint kbd{background:rgba(255,255,255,.08);border:1px solid var(--line2);border-radius:5px;padding:1px 5px;color:var(--muted)}
+
+  /* ---------- animation utilities ---------- */
+  .anim{opacity:0;transform:translateY(16px)}
+  .anim.in{animation:rise .75s cubic-bezier(.2,.7,.2,1) forwards}
+  .anim.fade{transform:none}
+  .anim.fade.in{animation:fadeIn .8s ease forwards}
+  @keyframes rise{to{opacity:1;transform:none}}
+  @keyframes fadeIn{to{opacity:1}}
+  @keyframes scaleIn{from{opacity:0;transform:scale(.86)}to{opacity:1;transform:scale(1)}}
+  @keyframes growBar{to{transform:scaleY(1)}}
+  @keyframes popIn{0%{opacity:0;transform:scale(.7) rotate(-8deg)}70%{transform:scale(1.06) rotate(-2deg)}100%{opacity:1;transform:scale(1) rotate(-3deg)}}
+  @keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+  @keyframes shine{0%{background-position:-200% 0}100%{background-position:200% 0}}
+
+  .stamp{
+    display:inline-block;border:2px solid var(--ok);color:var(--ok);
+    font-family:var(--mono);font-weight:800;letter-spacing:.18em;text-transform:uppercase;
+    padding:8px 16px;border-radius:10px;transform:rotate(-3deg);margin-top:18px;
+    box-shadow:0 0 24px rgba(94,234,212,.18),0 0 0 4px rgba(94,234,212,.05);
+    animation:popIn .55s cubic-bezier(.2,.9,.3,1.3) forwards;opacity:0;
+  }
+  .flt{animation:floaty 4s ease-in-out infinite}
+
+  /* ---------- responsive ---------- */
+  @media (max-width:520px){
+    .stage{width:100vw;height:100vh;border-radius:0;border:none}
+    .controls{bottom:76px;right:10px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .anim,.anim.in,.stamp{animation:none!important;opacity:1!important;transform:none!important}
+  }
+</style>
+</head>
+<body>
+<div class="bg"></div>
+<div class="noise"></div>
+
+<div class="stage" id="stage">
+  <div class="frame">
+    <div class="meta">
+      <div class="brand"><i class="dot"></i><span>Дневник разработчика калла</span></div>
+      <div id="sceneIdx">01 / 08</div>
+    </div>
+
+    <div class="scene" id="scene"></div>
+
+    <div class="subtitle"><div class="box" id="subtitle"></div></div>
+
+    <div class="foot">
+      <div class="track"><div class="fill" id="fill"></div></div>
+      <div class="counter" id="counter">00:00</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="ctl" id="btnPause" title="Пауза / продолжить (Space)">❚❚</button>
+    <button class="ctl" id="btnMute" title="Без голоса (M)">🔊</button>
+    <button class="ctl" id="btnRestart" title="Заново (R)">↺</button>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="title">Дневник разработчика <span>калла</span></div>
+    <div class="desc">60 секунд о том, как колони-сим на 10 000 агентов, 260 000 тайлов и бесшовный мир пережил технический долг.</div>
+    <div class="btns">
+      <button class="btn primary" id="btnVoice">▶ Запустить с голосом</button>
+      <button class="btn ghost" id="btnSilent">Без голоса, только субтитры</button>
+    </div>
+    <div class="hint"><kbd>Space</kbd> пауза · <kbd>M</kbd> звук · <kbd>R</kbd> заново</div>
+    <div class="hint" style="margin-top:2px;opacity:.8">Для записи: разверни окно 9:16 во весь экран (F11) и сними через OBS</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ============================================================
+     СЦЕНАРИЙ — 8 сцен, ~65 секунд.
+     narration — то, что произносит голос
+     sub       — субтитр (показывается всегда)
+     ============================================================ */
+  const SCENES = [
+    {
+      kicker: "01 · Масштаб",
+      narration: "10 тысяч агентов. 60 FPS. На ноутбуке за три копейки. Я делаю колони-сим — и это дневник его разработки.",
+      sub: "10 000 агентов · 60 FPS · слабое железо",
+      render: function(){
+        return `
+          <div class="anim" style="animation-delay:.05s">
+            <div class="kicker">01 · Масштаб</div>
+          </div>
+          <div class="anim" style="animation-delay:.15s">
+            <div class="huge gold"><span data-count="10000">0</span><span class="unit">агентов</span></div>
+          </div>
+          <div class="anim" style="animation-delay:.45s">
+            <div class="huge"><span data-count="60">0</span><span class="unit">FPS</span></div>
+          </div>
+          <div class="anim" style="animation-delay:.75s">
+            <div class="lead">На ноутбуке за три копейки.<br><b>Не симуляция на слайдах.</b></div>
+          </div>
+          <div class="anim" style="animation-delay:1s">
+            <div class="badge"><span class="ok">●</span> 10 000 агентов · 100× скорость · ~1 мс на тик</div>
+          </div>
+        `;
+      }
+    },
+    {
+      kicker: "02 · Мир",
+      narration: "В моей игре 260 тысяч тайлов. Каждый считает влажность — по десяткам параметров: текстура, органика, температура, соль, глубина.",
+      sub: "260 000 тайлов · у каждого своя влажность",
+      render: function(){
+        return `
+          <div class="anim" style="animation-delay:.05s">
+            <div class="kicker">02 · Мир</div>
+          </div>
+          <div class="anim" style="animation-delay:.15s">
+            <div class="huge"><span data-count="260000">0</span><span class="unit">тайлов</span></div>
+          </div>
+          <div class="anim" style="animation-delay:.5s">
+            <div class="lead">У каждого — <b>своя влажность</b>. Не картинка, а модель.</div>
+          </div>
+          <div class="anim" style="animation-delay:.8s">
+            <div class="chips">
+              <span class="chip">структура</span>
+              <span class="chip">текстура</span>
+              <span class="chip on">органика</span>
+              <span class="chip">температура</span>
+              <span class="chip">соль</span>
+              <span class="chip">глубина</span>
+              <span class="chip">плотность</span>
+            </div>
+          </div>
+        `;
+      }
+    },
+    {
+      kicker: "03 · Бесшовность",
+      narration: "Неделю я сражался с мировой картой. Мир бесшовный: две тысячи на тысячу чанков, и его можно обойти вокруг.",
+      sub: "2048 × 1024 чанка · мир без границ",
+      render: function(){
+        let cells = "";
+        for(let i=0;i<72;i++){
+          const hot = Math.random() < .18;
+          const d = (i*0.012 + Math.random()*0.5).toFixed(2);
+          cells += `<i class="${hot?'hot':''}" style="animation:fadeIn .5s ${d}s forwards"></i>`;
+        }
+        return `
+          <div class="anim" style="animation-delay:.05s">
+            <div class="kicker">03 · Бесшовность</div>
+          </div>
+          <div class="anim" style="animation-delay:.15s">
+            <div class="huge cy"><span data-count="2048">0</span><span class="unit">×</span><span data-count="1024">0</span></div>
+          </div>
+          <div class="anim" style="animation-delay:.5s">
+            <div class="lead">Чанков. Без границ карты — <b>можно обойти вокруг</b>.</div>
+          </div>
+          <div class="gridchunks">${cells}</div>
+        `;
+      }
+    },
+    {
+      kicker: "04 · Оптимизация",
+      narration: "Сначала карта выдавала один кадр в секунду. Теперь — шестьдесят. Нагрузка на генерацию упала почти в семьсот раз.",
+      sub: "1 FPS → 60 FPS · −700× нагрузки",
+      render: function(){
+        return `
+          <div class="anim" style="animation-delay:.05s">
+            <div class="kicker">04 · Оптимизация</div>
+          </div>
+          <div class="anim" style="animation-delay:.15s">
+            <div class="huge">1<span class="unit">→</span><span data-count="60" class="gold">0</span><span class="unit">FPS</span></div>
+          </div>
+          <div class="anim" style="animation-delay:.45s">
+            <div class="bars">
+              <div class="bar" style="height:12%;animation:growBar .7s .55s cubic-bezier(.2,.8,.2,1) forwards"><span>1 FPS</span></div>
+              <div class="bar good" style="height:92%;animation:growBar .9s .8s cubic-bezier(.2,.8,.2,1) forwards"><span>60 FPS</span></div>
+            </div>
+          </div>
+          <div class="anim" style="animation-delay:1s">
+            <div class="lead">Генерация: <b>×700 быстрее</b>. С 50 мс до 0.07 мс.</div>
+          </div>
+        `;
+      }
+    },
+    {
+      kicker: "05 · Краш-тест",
+      narration: "Потом был краш-тест: сто тысяч агентов. И знаешь что? Играбельно.",
+      sub: "100 000 агентов · играбельно",
+      render: function(){
+        return `
+          <div class="anim" style="animation-delay:.05s">
+            <div class="kicker">05 · Краш-тест</div>
+          </div>
+          <div class="anim" style="animation-delay:.15s">
+            <div class="huge gold"><span data-count="100000">0</span><span class="unit">агентов</span></div>
+          </div>
+          <div class="anim" style="animation-delay:.55s">
+            <div class="lead">Сто тысяч. На старом i3.<br>И знаешь что?</div>
+          </div>
+          <div class="anim" style="animation-delay:.9s">
+            <div class="stamp">Играбельно</div>
+          </div>
+        `;
+      }
+    },
+    {
+      kicker: "06 · Расплата",
+      narration: "Но наступила расплата. Плохая архитектура, технический долг. Я плакал. Торговался. Угрожал.",
+      sub: "Технический долг · я плакал, торговался, угрожал",
+      render: function(){
+        return `
+          <div class="anim" style="animation-delay:.05s">
+            <div class="kicker" style="color:var(--danger)">06 · Расплата</div>
+          </div>
+          <div class="anim" style="animation-delay:.15s">
+            <div class="quote">«Я плакал, пытался договориться, торговался, <em>угрожал</em> — и чуть было не смирился».</div>
+          </div>
+          <div class="anim" style="animation-delay:.55s">
+            <div class="sig" style="font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;margin-top:14px">17.10.2026 · технический долг</div>
+          </div>
+        `;
+      }
+    },
+    {
+      kicker: "07 · Аудит",
+      narration: "И тогда я провёл аудит. Четыре ИИ-агента нашли критический баг: агенты не видели работу и стояли без дела.",
+      sub: "Аудит: 4 ИИ-агента · найден P0",
+      render: function(){
+        return `
+          <div class="anim" style="animation-delay:.05s">
+            <div class="kicker">07 · Аудит</div>
+          </div>
+          <div class="anim" style="animation-delay:.15s">
+            <div class="lead" style="margin-top:0">4 ИИ-агента. 8 раундов.<br>Найден <b>P0</b>: агенты не видели работу.</div>
+          </div>
+          <div class="anim" style="animation-delay:.5s">
+            <div class="checks">
+              <div class="check"><span class="tick">✓</span><b>W-01</b> утечка reservation <span class="sev">P0</span></div>
+              <div class="check"><span class="tick">✓</span><b>B-01</b> гонка в планировщике</div>
+              <div class="check"><span class="tick">✓</span><b>B-03</b> двойная петля симуляции</div>
+              <div class="check"><span class="tick">✓</span><b>Циклы</b> 4 → 1</div>
+            </div>
+          </div>
+        `;
+      }
+    },
+    {
+      kicker: "08 · Дальше",
+      narration: "Я исправил. Гонка в планировщике, двойная петля симуляции, циклы зависимостей — четыре превратились в один. Это не просто дневник. Это доказательство, что даже на слабом железе можно сделать большой мир. Канал «Дневник разработчика калла». Подписывайся — дальше будет больше.",
+      sub: "Дневник разработчика калла · t.me/devlogofkall",
+      render: function(){
+        return `
+          <div class="anim" style="animation-delay:.05s">
+            <div class="kicker">08 · Дальше</div>
+          </div>
+          <div class="anim" style="animation-delay:.15s">
+            <div class="lead" style="margin-top:0">Это не просто дневник.<br><b>Это доказательство</b>, что на слабом железе<br>можно сделать большой мир.</div>
+          </div>
+          <div class="anim" style="animation-delay:.55s">
+            <div class="cta">
+              <div class="handle">Дневник разработчика <span>калла</span></div>
+              <a class="linkline" href="https://t.me/devlogofkall" target="_blank" rel="noopener">t.me/devlogofkall</a>
+              <span class="pill">Подписаться <span class="arrow">→</span></span>
+            </div>
+          </div>
+        `;
+      }
+    }
+  ];
+
+  /* ============================================================
+     ЭЛЕМЕНТЫ
+     ============================================================ */
+  const stage    = document.getElementById("stage");
+  const sceneEl  = document.getElementById("scene");
+  const subEl    = document.getElementById("subtitle");
+  const fill     = document.getElementById("fill");
+  const counter  = document.getElementById("counter");
+  const sceneIdx = document.getElementById("sceneIdx");
+  const overlay  = document.getElementById("overlay");
+  const btnVoice = document.getElementById("btnVoice");
+  const btnSilent= document.getElementById("btnSilent");
+  const btnPause = document.getElementById("btnPause");
+  const btnMute  = document.getElementById("btnMute");
+  const btnRestart=document.getElementById("btnRestart");
+
+  /* ============================================================
+     СОСТОЯНИЕ
+     ============================================================ */
+  const synth = window.speechSynthesis || null;
+  let ruVoice = null;
+  let voiceOn = false;      // включён ли голос в принципе
+  let muted   = false;      // выключен ли звук кнопкой
+  let paused  = false;
+  let cur = -1;
+  let guardTimer = null;
+  let fallbackTimer = null;
+  let startedAt = 0;
+  let elapsedBase = 0;      // накопленное время до паузы
+  let curAdvance = null;
+  let advanceKind = null;   // "speech" | "timer"
+  let finished = false;
+  let running = false;
+
+  /* ---------- голоса ---------- */
+  function pickRuVoice(){
+    if(!synth) return null;
+    const voices = synth.getVoices();
+    if(!voices.length) return null;
+    const ru = voices.filter(v => /^ru/i.test(v.lang || ""));
+    if(!ru.length) return null;
+    // предпочтение: качественные голоса Windows / Google
+    const pref = ["Microsoft Svetlana","Microsoft Irina","Microsoft Pavel","Microsoft Dariya","Google русский","Google Russian","Yandex"];
+    for(const p of pref){
+      const hit = ru.find(v => v.name && v.name.toLowerCase().includes(p.toLowerCase()));
+      if(hit) return hit;
+    }
+    return ru[0];
+  }
+  function initVoices(){
+    ruVoice = pickRuVoice();
+    if(!ruVoice && synth){
+      synth.addEventListener("voiceschanged", function h(){
+        ruVoice = pickRuVoice();
+        if(ruVoice) synth.removeEventListener("voiceschanged", h);
+      });
+    }
+  }
+  initVoices();
+
+  /* ---------- оценка длительности (fallback) ---------- */
+  function estMs(scene){
+    const n = (scene.narration || "").length;
+    return Math.max(2600, Math.round(n / 13.2 * 1000));
+  }
+
+  /* ---------- рендер сцены ---------- */
+  function renderScene(i){
+    const sc = SCENES[i];
+    sceneEl.innerHTML = sc.render();
+    // запускаем .anim.in с задержками
+    const anims = sceneEl.querySelectorAll(".anim");
+    anims.forEach(a => {
+      const delay = a.style.animationDelay || "0s";
+      a.style.animationDelay = delay;
+      requestAnimationFrame(() => a.classList.add("in"));
+    });
+    // счётчики
+    sceneEl.querySelectorAll("[data-count]").forEach(el => animateCount(el));
+    // субтитр
+    subEl.textContent = sc.sub;
+    subEl.classList.add("show");
+    sceneIdx.textContent = String(i+1).padStart(2,"0") + " / " + String(SCENES.length).padStart(2,"0");
+  }
+
+  function animateCount(el){
+    const target = parseInt(el.getAttribute("data-count"), 10) || 0;
+    const dur = 950;
+    const t0 = performance.now();
+    function step(t){
+      const p = Math.min(1, (t - t0) / dur);
+      const e = 1 - Math.pow(1 - p, 3); // easeOutCubic
+      el.textContent = Math.round(target * e).toLocaleString("ru-RU");
+      if(p < 1) requestAnimationFrame(step);
+      else el.textContent = target.toLocaleString("ru-RU");
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* ---------- таймеры ---------- */
+  function clearTimers(){
+    if(guardTimer){ clearTimeout(guardTimer); guardTimer = null; }
+    if(fallbackTimer){ clearTimeout(fallbackTimer); fallbackTimer = null; }
+  }
+
+  function timecode(){
+    const sec = Math.floor((elapsedBase + (paused ? 0 : (performance.now() - startedAt))) / 1000);
+    const m = String(Math.floor(sec/60)).padStart(2,"0");
+    const s = String(sec%60).padStart(2,"0");
+    counter.textContent = m + ":" + s;
+  }
+
+  /* ---------- воспроизведение ---------- */
+  function playScene(i){
+    if(finished) return;
+    if(i >= SCENES.length){ finish(); return; }
+    cur = i;
+    renderScene(i);
+
+    let done = false;
+    const advance = function(){
+      if(done) return;
+      done = true;
+      clearTimers();
+      if(cur + 1 < SCENES.length){
+        fill.style.width = ((cur+1)/SCENES.length*100) + "%";
+        playScene(cur+1);
+      } else {
+        finish();
+      }
+    };
+    curAdvance = advance;
+
+    const sc = SCENES[i];
+    const speak = voiceOn && !muted && synth;
+
+    if(speak){
+      advanceKind = "speech";
+      const u = new SpeechSynthesisUtterance(sc.narration);
+      u.lang = "ru-RU";
+      u.rate = 1.02;
+      u.pitch = 0.94;
+      u.volume = 1;
+      if(ruVoice) u.voice = ruVoice;
+      u.onend = advance;
+      u.onerror = function(){ advanceKind = "timer"; fallbackTimer = setTimeout(advance, estMs(sc)); };
+      try{ synth.speak(u); }catch(e){ advanceKind = "timer"; fallbackTimer = setTimeout(advance, estMs(sc)); }
+      // страховка от зависшего onend
+      guardTimer = setTimeout(function(){
+        if(!done){ try{ synth.cancel(); }catch(e){} advance(); }
+      }, estMs(sc) * 2.6 + 2500);
+    } else {
+      advanceKind = "timer";
+      fallbackTimer = setTimeout(advance, estMs(sc));
+    }
+  }
+
+  function start(withVoice){
+    overlay.classList.add("hide");
+    running = true;
+    voiceOn = withVoice;
+    muted = !withVoice;
+    updateMuteBtn();
+    finished = false;
+    cur = -1;
+    elapsedBase = 0;
+    startedAt = performance.now();
+    fill.style.width = "0%";
+    counter.textContent = "00:00";
+    clearTimers();
+    if(synth && synth.cancel) { try{ synth.cancel(); }catch(e){} }
+    playScene(0);
+  }
+
+  function finish(){
+    finished = true;
+    running = false;
+    fill.style.width = "100%";
+    subEl.textContent = "t.me/devlogofkall";
+    subEl.classList.add("show");
+  }
+
+  function restart(){
+    if(synth && synth.cancel){ try{ synth.cancel(); }catch(e){} }
+    clearTimers();
+    paused = false;
+    btnPause.textContent = "❚❚";
+    finished = false;
+    running = true;
+    cur = -1;
+    elapsedBase = 0;
+    startedAt = performance.now();
+    fill.style.width = "0%";
+    subEl.classList.remove("show");
+    sceneEl.innerHTML = "";
+    counter.textContent = "00:00";
+    playScene(0);
+  }
+
+  function togglePause(){
+    if(finished) return;
+    paused = !paused;
+    if(paused){
+      elapsedBase += performance.now() - startedAt;
+      if(synth && advanceKind === "speech"){ try{ synth.pause(); }catch(e){} }
+      if(fallbackTimer){ clearTimeout(fallbackTimer); fallbackTimer = null; }
+      if(guardTimer){ clearTimeout(guardTimer); guardTimer = null; }
+      btnPause.textContent = "▶";
+    } else {
+      startedAt = performance.now();
+      if(synth && advanceKind === "speech"){ try{ synth.resume(); }catch(e){} }
+      // перезапуск страховки/таймера для текущей сцены
+      const sc = SCENES[cur] || SCENES[0];
+      if(advanceKind === "timer" && curAdvance){
+        fallbackTimer = setTimeout(curAdvance, estMs(sc));
+      }
+      if(advanceKind === "speech" && curAdvance){
+        guardTimer = setTimeout(function(){ if(curAdvance) curAdvance(); }, estMs(sc) * 2.6 + 2500);
+      }
+      btnPause.textContent = "❚❚";
+    }
+  }
+
+  function toggleMute(){
+    if(!synth) return;
+    muted = !muted;
+    updateMuteBtn();
+    if(muted){
+      try{ synth.cancel(); }catch(e){}
+      // продолжаем текущую сцену по таймеру
+      if(cur >= 0 && !finished && curAdvance){
+        clearTimers();
+        advanceKind = "timer";
+        const sc = SCENES[cur];
+        fallbackTimer = setTimeout(curAdvance, Math.max(1200, estMs(sc) * .55));
+      }
+    } else {
+      // включаем голос со следующей сцены
+      if(cur >= 0 && !finished && curAdvance){
+        clearTimers();
+        advanceKind = "speech";
+        const sc = SCENES[cur];
+        const u = new SpeechSynthesisUtterance(sc.narration);
+        u.lang = "ru-RU"; u.rate = 1.02; u.pitch = 0.94;
+        if(ruVoice) u.voice = ruVoice;
+        u.onend = curAdvance;
+        u.onerror = function(){ advanceKind = "timer"; fallbackTimer = setTimeout(curAdvance, estMs(sc)); };
+        try{ synth.speak(u); }catch(e){}
+        guardTimer = setTimeout(function(){ if(curAdvance) curAdvance(); }, estMs(sc) * 2.6 + 2500);
+      }
+    }
+  }
+
+  function updateMuteBtn(){
+    btnMute.textContent = muted ? "🔇" : "🔊";
+  }
+
+  /* ---------- события ---------- */
+  btnVoice.addEventListener("click", function(){ initVoices(); start(true); });
+  btnSilent.addEventListener("click", function(){ start(false); });
+  btnPause.addEventListener("click", togglePause);
+  btnMute.addEventListener("click", toggleMute);
+  btnRestart.addEventListener("click", restart);
+
+  document.addEventListener("keydown", function(e){
+    if(e.code === "Space"){ e.preventDefault(); togglePause(); }
+    if(e.key === "m" || e.key === "M" || e.key === "ь" || e.key === "Ь"){ toggleMute(); }
+    if(e.key === "r" || e.key === "R" || e.key === "к" || e.key === "К"){ restart(); }
+  });
+
+  // таймкод
+  setInterval(function(){ if(running && !paused && !finished) timecode(); }, 250);
+
+  // если браузер вообще не поддерживает синтез — прячем кнопку голоса
+  if(!synth){
+    btnVoice.textContent = "▶ Запустить (только субтитры)";
+    btnVoice.disabled = true;
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,892 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dependency Graph Explorer — Code Intelligence</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-theme="dark">
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brandmark">DG</div>
+    <div>
+      <strong>Dependency Graph <span class="badge-version">v2.0</span></strong>
+      <small>Local C# / GDScript / Scene Architecture Suite</small>
+    </div>
+  </div>
+
+  <div class="projectbar">
+    <input id="projectPath" spellcheck="false" placeholder="Абсолютный путь к проекту, например D:\Games\MyGodotProject">
+    <button id="browseBtn" class="secondary" title="Выбрать папку через проводник">📁 Обзор...</button>
+    <button id="analyzeBtn" class="primary">⚡ Анализировать</button>
+    <button id="demoBtn" class="secondary">🎲 Демо</button>
+    <button id="whatIfToggleBtn" class="secondary" title="Включить интерактивное моделирование рефакторинга (What-If)">✂️ What-If</button>
+    <button id="benchmarkModalBtn" class="secondary" title="Замеры нагрузки, мс на кадр и узкие места">⚡ Нагрузка</button>
+    <button id="chronologyModalBtn" class="secondary" title="Частота вызовов в 1 сек, такты CPU и порядок выполнения">⏱️ Частота & Порядок</button>
+    <button id="dsmModalBtn" class="secondary" title="DSM Матрица зависимостей (N×N)">▦ DSM</button>
+    <button id="eventFlowModalBtn" class="secondary" title="Сквозные цепочки Event-Flow">🌊 Event-Flow</button>
+    <button id="aiQueryBuilderTopBtn" class="secondary" title="Конструктор точечных выборок для ИИ: бери только нужные поля">🎯 Запрос ИИ</button>
+  </div>
+
+  <div class="topbar-right">
+    <div id="healthScoreBadge" class="health-badge" title="Общий индекс здоровья архитектуры проекта">
+      <span class="health-label">Здоровье:</span>
+      <b id="healthScoreVal">100%</b>
+    </div>
+    <select id="themeSelector" class="theme-select" title="Выбрать цветовую тему">
+      <option value="dark">🌑 Dark Slate</option>
+      <option value="midnight">🌌 Midnight OLED</option>
+      <option value="cyberpunk">⚡ Cyberpunk Neon</option>
+      <option value="light">☀️ Clean Light</option>
+    </select>
+    <button id="helpBtn" class="secondary icon-btn" title="Горячие клавиши и справка (?)">❔</button>
+    <div id="status" class="status">Ожидание проекта</div>
+  </div>
+</header>
+
+<main>
+<!-- LEFT SIDEBAR: Controls & Filters -->
+<aside class="sidebar left">
+  <section>
+    <div class="section-title">
+      <span>ПРОЕКТ И МЕТРИКИ</span>
+      <span id="quickStatsBadge" class="count-badge">0</span>
+    </div>
+    <div id="stats" class="stats">
+      <div class="empty">Выбери папку и запусти анализ.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-title">ПОИСК И ФИЛЬТРЫ</div>
+    
+    <div class="search-box">
+      <input id="search" placeholder="Поиск (класс, файл, путь)..." autocomplete="off">
+      <button id="regexToggle" class="toggle-btn" title="Включить регулярные выражения (RegEx)">.*</button>
+      <button id="clearSearch" class="clear-btn" title="Очистить поиск">✕</button>
+    </div>
+
+    <div class="quick-filter-pills">
+      <button class="q-pill active" data-qfilter="all">Все</button>
+      <button class="q-pill" data-qfilter="cycles" title="Показать только узлы в циклах">⚠️ Циклы</button>
+      <button class="q-pill" data-qfilter="god" title="Показать только God-Objects">👑 Hubs</button>
+      <button class="q-pill" data-qfilter="dead" title="Действительно мертвый код (0 связей и нет в сценах)">💀 Мертвые</button>
+      <button class="q-pill" data-qfilter="hot" title="Методы 60-FPS (_process, Update)">⚡ 60-FPS</button>
+      <button class="q-pill" data-qfilter="orphans" title="Все изолированные узлы">🏝 Изоляты</button>
+    </div>
+
+    <div class="ignore-box">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span class="field-label" style="margin:0">Исключения (.graphignore)</span>
+        <div style="display:flex;gap:4px">
+          <button id="browseIgnoreFolderBtn" class="secondary icon-btn-sm" title="Выбрать папку для исключения через проводник" style="padding:2px 7px;font-size:10px">📁 +Папка</button>
+          <button id="browseIgnoreFileBtn" class="secondary icon-btn-sm" title="Выбрать файл(ы) для исключения через проводник" style="padding:2px 7px;font-size:10px">📄 +Файл</button>
+        </div>
+      </div>
+      <div class="ignore-input-wrap">
+        <input id="ignoreInput" placeholder="addons/*, tests/*, *.old.*" autocomplete="off">
+        <button id="applyIgnoreBtn" class="primary" title="Применить исключения к графу">✓</button>
+        <button id="saveIgnoreBtn" class="secondary" title="Сохранить в .graphignore проекта">💾</button>
+      </div>
+      <div id="appliedIgnoreNote" class="muted" style="font-size:10px;margin-bottom:8px"></div>
+    </div>
+
+    <div class="filter-group">
+      <label class="check"><input id="showCS" type="checkbox" checked> <span class="dot cs"></span> C# файлы</label>
+      <label class="check"><input id="showGD" type="checkbox" checked> <span class="dot gd"></span> GDScript файлы</label>
+      <label class="check"><input id="showScene" type="checkbox" checked> <span class="dot scene"></span> Сцены (.tscn)</label>
+    </div>
+
+    <label class="field-label">Папка / Модуль
+      <select id="folderFilter">
+        <option value="all">Все папки проекта</option>
+      </select>
+    </label>
+
+    <label class="field-label">Тип связей
+      <select id="edgeFilter">
+        <option value="all">Все типы</option>
+      </select>
+    </label>
+
+    <label class="field-label">Цветовая тепловая карта (Heatmap)
+      <select id="heatmapMode">
+        <option value="default">По языку файлов</option>
+        <option value="profiling">🔥 Нагрузка (мс/кадр / CPU Profiler)</option>
+        <option value="mutations">⚡ Мутации состояния (State Writers)</option>
+        <option value="instability">По нестабильности I (Robert Martin)</option>
+        <option value="blast">По радиусу поражения (Blast Radius)</option>
+        <option value="loc">По объему кода (LoC lines)</option>
+        <option value="centrality">По числу связей (God-Objects)</option>
+        <option value="layer">По архитектурным слоям</option>
+        <option value="folder">По подпапкам (палитра модулей)</option>
+        <option value="dead">Мертвый код vs Точки входа</option>
+        <option value="hot">Горячие пути (60-FPS методы)</option>
+      </select>
+    </label>
+
+    <label class="field-label">Алгоритм раскладки
+      <select id="layout">
+        <option value="force">🌀 Силовая органика (Physics)</option>
+        <option value="modules">📁 По папкам / Модулям (Кластеры)</option>
+        <option value="radial">🪐 Концентрическая (Орбиты связей)</option>
+        <option value="hierarchy">🏛 Архитектурные слои (DAG Flow)</option>
+        <option value="grid">▦ Сетка каталога (Алфавитная)</option>
+      </select>
+    </label>
+
+    <label class="field-label">
+      <div class="range-header">
+        <span>Дистанция между узлами:</span>
+        <b id="spacingVal">180px</b>
+      </div>
+      <input id="spacingSlider" type="range" min="100" max="420" value="180">
+    </label>
+
+    <label class="field-label">
+      <div class="range-header">
+        <span>Глубина фокуса (соседи):</span>
+        <b id="neighborhoodVal">Вся сеть</b>
+      </div>
+      <input id="neighborhoodSlider" type="range" min="0" max="3" value="0">
+    </label>
+
+    <label class="field-label">
+      <div class="range-header">
+        <span>Порог достоверности связей:</span>
+      </div>
+      <input id="minConfidence" type="range" min="0" max="2" value="1">
+      <span id="confidenceText" class="muted">Средняя и прямая уверенность</span>
+    </label>
+
+    <div class="filter-group">
+      <label class="check"><input id="showArrows" type="checkbox" checked> Стрелки направления</label>
+      <label class="check"><input id="curvedEdges" type="checkbox" checked> Плавные кривые связей (Bezier)</label>
+      <label class="check"><input id="showAllLabels" type="checkbox"> Показывать все подписи</label>
+    </div>
+
+    <div class="actions">
+      <button id="toggleSim" class="secondary" title="Остановить или возобновить физику">⏸ Стоп</button>
+      <button id="fitBtn" class="secondary" title="Подогнать масштаб (F)">🔍 Вписать</button>
+      <button id="resetBtn" class="secondary" title="Сбросить все фильтры и фокус (Esc)">✕ Сброс</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-title">ПОИСК КРАТЧАЙШЕГО ПУТИ</div>
+    <div class="path-finder-box">
+      <select id="pathStartNode"><option value="">Начальный узел (A)...</option></select>
+      <select id="pathEndNode"><option value="">Конечный узел (B)...</option></select>
+      <div class="actions">
+        <button id="findPathBtn" class="secondary">Найти путь A → B</button>
+        <button id="clearPathBtn" class="secondary" style="max-width:40px">✕</button>
+      </div>
+      <div id="pathResult" class="path-result muted">Выбери два узла для поиска цепочки связей.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-title">ИЗБРАННОЕ (ЗАКЛАДКИ) <span id="favCount" class="count-badge">0</span></div>
+    <div id="favoritesList" class="fav-list">
+      <div class="empty">Нажми ★ в инспекторе узла, чтобы сохранить сюда.</div>
+    </div>
+  </section>
+</aside>
+
+<!-- CENTER: Canvas Graph View -->
+<section class="canvas-wrap" id="canvasContainer">
+  <canvas id="graph"></canvas>
+
+  <!-- Interactive What-If Refactoring Floating Bar -->
+  <div id="whatIfBanner" class="whatif-banner hidden">
+    <div class="whatif-left">
+      <span class="whatif-icon">✂️</span>
+      <div>
+        <strong style="color:#f59e0b;font-size:13px">Песочница рефакторинга (What-If)</strong>
+        <div id="whatIfStats" class="whatif-stats" style="color:#94a3b8;font-size:11px">Кликни на ребро связей или нажми «Разрезать» в инспекторе для симуляции</div>
+      </div>
+    </div>
+    <div class="whatif-actions">
+      <button id="whatIfAiPlanBtn" class="primary" style="background:#2563eb">📋 План для ИИ</button>
+      <button id="whatIfResetBtn" class="secondary">✕ Сбросить разрывы</button>
+      <button id="whatIfExitBtn" class="secondary">Выйти</button>
+    </div>
+  </div>
+
+  <!-- Interactive MiniMap Radar -->
+  <div id="minimapWrap" class="minimap-wrap">
+    <div class="minimap-header">
+      <span>РАДАР</span>
+      <button id="closeMinimap" class="mini-close-btn" title="Свернуть миникарту">✕</button>
+    </div>
+    <canvas id="minimapCanvas" width="180" height="130"></canvas>
+  </div>
+
+  <!-- Floating Canvas Controls -->
+  <div class="canvas-controls">
+    <button id="toggleMinimapBtn" class="control-btn" title="Миникарта (M)">🗺</button>
+    <button id="toggleSimCanvas" class="control-btn" title="Физика (Пробел)">⏸</button>
+    <button id="screenshotBtn" class="control-btn" title="Снимок экрана PNG">📷</button>
+    <button id="svgExportBtn" class="control-btn" title="Векторный экспорт SVG">🖼</button>
+    <button id="fullscreenBtn" class="control-btn" title="На весь экран">⛶</button>
+    <div class="control-sep"></div>
+    <button id="zoomOut" class="control-btn" title="Уменьшить (−)">−</button>
+    <button id="zoomIn" class="control-btn" title="Увеличить (+)">+</button>
+    <button id="centerBtn" class="control-btn" title="Центрировать">◎</button>
+  </div>
+
+  <!-- Floating Tooltip -->
+  <div id="nodeTooltip" class="node-tooltip hidden"></div>
+  <div id="edgeTooltip" class="edge-tooltip hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+  <div id="canvasHint" class="canvas-hint">Запусти анализ или нажми «Демо», чтобы исследовать граф.</div>
+
+  <div class="canvas-footer">
+    <div class="footer-left">
+      <span id="visibleCount">0 узлов</span>
+      <span class="footer-dot">•</span>
+      <span id="activeLayoutName">Силовая раскладка</span>
+      <span class="footer-dot">•</span>
+      <span id="fpsCounter">60 FPS</span>
+    </div>
+    <div class="footer-right">
+      <span>Нажми Space: пауза · F: вписать · Двойной клик: закрепить узел</span>
+    </div>
+  </div>
+</section>
+
+<!-- RIGHT SIDEBAR: Inspector, Findings, AI Tools -->
+<aside class="sidebar right">
+  <section>
+    <div class="section-title">
+      <span>ИНСПЕКТОР УЗЛА</span>
+      <span id="inspectorBadge" class="count-badge hidden">Выбран</span>
+    </div>
+    <div id="inspector" class="empty">Кликни на любой узел на графе для детального анализа.</div>
+  </section>
+
+  <section>
+    <div class="section-title">
+      <span>АРХИТЕКТУРНЫЕ ПРОБЛЕМЫ</span>
+      <span id="findingCount" class="count-badge warn">0</span>
+    </div>
+    <div class="finding-filters">
+      <button class="filter-pill active" data-severity="all">Все</button>
+      <button class="filter-pill" data-severity="error">Ошибки</button>
+      <button class="filter-pill" data-severity="warning">Предупреждения</button>
+      <button class="filter-pill" data-severity="info">Инфо</button>
+    </div>
+    <div id="findings" class="findings">
+      <div class="empty">Архитектурные проблемы появятся после анализа.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-title">ГЕНЕРАТОРЫ ДЛЯ ИИ (LLM SUITE)</div>
+    <div class="ai-actions-grid">
+      <button id="aiRefactorPlanBtn" class="ai-btn primary" title="Полный структурированный архитектурный план для Claude / GPT / Gemini">
+        🤖 Главный план рефакторинга
+      </button>
+      <button id="aiAllDepsListBtn" class="ai-btn secondary" title="Скопировать карту всех файлов и их связанных компонентов в виде списка">
+        📋 Список связей ВСЕХ файлов
+      </button>
+      <button id="aiSkeletonsDigestBtn" class="ai-btn secondary" title="Скелеты контрактов публичных API без тел методов (экономия 90% токенов)">
+        💀 Скелеты API (-90% токенов)
+      </button>
+      <button id="aiPageRankBtn" class="ai-btn primary" style="background:#0891b2" title="Оптимизатор контекста по алгоритму PageRank (максимум архитектуры в заданный бюджет токенов)">
+        🎯 PageRank Контекст (Бюджет токенов)
+      </button>
+      <button id="aiTemporalBtn" class="ai-btn secondary" title="Анализ темпоральной связанности по истории коммитов Git (скрытые зависимости)">
+        ⏳ Скрытая связанность Git (Churn)
+      </button>
+      <button id="aiSignalsRegistryBtn" class="ai-btn secondary" title="Глобальный реестр сигналов Godot и событий C#">
+        📡 Карта сигналов и событий
+      </button>
+      <button id="aiSceneTreesBtn" class="ai-btn secondary" title="Иерархия нод сцен, пути $NodePath и уникальные имена %UniqueNode">
+        🌲 Дерево нод сцен (.tscn)
+      </button>
+      <button id="aiOrphansReviewBtn" class="ai-btn warn" title="Ревизия неиспользуемого кода: забытый черновик vs точка входа сцены">
+        🏝 Ревизия мертвого кода
+      </button>
+      <button id="aiHotPathsBtn" class="ai-btn secondary" title="Список всех методов 60-FPS (_process, _physics_process, Update) с рекомендациями по аллокациям">
+        ⚡ Горячие пути (60-FPS методы)
+      </button>
+      <button id="aiCycleBreakerBtn" class="ai-btn warn" title="Целевой промпт для разрыва найденных циклических зависимостей">
+        ⚡ Промпт разрыва циклов (DIP)
+      </button>
+      <button id="aiWhatIfPlanBtn" class="ai-btn warn" title="Экспорт плана рефакторинга на основе виртуальных разрывов What-If">
+        ✂️ План разрыва What-If
+      </button>
+      <button id="aiEventFlowBtn" class="ai-btn secondary" title="Сквозные цепочки распространения сигналов и вызовов">
+        🌊 Цепочки Event-Flow
+      </button>
+      <button id="aiBenchmarkReportBtn" class="ai-btn secondary" title="Сводка замеров нагрузки CPU и аллокаций памяти">
+        ⚡ Замеры нагрузки (CPU)
+      </button>
+      <button id="aiChronologyBtn" class="ai-btn secondary" title="Частота вызовов (Hz), такты CPU и порядок передачи данных">
+        ⏱️ Частота и Такты CPU
+      </button>
+      <button id="aiQueryBuilderBtn" class="ai-btn primary" style="background:#059669" title="Конструктор точечных выборок для ИИ: бери только нужные поля (мутации, вызовы, такты, потоки) и экономь 98% токенов">
+        🎯 AI Query Builder (Выборочные поля)
+      </button>
+      <button id="aiPassportsDigestBtn" class="ai-btn secondary" title="Паспорта поведения всех функций: мутации, спавны, сигналы">
+        📋 Паспорта функций (Поведение)
+      </button>
+      <button id="aiGodObjectBtn" class="ai-btn secondary" title="Промпт декомпозиции монолитных классов (God-objects)">
+        👑 Декомпозиция Hubs
+      </button>
+      <button id="aiMermaidBtn" class="ai-btn secondary" title="Сгенерировать диаграмму связей Mermaid TD">
+        🧩 Mermaid диаграмма
+      </button>
+      <button id="aiPlantUmlBtn" class="ai-btn secondary" title="Сгенерировать диаграмму компонентов PlantUML">
+        📊 PlantUML схема
+      </button>
+      <button id="aiCompactDigestBtn" class="ai-btn secondary" title="Компактная архитектурная сводка (<2k токенов)">
+        📄 Компактный дайджест
+      </button>
+      <button id="aiCliCommandBtn" class="ai-btn secondary" title="Показать CLI команду для вызова ИИ из терминала">
+        💻 Команды для ИИ (--cli)
+      </button>
+    </div>
+    <p class="muted">Генерирует готовые контекстные промпты с сигнатурами, метриками и инструкциями по рефакторингу.</p>
+  </section>
+
+  <section>
+    <div class="section-title">ЭКСПОРТ ДАННЫХ</div>
+    <div class="actions">
+      <button id="exportJSON" class="secondary" title="Экспорт графа в JSON">JSON граф</button>
+      <button id="exportCSV" class="secondary" title="Экспорт метрик узлов в CSV">CSV узлы</button>
+      <button id="exportEdgesCSV" class="secondary" title="Экспорт всех связей в CSV">CSV связи</button>
+    </div>
+  </section>
+</aside>
+</main>
+
+<!-- MODALS -->
+
+<!-- Modal: Help & Keyboard Shortcuts -->
+<div id="helpModal" class="modal-backdrop hidden">
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h3>Понятная справка и руководство архитектора</h3>
+      <button class="modal-close" data-close="helpModal">✕</button>
+    </div>
+    <div class="modal-body" style="overflow-y:auto;max-height:75vh">
+      <div class="help-grid">
+        <div>
+          <h4>Горячие клавиши (Hotkeys)</h4>
+          <div class="shortcuts-grid">
+            <div class="shortcut-row"><kbd>Space</kbd> <span>Остановить / возобновить физику симуляции</span></div>
+            <div class="shortcut-row"><kbd>F</kbd> <span>Подогнать масштаб графа под экран (Fit)</span></div>
+            <div class="shortcut-row"><kbd>Esc</kbd> <span>Сбросить выделение, изоляцию и поиск</span></div>
+            <div class="shortcut-row"><kbd>M</kbd> <span>Показать / скрыть радар-миникарту</span></div>
+            <div class="shortcut-row"><kbd>T</kbd> <span>Быстрое переключение темы оформления</span></div>
+            <div class="shortcut-row"><kbd>1</kbd>–<kbd>5</kbd> <span>Быстрое переключение алгоритмов раскладки</span></div>
+            <div class="shortcut-row"><kbd>+</kbd> / <kbd>−</kbd> <span>Увеличить / уменьшить масштаб</span></div>
+            <div class="shortcut-row"><kbd>Колесо мыши</kbd> <span>Плавный зум к курсору</span></div>
+            <div class="shortcut-row"><kbd>Клик</kbd> <span>Выбрать узел и открыть инспектор</span></div>
+            <div class="shortcut-row"><kbd>Двойной клик</kbd> <span>Закрепить (Pin) узел на месте</span></div>
+            <div class="shortcut-row"><kbd>Перетаскивание</kbd> <span>Перемещение узла или панорамирование поля</span></div>
+          </div>
+        </div>
+
+        <div>
+          <h4>Метрики простыми словами</h4>
+          <div class="glossary-list">
+            <div class="glossary-item">
+              <b>Нестабильность I (от 0 до 1)</b>
+              <p>Показывает, насколько файл уязвим к изменениям. <code>0.00</code> — бетонный фундамент ядра (трогать очень аккуратно, от него зависит весь проект). <code>1.00</code> — фасад или координатор (можно смело менять и переписывать, от него никто не зависит).</p>
+            </div>
+            <div class="glossary-item">
+              <b>Радиус поражения (Blast Radius)</b>
+              <p>Количество файлов в проекте, которые сломаются или потребуют правок, если вы допустите баг в этом файле. Чем выше это число, тем опаснее трогать файл без автотестов.</p>
+            </div>
+            <div class="glossary-item">
+              <b>Fan-In (Ca) и Fan-Out (Ce)</b>
+              <p><b>Fan-In</b>: сколько файлов обращаются к этому классу (ваша популярность). <b>Fan-Out</b>: сколько других файлов нужно этому классу для работы (ваша зависимость от других).</p>
+            </div>
+            <div class="glossary-item">
+              <b>God-Object (Хаб-монолит)</b>
+              <p>Класс-гигант (более 12 связей и 400 строк), который делает слишком много задач одновременно. Нарушает Single Responsibility Principle. Рекомендуется разделить на 2–3 узких сервиса.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+        <h4>Фичи для ИИ и экономии токенов</h4>
+        <div class="glossary-list">
+          <div class="glossary-item">
+            <b>💀 Скелеты кода (AST Skeletons) — экономия 90% токенов</b>
+            <p>Вырезает все внутренности методов, оставляя только типы, сигнатуры, параметры и сигналы. Скармливая скелеты в Claude / GPT, вы платите в 10 раз меньше за контекст, а нейросеть понимает 100% архитектуры и типов.</p>
+          </div>
+          <div class="glossary-item">
+            <b>🏝 Мертвый код vs Точки входа сцен</b>
+            <p>Скрипт без входящих связей в C#/GDScript может быть прикреплен к <code>.tscn</code> ноде. Визуализатор проверяет сцены: если файл прикреплен к сцене — это легитимная точка входа. Если нет ни в коде, ни в сценах — это забытый мусор.</p>
+          </div>
+          <div class="glossary-item">
+            <b>⚡ Горячие пути (60-FPS Hot-Paths)</b>
+            <p>Методы <code>_process</code>, <code>_physics_process</code>, <code>Update</code>. В них категорически запрещены аллокации памяти (<code>new</code>), поиск нод по строкам (<code>GetNode</code>) и парсинг текста, иначе будут микрофризы и просадка FPS.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Node Comparator -->
+<div id="compareModal" class="modal-backdrop hidden">
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h3>Сравнение архитектурных узлов</h3>
+      <button class="modal-close" data-close="compareModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="compare-selectors">
+        <div>
+          <label class="field-label">Первый узел:
+            <select id="compareNodeA"></select>
+          </label>
+        </div>
+        <div>
+          <label class="field-label">Второй узел:
+            <select id="compareNodeB"></select>
+          </label>
+        </div>
+      </div>
+      <div id="compareTableContainer" class="compare-table-wrap">
+        <div class="empty">Выберите два узла для сравнения.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: AI Output Viewer -->
+<div id="aiModal" class="modal-backdrop hidden">
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h3 id="aiModalTitle">AI Prompt & Context</h3>
+      <button class="modal-close" data-close="aiModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="ai-modal-bar">
+        <span id="aiModalTokenEst" class="token-est">~1,500 токенов</span>
+        <div class="actions" style="margin:0">
+          <button id="copyAiModalText" class="primary">📋 Скопировать в буфер</button>
+          <button id="downloadAiModalText" class="secondary">💾 Скачать (.md)</button>
+        </div>
+      </div>
+      <textarea id="aiModalTextarea" readonly spellcheck="false"></textarea>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Benchmark & Performance Profiler -->
+<div id="benchmarkModal" class="modal-backdrop hidden">
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h3>⚡ Замеры нагрузки и симуляция CPU / кадр</h3>
+      <button class="modal-close" data-close="benchmarkModal">✕</button>
+    </div>
+    <div class="modal-body" style="max-height:75vh;overflow-y:auto">
+      <!-- Interactive Time-Based Benchmark Simulation Controls -->
+      <div class="sim-duration-panel" style="margin-bottom:14px;padding:12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <strong style="color:var(--text);font-size:13px">⏱ Интерактивный замер нагрузки по времени</strong>
+            <div class="muted" style="font-size:11px">Симуляция непрерывного прогона 60 FPS: накопленное время CPU, аллокации GC и риск фризов</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px">
+              Время:
+              <select id="simDurationSelect" style="padding:4px 8px;font-size:11px;border-radius:5px;background:var(--panel);border:1px solid var(--border);color:var(--text)">
+                <option value="5">5 секунд (быстрый стресс)</option>
+                <option value="30">30 секунд</option>
+                <option value="60" selected>1 минута (стандарт)</option>
+                <option value="300">5 минут</option>
+                <option value="600">10 минут</option>
+                <option value="3600">1 час (длительный прогон)</option>
+              </select>
+            </label>
+            <button id="simRunBtn" class="primary" style="padding:5px 12px;font-size:11px">▶ Запустить замер</button>
+            <button id="simStopBtn" class="secondary" style="padding:5px 12px;font-size:11px;display:none;color:#ef4444">⏹ Остановить</button>
+          </div>
+        </div>
+
+        <!-- Live Progress and Realtime Accumulators -->
+        <div id="simLiveProgressWrap" style="margin-top:10px;display:none">
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">
+            <span id="simStatusText" style="color:#38bdf8;font-weight:600">Симуляция выполняется...</span>
+            <span id="simTimeElapsed" style="font-family:Consolas,monospace;font-weight:700">00:00 / 01:00</span>
+          </div>
+          <div style="height:6px;background:var(--panel);border-radius:3px;overflow:hidden;border:1px solid var(--border)">
+            <div id="simProgressBar" style="width:0%;height:100%;background:linear-gradient(90deg,#38bdf8,#3b82f6);transition:width 0.2s"></div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px">
+            <div class="metric" style="padding:6px 8px">
+              <span>Время CPU</span>
+              <b id="simMetricCpu" style="font-size:13px;color:#f59e0b">0.0 сек</b>
+              <div class="metric-hint" style="font-size:9px">Суммарно на вычисления</div>
+            </div>
+            <div class="metric" style="padding:6px 8px">
+              <span>Память GC</span>
+              <b id="simMetricMem" style="font-size:13px;color:#c084fc">0.0 МБ</b>
+              <div class="metric-hint" style="font-size:9px">Аллокации в куче</div>
+            </div>
+            <div class="metric" style="padding:6px 8px">
+              <span>Сборки GC</span>
+              <b id="simMetricGc" style="font-size:13px;color:#38bdf8">0 пауз</b>
+              <div class="metric-hint" style="font-size:9px">Gen0/Gen1 очистки</div>
+            </div>
+            <div class="metric" style="padding:6px 8px">
+              <span>Стабильность FPS</span>
+              <b id="simMetricRisk" style="font-size:13px;color:#22c55e">60 FPS (Стабильно)</b>
+              <div class="metric-hint" style="font-size:9px">Оценка микрофризов</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="benchmarkSummaryBar" class="benchmark-summary-bar"></div>
+      <div class="benchmark-filter-row">
+        <input id="benchmarkSearch" placeholder="Фильтр по файлу или классу..." autocomplete="off">
+        <button id="benchmarkOnlyBottlenecks" class="toggle-btn" style="min-width:170px">🔥 Только узкие места</button>
+      </div>
+      <div id="benchmarkTableWrap" class="benchmark-table-wrap"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Chronology, Execution Frequency & CPU Clock Cycles -->
+<div id="chronologyModal" class="modal-backdrop hidden">
+  <div class="modal-card wide" style="max-width:1050px">
+    <div class="modal-head">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">⏱️</span>
+        <div>
+          <h3 style="margin:0">Частота вызовов, такты CPU и порядок выполнения</h3>
+          <small class="muted" style="font-size:11px">Замеры частоты в 1 секунду (Hz), расчёт тактов CPU (~3.5 GHz) и хронологический порядок передачи данных</small>
+        </div>
+      </div>
+      <button class="modal-close" data-close="chronologyModal">✕</button>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="chronology-nav-tabs">
+      <button class="chronology-tab-btn active" data-tab="tabTable">📊 Таблица частоты и тактов CPU</button>
+      <button class="chronology-tab-btn" data-tab="tabWaterfall">🌊 Порядок вызовов & Data Flow</button>
+      <button class="chronology-tab-btn" data-tab="tabInGame">🎮 Замер в реальной игре (Live Hook)</button>
+    </div>
+
+    <div class="modal-body" style="max-height:76vh;overflow-y:auto;padding:14px 18px">
+      <!-- TAB 1: Frequency & Cycles Table -->
+      <div id="chronTabTable" class="chron-tab-content">
+        <!-- Summary Cards -->
+        <div id="chronSummaryGrid" class="chron-summary-grid">
+          <div class="chron-metric-card">
+            <span class="lbl">Всего методов в проекте</span>
+            <b id="chronTotalMethods" class="val">0</b>
+            <small class="hint">C# и GDScript функции</small>
+          </div>
+          <div class="chron-metric-card">
+            <span class="lbl">Активных в секунду</span>
+            <b id="chronActiveMethods" class="val" style="color:#38bdf8">0</b>
+            <small class="hint">Включены в граф вызовов</small>
+          </div>
+          <div class="chron-metric-card">
+            <span class="lbl">Пиковая частота</span>
+            <b id="chronMaxFreq" class="val" style="color:#f59e0b">60 Hz</b>
+            <small class="hint">Кадровые методы (_process)</small>
+          </div>
+          <div class="chron-metric-card">
+            <span class="lbl">Оценка тактов CPU/сек</span>
+            <b id="chronTotalCycles" class="val" style="color:#a855f7">0</b>
+            <small class="hint">Суммарно на 1 ядро</small>
+          </div>
+        </div>
+
+        <!-- Filter Row -->
+        <div class="chron-filter-row">
+          <input id="chronSearchInput" placeholder="Поиск по названию метода, классу или файлу..." autocomplete="off">
+          <div class="chron-filter-pills">
+            <button class="chron-pill active" data-filter="all">Все</button>
+            <button class="chron-pill" data-filter="hot">🔥 60+ Hz</button>
+            <button class="chron-pill" data-filter="loops">🔄 С циклами</button>
+            <button class="chron-pill" data-filter="allocs">📦 С аллокациями</button>
+          </div>
+          <select id="chronSortSelect" class="chron-sort-select">
+            <option value="freq_desc">Сортировка: Частота (Hz) ↓</option>
+            <option value="cycles_desc">Сортировка: Такты CPU / вызов ↓</option>
+            <option value="total_ms_desc">Сортировка: Суммарно мс/сек ↓</option>
+            <option value="alloc_desc">Сортировка: Память GC / вызов ↓</option>
+          </select>
+        </div>
+
+        <div id="chronTableContainer" class="chron-table-container"></div>
+      </div>
+
+      <!-- TAB 2: Waterfall Chronology & Data Flow -->
+      <div id="chronTabWaterfall" class="chron-tab-content hidden">
+        <div class="waterfall-header-bar">
+          <label style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px">
+            Цепочка вызовов (Точка входа):
+            <select id="chronEntrySelect" style="padding:4px 10px;border-radius:5px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:12px;max-width:380px"></select>
+          </label>
+          <div id="chronWaterfallStats" class="muted" style="font-size:11px"></div>
+        </div>
+
+        <p class="muted" style="font-size:11px;margin:8px 0 14px">
+          Хронологическая последовательность: как управление передается от точки входа по шагам <b>Шаг 1 → Шаг 2 → Шаг 3</b>, какие аргументы передаются и какие поля состояния модифицируются.
+        </p>
+
+        <div id="chronWaterfallTimeline" class="waterfall-timeline"></div>
+      </div>
+
+      <!-- TAB 3: In-Game Live Profiler Hook -->
+      <div id="chronTabInGame" class="chron-tab-content hidden">
+        <div class="ingame-guide-box">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <span style="font-size:24px">🎮</span>
+            <div>
+              <strong style="font-size:14px;color:#38bdf8">Замер в реальной запущенной игре vs Локальная симуляция</strong>
+              <div class="muted" style="font-size:12px">Визуализатор поддерживает 2 взаимодополняющих режима профилирования:</div>
+            </div>
+          </div>
+
+          <div class="ingame-comparison-grid">
+            <div class="ingame-card">
+              <h4 style="color:#22c55e;margin-top:0">1. Умная локальная симуляция (Активна сейчас)</h4>
+              <p style="font-size:12px;line-height:1.5;color:var(--text-muted)">
+                • <b>Не требует запуска игры</b> и не нагружает процессор.<br>
+                • Анализирует AST кода: вложенность циклов, аллокации объектов (<code>new</code>, <code>Instantiate</code>), математику.<br>
+                • Конвертирует в процессорные такты (~3.5 GHz базовой частоты) и миллисекунды.<br>
+                • Распространяет частоты вызовов по всему графу зависимостей.
+              </p>
+            </div>
+            <div class="ingame-card">
+              <h4 style="color:#f59e0b;margin-top:0">2. In-Game Live Hook (Внутри Godot / Unity)</h4>
+              <p style="font-size:12px;line-height:1.5;color:var(--text-muted)">
+                • Добавляется как легкий Autoload / Singleton скрипт в ваш проект.<br>
+                • Снимает точные замеры с таймеров высокой точности <code>Time.get_ticks_usec()</code> / <code>Stopwatch</code>.<br>
+                • Логирует точные значения Hz и времени под реальной нагрузкой (физика, коллизии, сотни сущностей).<br>
+                • Экспортирует снимок замера в JSON файл для импорта в визуализатор.
+              </p>
+            </div>
+          </div>
+
+          <div style="margin-top:16px">
+            <h4 style="margin-bottom:8px">Готовые скрипты для внедрения в проект:</h4>
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+              <button id="copyGdProfilerBtn" class="primary" style="font-size:11px;padding:6px 12px">📋 Скопировать LiveProfiler.gd (Godot 4)</button>
+              <button id="copyCsProfilerBtn" class="secondary" style="font-size:11px;padding:6px 12px">📋 Скопировать LiveProfiler.cs (Godot C# / Unity)</button>
+            </div>
+            <pre id="profilerCodePreview" style="background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:Consolas,monospace;font-size:11px;max-height:220px;overflow-y:auto;white-space:pre-wrap;color:#e2e8f0"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: DSM (Dependency Structure Matrix) -->
+<div id="dsmModal" class="modal-backdrop hidden">
+  <div class="modal-card wide" style="max-width:940px">
+    <div class="modal-head">
+      <h3>▦ DSM (Dependency Structure Matrix)</h3>
+      <button class="modal-close" data-close="dsmModal">✕</button>
+    </div>
+    <div class="modal-body" style="max-height:80vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+        <p class="muted" style="margin:0;font-size:11px">
+          Матрица N×N: столбцы — кто вызывает, строки — кого вызывают. Ячейки <b>выше диагонали</b> (<span style="color:#ef4444;font-weight:700">⚠️</span>) показывают <b>обратные циклические связи</b>.
+        </p>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <select id="dsmScopeSelect" style="padding:4px 8px;font-size:11px;border-radius:5px;background:var(--panel2);border:1px solid var(--border);color:var(--text)">
+            <option value="top25">Топ-25 узлов (по связям)</option>
+            <option value="cycles">Узлы в циклах</option>
+            <option value="all">Все узлы проекта</option>
+          </select>
+        </div>
+      </div>
+      <div id="dsmContainer" class="dsm-container" style="overflow:auto;max-height:58vh;border:1px solid var(--border);border-radius:6px;background:var(--panel2)"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Event-Flow Pipeline Explorer -->
+<div id="eventFlowModal" class="modal-backdrop hidden">
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h3>🌊 Сквозные цепочки реакций и событий (Event-Flow)</h3>
+      <button class="modal-close" data-close="eventFlowModal">✕</button>
+    </div>
+    <div class="modal-body" style="max-height:75vh;overflow-y:auto">
+      <p class="muted" style="margin-bottom:12px">Трассировка сквозного потока: сигнал → слушатель в коде → вторичные вызовы и триггеры.</p>
+      <div class="benchmark-filter-row">
+        <input id="eventFlowSearch" placeholder="Поиск по сигналу, источнику или слушателю..." autocomplete="off">
+      </div>
+      <div id="eventFlowListWrap" class="event-flow-list-wrap"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: AI Granular Query & Field Projection Builder -->
+<div id="aiQueryModal" class="modal-backdrop hidden">
+  <div class="modal-card wide" style="max-width:1050px">
+    <div class="modal-head">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:22px">🎯</span>
+        <div>
+          <h3 style="margin:0">AI Query Builder — Конструктор точечных выборок для ИИ</h3>
+          <small class="muted" style="font-size:11px">Выбирайте только нужные поля (мутации, такты, вызовы, потоки) для экономии 95%+ токенов контекста LLM</small>
+        </div>
+      </div>
+      <button class="modal-close" data-close="aiQueryModal">✕</button>
+    </div>
+
+    <div class="modal-body" style="max-height:80vh;overflow-y:auto;padding:16px 20px">
+      <!-- Target Selector Controls -->
+      <div class="query-builder-controls">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+          <div>
+            <label class="field-label" style="font-size:11px;font-weight:700">Целевой файл проекта:
+              <select id="aiQueryFileSelect" style="width:100%;margin-top:4px;padding:6px 10px;border-radius:5px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:12px">
+                <option value="">Все файлы проекта</option>
+              </select>
+            </label>
+          </div>
+          <div>
+            <label class="field-label" style="font-size:11px;font-weight:700">Целевая функция / метод:
+              <input id="aiQueryFuncInput" placeholder="Все функции или имя (напр. take_damage, move)..." style="width:100%;margin-top:4px;padding:6px 10px;border-radius:5px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:12px" autocomplete="off">
+            </label>
+          </div>
+        </div>
+
+        <!-- Filters & Limits Row -->
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;padding:8px 12px;background:var(--panel2);border-radius:6px;border:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:11px;color:var(--text-muted);font-weight:600">Фильтры:</span>
+            <div class="query-filter-pills">
+              <button class="q-pill active" data-qf="all">Все</button>
+              <button class="q-pill" data-qf="hot" title="Только 60+ Hz">🔥 60+ Hz</button>
+              <button class="q-pill" data-qf="mutations" title="Только с мутациями">⚡ С мутациями</button>
+              <button class="q-pill" data-qf="loops" title="Только с циклами">🔄 С циклами</button>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:10px">
+            <label style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+              Лимит:
+              <select id="aiQueryLimitSelect" style="padding:3px 8px;font-size:11px;border-radius:4px;background:var(--panel);border:1px solid var(--border);color:var(--text)">
+                <option value="0">Без лимита</option>
+                <option value="5" selected>Топ-5</option>
+                <option value="10">Топ-10</option>
+                <option value="25">Топ-25</option>
+              </select>
+            </label>
+
+            <label style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+              Бюджет токенов:
+              <select id="aiQueryBudgetSelect" style="padding:3px 8px;font-size:11px;border-radius:4px;background:var(--panel);border:1px solid var(--border);color:var(--text)">
+                <option value="0">Без лимита</option>
+                <option value="250">~250 токенов</option>
+                <option value="500">~500 токенов</option>
+                <option value="1000">~1,000 токенов</option>
+                <option value="2000">~2,000 токенов</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <!-- Checkbox Field Matrix -->
+        <div style="margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:11px;font-weight:700;color:var(--text-muted)">ВЫБОР ПОЛЕЙ ДЛЯ ВЫДАЧИ (PROJECTION):</span>
+            <div style="display:flex;gap:6px">
+              <button id="aiQuerySelectAllFields" class="secondary icon-btn-sm" style="font-size:10px;padding:2px 8px">Все поля</button>
+              <button id="aiQuerySelectMinFields" class="secondary icon-btn-sm" style="font-size:10px;padding:2px 8px">Минимум (-95% токенов)</button>
+              <button id="aiQuerySelectClearFields" class="secondary icon-btn-sm" style="font-size:10px;padding:2px 8px">Сброс</button>
+            </div>
+          </div>
+
+          <div class="field-checkboxes-grid">
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="name" checked> <span>🏷️ Имя метода</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="params" checked> <span>📥 Параметры (Args)</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="return_type" checked> <span>📤 Тип возврата</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="mutations" checked> <span>⚡ Мутации состояния</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="calls" checked> <span>↳ Кого вызывает</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="callers" checked> <span>👥 Кто вызывает (Callers)</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="hz" checked> <span>⏱️ Частота в сек (Hz)</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="cycles" checked> <span>⚙️ Такты CPU / вызов</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="emits"> <span>📡 Испускаемые сигналы</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="spawns"> <span>📦 Создание объектов (new)</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="doc"> <span>📖 Документация</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="summary"> <span>🎯 Суть функции (RU)</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="alloc"> <span>📦 Память GC (КБ)</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="complexity"> <span>📐 Сложность O(N)</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="flow"> <span>🌊 Event-Flow цепочка</span></label>
+            <label class="query-check-box"><input type="checkbox" class="q-field-chk" value="waterfall"> <span>🌊 Waterfall шаги</span></label>
+          </div>
+        </div>
+
+        <!-- Token Usage & Output Format Bar -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="token-est-pill" id="aiQueryTokenEstimate">Расход: ~0 токенов</span>
+            <span class="token-saved-pill" id="aiQueryTokenSaved">Экономия ~97% токенов</span>
+          </div>
+
+          <div class="chronology-nav-tabs" style="background:transparent;border:none;padding:0">
+            <button class="ai-query-tab-btn active" data-fmt="json">JSON</button>
+            <button class="ai-query-tab-btn" data-fmt="markdown">Markdown</button>
+            <button class="ai-query-tab-btn" data-fmt="compact">Compact (1-line)</button>
+            <button class="ai-query-tab-btn" data-fmt="cli">CLI Команда</button>
+          </div>
+        </div>
+
+        <!-- Preview Code Area -->
+        <pre id="aiQueryPreview" style="background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:Consolas,monospace;font-size:11.5px;max-height:280px;overflow-y:auto;white-space:pre-wrap;color:#e2e8f0;margin-bottom:12px"></pre>
+
+        <!-- Action Buttons -->
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="display:flex;gap:8px">
+            <button id="aiQueryCopyBtn" class="primary" style="font-size:12px;padding:6px 14px">📋 Скопировать результат</button>
+            <button id="aiQueryCopyCliBtn" class="secondary" style="font-size:12px;padding:6px 14px">💻 Скопировать CLI команду</button>
+            <button id="aiQueryDownloadBtn" class="secondary" style="font-size:12px;padding:6px 14px">💾 Скачать файл</button>
+          </div>
+          <span class="muted" style="font-size:11px">Готово для вставки в Claude, GPT, Cursor, Gemini</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Function 360-degree Deep Dive (Рентген функции) -->
+<div id="functionDeepDiveModal" class="modal-backdrop hidden">
+  <div class="modal-card wide" style="max-width:850px">
+    <div class="modal-head">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">🔍</span>
+        <div>
+          <h3 id="deepDiveTitle" style="margin:0">Рентген функции</h3>
+          <small id="deepDiveSub" class="muted" style="font-size:11px">Полный 360° анализ связей, мутаций, тактов и порядка вызова</small>
+        </div>
+      </div>
+      <button class="modal-close" data-close="functionDeepDiveModal">✕</button>
+    </div>
+    <div class="modal-body" style="max-height:78vh;overflow-y:auto;padding:16px 20px">
+      <div id="deepDiveContent"></div>
+      <div style="margin-top:14px;display:flex;gap:8px">
+        <button id="deepDiveCopyMdBtn" class="primary" style="font-size:11px;padding:6px 14px">📋 Скопировать паспорт функции для ИИ</button>
+        <button id="deepDiveOpenQueryBtn" class="secondary" style="font-size:11px;padding:6px 14px">🎯 Настроить выборку в Query Builder</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

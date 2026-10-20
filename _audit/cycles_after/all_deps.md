@@ -1,0 +1,1442 @@
+﻿# КАРТА ЗАВИСИМОСТЕЙ ПРОЕКТА: D:\bebebe-main (1)\bebebe-main
+Всего файлов: 413, Связей: 1888
+============================================================
+
+[addons/godot-mcp/plugin.gd] (GDScript, LoC: 2376, I: 1.0)
+  → Исходящие (2): addons/godot_ai/plugin.gd, addons/scene_exported_properties_dashboard/plugin.gd
+
+[addons/godot_ai/client_configurator.gd] (GDScript, LoC: 2068, I: 0.68)
+  ← Входящие (7): addons/godot_ai/connection.gd, addons/godot_ai/mcp_dock.gd, addons/godot_ai/plugin.gd, addons/godot_ai/dock_panels/port_picker_panel.gd, addons/godot_ai/utils/client_job_owner.gd, addons/godot_ai/utils/server_lifecycle.gd, addons/godot_ai/utils/update_manager.gd
+  → Исходящие (15): addons/godot_ai/clients/_base.gd, addons/godot_ai/clients/_registry.gd, addons/godot_ai/clients/_json_strategy.gd, addons/godot_ai/clients/_toml_strategy.gd, addons/godot_ai/clients/_yaml_strategy.gd, addons/godot_ai/clients/_dsh_strategy.gd, addons/godot_ai/clients/_cli_strategy.gd, addons/godot_ai/clients/_manual_command.gd, addons/godot_ai/clients/_cli_finder.gd, addons/godot_ai/utils/client_mutation_lock.gd, addons/godot_ai/utils/windows_port_reservation.gd, addons/godot_ai/utils/port_resolver.gd, addons/godot_ai/utils/uv_resolution_policy.gd, addons/godot_ai/utils/allow_hosts.gd, scenes/ui/Build.tscn
+
+[addons/godot_ai/clients/_atomic_write.gd] (GDScript, LoC: 252, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/clients/_base.gd] (GDScript, LoC: 579, I: 0.0)
+  ← Входящие (27): addons/godot_ai/client_configurator.gd, addons/godot_ai/mcp_dock.gd, addons/godot_ai/clients/antigravity.gd, addons/godot_ai/clients/claude_code.gd, addons/godot_ai/clients/claude_desktop.gd, addons/godot_ai/clients/cline.gd, addons/godot_ai/clients/codebuddy.gd, addons/godot_ai/clients/codex.gd, addons/godot_ai/clients/cursor.gd, addons/godot_ai/clients/deepseek_harness.gd, addons/godot_ai/clients/gemini_cli.gd, addons/godot_ai/clients/grok.gd, addons/godot_ai/clients/hermes.gd, addons/godot_ai/clients/kilo_code.gd, addons/godot_ai/clients/kimi_code.gd, addons/godot_ai/clients/kiro.gd, addons/godot_ai/clients/opencode.gd, addons/godot_ai/clients/pi.gd, addons/godot_ai/clients/qwen_code.gd, addons/godot_ai/clients/roo_code.gd, addons/godot_ai/clients/trae.gd, addons/godot_ai/clients/vscode.gd, addons/godot_ai/clients/vscode_insiders.gd, addons/godot_ai/clients/windsurf.gd, addons/godot_ai/clients/zed.gd, addons/godot_ai/clients/zoo_code.gd, addons/godot_ai/utils/client_job_owner.gd
+
+[addons/godot_ai/clients/_cli_exec.gd] (GDScript, LoC: 220, I: 0.67)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (2): addons/godot_ai/utils/port_resolver.gd, addons/godot_ai/utils/uv_resolution_policy.gd
+
+[addons/godot_ai/clients/_cli_finder.gd] (GDScript, LoC: 182, I: 0.0)
+  ← Входящие (1): addons/godot_ai/client_configurator.gd
+
+[addons/godot_ai/clients/_cli_strategy.gd] (GDScript, LoC: 467, I: 0.33)
+  ← Входящие (2): addons/godot_ai/client_configurator.gd, addons/godot_ai/utils/client_job_owner.gd
+  → Исходящие (1): addons/godot_ai/utils/client_mutation_lock.gd
+
+[addons/godot_ai/clients/_dsh_strategy.gd] (GDScript, LoC: 764, I: 0.0)
+  ← Входящие (2): addons/godot_ai/client_configurator.gd, addons/godot_ai/utils/client_job_owner.gd
+
+[addons/godot_ai/clients/_json_strategy.gd] (GDScript, LoC: 1115, I: 0.0)
+  ← Входящие (2): addons/godot_ai/client_configurator.gd, addons/godot_ai/utils/client_job_owner.gd
+
+[addons/godot_ai/clients/_manual_command.gd] (GDScript, LoC: 354, I: 0.5)
+  ← Входящие (1): addons/godot_ai/client_configurator.gd
+  → Исходящие (1): scenes/ui/Build.tscn
+
+[addons/godot_ai/clients/_path_template.gd] (GDScript, LoC: 243, I: 0.0)
+  ← Входящие (1): addons/godot_ai/utils/uv_resolution_policy.gd
+
+[addons/godot_ai/clients/_registry.gd] (GDScript, LoC: 157, I: 0.0)
+  ← Входящие (3): addons/godot_ai/client_configurator.gd, addons/godot_ai/mcp_dock.gd, addons/godot_ai/utils/client_job_owner.gd
+
+[addons/godot_ai/clients/_toml_strategy.gd] (GDScript, LoC: 755, I: 0.0)
+  ← Входящие (2): addons/godot_ai/client_configurator.gd, addons/godot_ai/utils/client_job_owner.gd
+
+[addons/godot_ai/clients/_yaml_strategy.gd] (GDScript, LoC: 554, I: 0.0)
+  ← Входящие (1): addons/godot_ai/client_configurator.gd
+
+[addons/godot_ai/clients/antigravity.gd] (GDScript, LoC: 39, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/claude_code.gd] (GDScript, LoC: 82, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/claude_desktop.gd] (GDScript, LoC: 39, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/cline.gd] (GDScript, LoC: 43, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/codebuddy.gd] (GDScript, LoC: 26, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/codex.gd] (GDScript, LoC: 45, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/cursor.gd] (GDScript, LoC: 21, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/deepseek_harness.gd] (GDScript, LoC: 45, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/gemini_cli.gd] (GDScript, LoC: 25, I: 1.0)
+  → Исходящие (2): addons/godot_ai/clients/_base.gd, addons/godot_ai/utils/settings.gd
+
+[addons/godot_ai/clients/grok.gd] (GDScript, LoC: 35, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/hermes.gd] (GDScript, LoC: 46, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/kilo_code.gd] (GDScript, LoC: 38, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/kimi_code.gd] (GDScript, LoC: 34, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/kiro.gd] (GDScript, LoC: 23, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/opencode.gd] (GDScript, LoC: 55, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/pi.gd] (GDScript, LoC: 62, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/qwen_code.gd] (GDScript, LoC: 26, I: 1.0)
+  → Исходящие (2): addons/godot_ai/clients/_base.gd, addons/godot_ai/utils/settings.gd
+
+[addons/godot_ai/clients/roo_code.gd] (GDScript, LoC: 42, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/trae.gd] (GDScript, LoC: 23, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/vscode.gd] (GDScript, LoC: 30, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/vscode_insiders.gd] (GDScript, LoC: 23, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/windsurf.gd] (GDScript, LoC: 29, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/clients/zed.gd] (GDScript, LoC: 36, I: 1.0)
+  → Исходящие (3): addons/godot_ai/clients/_base.gd, addons/godot_ai/utils/settings.gd, addons/godot_ai/utils/settings.gd
+
+[addons/godot_ai/clients/zoo_code.gd] (GDScript, LoC: 36, I: 1.0)
+  → Исходящие (1): addons/godot_ai/clients/_base.gd
+
+[addons/godot_ai/connection.gd] (GDScript, LoC: 1322, I: 0.5)
+  ← Входящие (2): addons/godot_ai/mcp_dock.gd, addons/godot_ai/plugin.gd
+  → Исходящие (2): addons/godot_ai/client_configurator.gd, addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/custom_tools/custom_tool_wrapper.gd] (GDScript, LoC: 81, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/custom_tools/mcp_call_context.gd] (GDScript, LoC: 45, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/custom_tools/mcp_custom_tool_spec.gd] (GDScript, LoC: 67, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/custom_tools/mcp_service_locator.gd] (GDScript, LoC: 17, I: 0.0)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+
+[addons/godot_ai/custom_tools/mcp_tool_registry.gd] (GDScript, LoC: 278, I: 0.0)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+
+[addons/godot_ai/debugger/mcp_debugger_plugin.gd] (GDScript, LoC: 2089, I: 0.8)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (4): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/script_work.gd, addons/godot_ai/vision_routing.gd, addons/godot_ai/runtime/game_helper.gd
+
+[addons/godot_ai/dispatcher.gd] (GDScript, LoC: 530, I: 0.8)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (4): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/fuzzy_suggestions.gd, addons/godot_ai/utils/plugin_reload.gd, addons/godot_ai/utils/script_work.gd
+
+[addons/godot_ai/dock_panels/log_viewer.gd] (GDScript, LoC: 94, I: 0.5)
+  ← Входящие (1): addons/godot_ai/mcp_dock.gd
+  → Исходящие (1): addons/godot_ai/utils/settings.gd
+
+[addons/godot_ai/dock_panels/port_picker_panel.gd] (GDScript, LoC: 107, I: 0.67)
+  ← Входящие (1): addons/godot_ai/mcp_dock.gd
+  → Исходящие (2): addons/godot_ai/client_configurator.gd, addons/godot_ai/utils/port_resolver.gd
+
+[addons/godot_ai/export/mcp_export_plugin.gd] (GDScript, LoC: 70, I: 0.0)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+
+[addons/godot_ai/handlers/_node_validator.gd] (GDScript, LoC: 72, I: 1.0)
+  → Исходящие (2): addons/godot_ai/utils/scene_path.gd, addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/_param_validators.gd] (GDScript, LoC: 31, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/_property_errors.gd] (GDScript, LoC: 83, I: 0.0)
+  ← Входящие (1): addons/godot_ai/handlers/animation_values.gd
+
+[addons/godot_ai/handlers/_resource_values.gd] (GDScript, LoC: 571, I: 0.4)
+  ← Входящие (3): addons/godot_ai/handlers/node_handler.gd, addons/godot_ai/handlers/resource_handler.gd, addons/godot_ai/tests/test_cycle2_coercion.gd
+  → Исходящие (2): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/_value_coercion.gd
+
+[addons/godot_ai/handlers/_value_coercion.gd] (GDScript, LoC: 390, I: 0.25)
+  ← Входящие (3): addons/godot_ai/handlers/node_handler.gd, addons/godot_ai/handlers/_resource_values.gd, addons/godot_ai/tests/test_cycle2_coercion.gd
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/animation_handler.gd] (GDScript, LoC: 826, I: 1.0)
+  → Исходящие (3): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/animation_presets.gd, addons/godot_ai/handlers/animation_values.gd
+
+[addons/godot_ai/handlers/animation_presets.gd] (GDScript, LoC: 537, I: 0.75)
+  ← Входящие (1): addons/godot_ai/handlers/animation_handler.gd
+  → Исходящие (3): addons/godot_ai/handlers/animation_values.gd, addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/scene_path.gd
+
+[addons/godot_ai/handlers/animation_values.gd] (GDScript, LoC: 447, I: 0.6)
+  ← Входящие (2): addons/godot_ai/handlers/animation_handler.gd, addons/godot_ai/handlers/animation_presets.gd
+  → Исходящие (3): addons/godot_ai/utils/variant_serializer.gd, addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/_property_errors.gd
+
+[addons/godot_ai/handlers/api_handler.gd] (GDScript, LoC: 90, I: 1.0)
+  → Исходящие (4): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/class_introspection.gd, addons/godot_ai/utils/fuzzy_suggestions.gd, scenes/ui/Build.tscn
+
+[addons/godot_ai/handlers/audio_handler.gd] (GDScript, LoC: 364, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/autoload_handler.gd] (GDScript, LoC: 92, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/batch_handler.gd] (GDScript, LoC: 238, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/camera_handler.gd] (GDScript, LoC: 1132, I: 1.0)
+  → Исходящие (4): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/camera_values.gd, addons/godot_ai/handlers/camera_presets.gd, scenes/ui/Build.tscn
+
+[addons/godot_ai/handlers/camera_presets.gd] (GDScript, LoC: 82, I: 0.5)
+  ← Входящие (1): addons/godot_ai/handlers/camera_handler.gd
+  → Исходящие (1): scenes/ui/Build.tscn
+
+[addons/godot_ai/handlers/camera_values.gd] (GDScript, LoC: 133, I: 0.0)
+  ← Входящие (1): addons/godot_ai/handlers/camera_handler.gd
+
+[addons/godot_ai/handlers/client_handler.gd] (GDScript, LoC: 59, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/command_handler.gd] (GDScript, LoC: 14, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/script_work.gd
+
+[addons/godot_ai/handlers/control_draw_recipe_handler.gd] (GDScript, LoC: 319, I: 1.0)
+  → Исходящие (3): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/runtime/draw_recipe.gd, addons/godot_ai/handlers/ui_handler.gd
+
+[addons/godot_ai/handlers/csg_handler.gd] (GDScript, LoC: 119, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/curve_handler.gd] (GDScript, LoC: 244, I: 1.0)
+  → Исходящие (2): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/node_handler.gd
+
+[addons/godot_ai/handlers/editor_handler.gd] (GDScript, LoC: 1070, I: 1.0)
+  → Исходящие (4): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/telemetry.gd, addons/godot_ai/utils/plugin_reload.gd, addons/godot_ai/vision_routing.gd
+
+[addons/godot_ai/handlers/environment_handler.gd] (GDScript, LoC: 182, I: 1.0)
+  → Исходящие (2): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/resource_handler.gd
+
+[addons/godot_ai/handlers/filesystem_handler.gd] (GDScript, LoC: 321, I: 1.0)
+  → Исходящие (2): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/script_handler.gd
+
+[addons/godot_ai/handlers/gridmap_handler.gd] (GDScript, LoC: 193, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/input_handler.gd] (GDScript, LoC: 463, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/material_handler.gd] (GDScript, LoC: 810, I: 1.0)
+  → Исходящие (4): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/material_values.gd, addons/godot_ai/handlers/material_presets.gd, scenes/ui/Build.tscn
+
+[addons/godot_ai/handlers/material_presets.gd] (GDScript, LoC: 93, I: 0.5)
+  ← Входящие (1): addons/godot_ai/handlers/material_handler.gd
+  → Исходящие (1): scenes/ui/Build.tscn
+
+[addons/godot_ai/handlers/material_values.gd] (GDScript, LoC: 195, I: 0.0)
+  ← Входящие (2): addons/godot_ai/handlers/material_handler.gd, addons/godot_ai/handlers/particle_values.gd
+
+[addons/godot_ai/handlers/node_handler.gd] (GDScript, LoC: 745, I: 0.5)
+  ← Входящие (4): addons/godot_ai/handlers/curve_handler.gd, addons/godot_ai/handlers/project_handler.gd, addons/godot_ai/handlers/texture_handler.gd, addons/godot_ai/tests/test_cycle2_coercion.gd
+  → Исходящие (4): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/variant_serializer.gd, addons/godot_ai/handlers/_value_coercion.gd, addons/godot_ai/handlers/_resource_values.gd
+
+[addons/godot_ai/handlers/particle_handler.gd] (GDScript, LoC: 861, I: 1.0)
+  → Исходящие (4): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/particle_values.gd, addons/godot_ai/handlers/particle_presets.gd, scenes/ui/Build.tscn
+
+[addons/godot_ai/handlers/particle_presets.gd] (GDScript, LoC: 294, I: 0.5)
+  ← Входящие (1): addons/godot_ai/handlers/particle_handler.gd
+  → Исходящие (1): scenes/ui/Build.tscn
+
+[addons/godot_ai/handlers/particle_values.gd] (GDScript, LoC: 247, I: 0.5)
+  ← Входящие (1): addons/godot_ai/handlers/particle_handler.gd
+  → Исходящие (1): addons/godot_ai/handlers/material_values.gd
+
+[addons/godot_ai/handlers/physics_shape_handler.gd] (GDScript, LoC: 773, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/project_handler.gd] (GDScript, LoC: 670, I: 1.0)
+  → Исходящие (3): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/node_handler.gd, addons/godot_ai/utils/settings.gd
+
+[addons/godot_ai/handlers/resource_handler.gd] (GDScript, LoC: 392, I: 0.71)
+  ← Входящие (2): addons/godot_ai/handlers/environment_handler.gd, addons/godot_ai/tests/test_cycle2_coercion.gd
+  → Исходящие (5): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/class_introspection.gd, addons/godot_ai/utils/variant_serializer.gd, addons/godot_ai/handlers/_resource_values.gd, scenes/ui/Build.tscn
+
+[addons/godot_ai/handlers/scene_handler.gd] (GDScript, LoC: 430, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/script_handler.gd] (GDScript, LoC: 573, I: 0.75)
+  ← Входящие (1): addons/godot_ai/handlers/filesystem_handler.gd
+  → Исходящие (3): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/diagnostics_capture.gd, addons/godot_ai/runtime/validation_logger.gd
+
+[addons/godot_ai/handlers/signal_handler.gd] (GDScript, LoC: 275, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/test_handler.gd] (GDScript, LoC: 374, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/texture_handler.gd] (GDScript, LoC: 199, I: 1.0)
+  → Исходящие (2): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/handlers/node_handler.gd
+
+[addons/godot_ai/handlers/theme_handler.gd] (GDScript, LoC: 477, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/tilemap_handler.gd] (GDScript, LoC: 164, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/tileset_handler.gd] (GDScript, LoC: 179, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/handlers/ui_handler.gd] (GDScript, LoC: 526, I: 0.5)
+  ← Входящие (1): addons/godot_ai/handlers/control_draw_recipe_handler.gd
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/mcp_dock.gd] (GDScript, LoC: 2850, I: 0.92)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (11): addons/godot_ai/utils/mcp_server_state.gd, addons/godot_ai/utils/mcp_client_refresh_state.gd, addons/godot_ai/clients/_base.gd, addons/godot_ai/client_configurator.gd, addons/godot_ai/clients/_registry.gd, addons/godot_ai/tool_catalog.gd, addons/godot_ai/dock_panels/log_viewer.gd, addons/godot_ai/dock_panels/port_picker_panel.gd, addons/godot_ai/vision_routing.gd, addons/godot_ai/utils/allow_hosts.gd, addons/godot_ai/connection.gd
+
+[addons/godot_ai/migration_bridge.gd] (GDScript, LoC: 9, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/migration_coordinator.gd] (GDScript, LoC: 21, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/migration_fallback.gd] (GDScript, LoC: 12, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/plugin.gd] (GDScript, LoC: 1808, I: 0.96)
+  ← Входящие (1): addons/godot-mcp/plugin.gd
+  → Исходящие (26): addons/godot_ai/runtime/editor_logger.gd, addons/godot_ai/utils/plugin_reload.gd, addons/godot_ai/utils/release_verifier.gd, addons/godot_ai/utils/update_installer.gd, addons/godot_ai/utils/server_lifecycle.gd, addons/godot_ai/utils/port_resolver.gd, addons/godot_ai/utils/mcp_server_state.gd, addons/godot_ai/utils/transport_capability.gd, addons/godot_ai/connection.gd, addons/godot_ai/dispatcher.gd, addons/godot_ai/telemetry.gd, addons/godot_ai/utils/log_buffer.gd, addons/godot_ai/utils/game_log_buffer.gd, addons/godot_ai/utils/editor_log_buffer.gd, addons/godot_ai/utils/surfaced_error_tracker.gd, addons/godot_ai/mcp_dock.gd, addons/godot_ai/debugger/mcp_debugger_plugin.gd, addons/godot_ai/vision_routing.gd, addons/godot_ai/export/mcp_export_plugin.gd, addons/godot_ai/client_configurator.gd, addons/godot_ai/clients/_cli_exec.gd, addons/godot_ai/utils/client_job_owner.gd, addons/godot_ai/utils/update_manager.gd, addons/godot_ai/utils/windows_port_reservation.gd, addons/godot_ai/custom_tools/mcp_tool_registry.gd, addons/godot_ai/custom_tools/mcp_service_locator.gd
+
+[addons/godot_ai/runtime/draw_recipe.gd] (GDScript, LoC: 87, I: 0.0)
+  ← Входящие (1): addons/godot_ai/handlers/control_draw_recipe_handler.gd
+
+[addons/godot_ai/runtime/editor_logger.gd] (GDScript, LoC: 140, I: 0.5)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (1): addons/godot_ai/utils/log_backtrace.gd
+
+[addons/godot_ai/runtime/game_helper.gd] (GDScript, LoC: 1353, I: 0.75)
+  ← Входящие (1): addons/godot_ai/debugger/mcp_debugger_plugin.gd
+  → Исходящие (3): addons/godot_ai/runtime/game_logger.gd, addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/screenshot_encode.gd
+
+[addons/godot_ai/runtime/game_logger.gd] (GDScript, LoC: 143, I: 0.5)
+  ← Входящие (1): addons/godot_ai/runtime/game_helper.gd
+  → Исходящие (1): addons/godot_ai/utils/log_backtrace.gd
+
+[addons/godot_ai/runtime/validation_logger.gd] (GDScript, LoC: 44, I: 0.5)
+  ← Входящие (1): addons/godot_ai/handlers/script_handler.gd
+  → Исходящие (1): addons/godot_ai/utils/log_backtrace.gd
+
+[addons/godot_ai/telemetry.gd] (GDScript, LoC: 225, I: 0.0)
+  ← Входящие (2): addons/godot_ai/plugin.gd, addons/godot_ai/handlers/editor_handler.gd
+
+[addons/godot_ai/testing/script_error_capture.gd] (GDScript, LoC: 50, I: 0.0)
+  ← Входящие (1): addons/godot_ai/testing/test_runner.gd
+
+[addons/godot_ai/testing/test_runner.gd] (GDScript, LoC: 442, I: 1.0)
+  → Исходящие (1): addons/godot_ai/testing/script_error_capture.gd
+
+[addons/godot_ai/testing/test_suite.gd] (GDScript, LoC: 303, I: 0.0)
+  ← Входящие (6): tests/test_phase0.gd, tests/test_phase1.gd, tests/test_phase2.gd, tests/test_phase3.gd, tests/test_phase4.gd, tests/test_phase5.gd
+
+[addons/godot_ai/tests/test_cycle2_coercion.gd] (GDScript, LoC: 113, I: 1.0)
+  → Исходящие (4): addons/godot_ai/handlers/_value_coercion.gd, addons/godot_ai/handlers/_resource_values.gd, addons/godot_ai/handlers/node_handler.gd, addons/godot_ai/handlers/resource_handler.gd
+
+[addons/godot_ai/tool_catalog.gd] (GDScript, LoC: 111, I: 0.0)
+  ← Входящие (1): addons/godot_ai/mcp_dock.gd
+
+[addons/godot_ai/utils/allow_hosts.gd] (GDScript, LoC: 171, I: 0.0)
+  ← Входящие (2): addons/godot_ai/client_configurator.gd, addons/godot_ai/mcp_dock.gd
+
+[addons/godot_ai/utils/class_introspection.gd] (GDScript, LoC: 260, I: 0.5)
+  ← Входящие (2): addons/godot_ai/handlers/api_handler.gd, addons/godot_ai/handlers/resource_handler.gd
+  → Исходящие (2): addons/godot_ai/utils/variant_serializer.gd, scenes/ui/Build.tscn
+
+[addons/godot_ai/utils/client_job_owner.gd] (GDScript, LoC: 967, I: 0.9)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (9): addons/godot_ai/clients/_base.gd, addons/godot_ai/client_configurator.gd, addons/godot_ai/clients/_registry.gd, addons/godot_ai/clients/_json_strategy.gd, addons/godot_ai/clients/_toml_strategy.gd, addons/godot_ai/clients/_dsh_strategy.gd, addons/godot_ai/clients/_cli_strategy.gd, addons/godot_ai/utils/mcp_client_refresh_state.gd, addons/godot_ai/utils/client_mutation_lock.gd
+
+[addons/godot_ai/utils/client_mutation_lock.gd] (GDScript, LoC: 132, I: 0.0)
+  ← Входящие (3): addons/godot_ai/client_configurator.gd, addons/godot_ai/clients/_cli_strategy.gd, addons/godot_ai/utils/client_job_owner.gd
+
+[addons/godot_ai/utils/diagnostics_capture.gd] (GDScript, LoC: 67, I: 0.0)
+  ← Входящие (1): addons/godot_ai/handlers/script_handler.gd
+
+[addons/godot_ai/utils/editor_log_buffer.gd] (GDScript, LoC: 128, I: 0.5)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (1): addons/godot_ai/utils/structured_log_ring.gd
+
+[addons/godot_ai/utils/error_codes.gd] (GDScript, LoC: 165, I: 0.0)
+  ← Входящие (44): addons/godot_ai/connection.gd, addons/godot_ai/dispatcher.gd, addons/godot_ai/custom_tools/custom_tool_wrapper.gd, addons/godot_ai/debugger/mcp_debugger_plugin.gd, addons/godot_ai/handlers/animation_handler.gd, addons/godot_ai/handlers/animation_presets.gd, addons/godot_ai/handlers/animation_values.gd, addons/godot_ai/handlers/api_handler.gd, addons/godot_ai/handlers/audio_handler.gd, addons/godot_ai/handlers/autoload_handler.gd, addons/godot_ai/handlers/batch_handler.gd, addons/godot_ai/handlers/camera_handler.gd, addons/godot_ai/handlers/client_handler.gd, addons/godot_ai/handlers/control_draw_recipe_handler.gd, addons/godot_ai/handlers/csg_handler.gd, addons/godot_ai/handlers/curve_handler.gd, addons/godot_ai/handlers/editor_handler.gd, addons/godot_ai/handlers/environment_handler.gd, addons/godot_ai/handlers/filesystem_handler.gd, addons/godot_ai/handlers/gridmap_handler.gd, addons/godot_ai/handlers/input_handler.gd, addons/godot_ai/handlers/material_handler.gd, addons/godot_ai/handlers/node_handler.gd, addons/godot_ai/handlers/particle_handler.gd, addons/godot_ai/handlers/physics_shape_handler.gd, addons/godot_ai/handlers/project_handler.gd, addons/godot_ai/handlers/resource_handler.gd, addons/godot_ai/handlers/scene_handler.gd, addons/godot_ai/handlers/script_handler.gd, addons/godot_ai/handlers/signal_handler.gd, addons/godot_ai/handlers/test_handler.gd, addons/godot_ai/handlers/texture_handler.gd, addons/godot_ai/handlers/theme_handler.gd, addons/godot_ai/handlers/tilemap_handler.gd, addons/godot_ai/handlers/tileset_handler.gd, addons/godot_ai/handlers/ui_handler.gd, addons/godot_ai/handlers/_node_validator.gd, addons/godot_ai/handlers/_param_validators.gd, addons/godot_ai/handlers/_resource_values.gd, addons/godot_ai/handlers/_value_coercion.gd, addons/godot_ai/runtime/game_helper.gd, addons/godot_ai/utils/path_validator.gd, addons/godot_ai/utils/resource_io.gd, addons/godot_ai/utils/scene_path.gd
+
+[addons/godot_ai/utils/fuzzy_suggestions.gd] (GDScript, LoC: 40, I: 0.0)
+  ← Входящие (2): addons/godot_ai/dispatcher.gd, addons/godot_ai/handlers/api_handler.gd
+
+[addons/godot_ai/utils/game_log_buffer.gd] (GDScript, LoC: 106, I: 0.5)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (1): addons/godot_ai/utils/structured_log_ring.gd
+
+[addons/godot_ai/utils/json_values.gd] (GDScript, LoC: 109, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/utils/log_backtrace.gd] (GDScript, LoC: 114, I: 0.0)
+  ← Входящие (3): addons/godot_ai/runtime/editor_logger.gd, addons/godot_ai/runtime/game_logger.gd, addons/godot_ai/runtime/validation_logger.gd
+
+[addons/godot_ai/utils/log_buffer.gd] (GDScript, LoC: 68, I: 0.0)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+
+[addons/godot_ai/utils/mcp_adoption_label.gd] (GDScript, LoC: 9, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/utils/mcp_client_refresh_state.gd] (GDScript, LoC: 102, I: 0.0)
+  ← Входящие (2): addons/godot_ai/mcp_dock.gd, addons/godot_ai/utils/client_job_owner.gd
+
+[addons/godot_ai/utils/mcp_server_state.gd] (GDScript, LoC: 58, I: 0.0)
+  ← Входящие (3): addons/godot_ai/mcp_dock.gd, addons/godot_ai/plugin.gd, addons/godot_ai/utils/server_lifecycle.gd
+
+[addons/godot_ai/utils/mcp_startup_path.gd] (GDScript, LoC: 16, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/utils/path_validator.gd] (GDScript, LoC: 217, I: 1.0)
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/utils/plugin_reload.gd] (GDScript, LoC: 126, I: 0.25)
+  ← Входящие (3): addons/godot_ai/dispatcher.gd, addons/godot_ai/plugin.gd, addons/godot_ai/handlers/editor_handler.gd
+  → Исходящие (1): addons/godot_ai/utils/script_work.gd
+
+[addons/godot_ai/utils/port_resolver.gd] (GDScript, LoC: 769, I: 0.14)
+  ← Входящие (6): addons/godot_ai/client_configurator.gd, addons/godot_ai/plugin.gd, addons/godot_ai/clients/_cli_exec.gd, addons/godot_ai/dock_panels/port_picker_panel.gd, addons/godot_ai/utils/server_lifecycle.gd, addons/godot_ai/utils/update_installer.gd
+  → Исходящие (1): addons/godot_ai/utils/windows_port_reservation.gd
+
+[addons/godot_ai/utils/release_verifier.gd] (GDScript, LoC: 877, I: 0.0)
+  ← Входящие (2): addons/godot_ai/plugin.gd, addons/godot_ai/utils/update_installer.gd
+
+[addons/godot_ai/utils/resource_io.gd] (GDScript, LoC: 287, I: 1.0)
+  → Исходящие (2): addons/godot_ai/utils/error_codes.gd, addons/godot_ai/utils/script_work.gd
+
+[addons/godot_ai/utils/scene_path.gd] (GDScript, LoC: 156, I: 0.33)
+  ← Входящие (2): addons/godot_ai/handlers/animation_presets.gd, addons/godot_ai/handlers/_node_validator.gd
+  → Исходящие (1): addons/godot_ai/utils/error_codes.gd
+
+[addons/godot_ai/utils/screenshot_encode.gd] (GDScript, LoC: 39, I: 0.0)
+  ← Входящие (1): addons/godot_ai/runtime/game_helper.gd
+
+[addons/godot_ai/utils/script_work.gd] (GDScript, LoC: 30, I: 0.0)
+  ← Входящие (5): addons/godot_ai/dispatcher.gd, addons/godot_ai/debugger/mcp_debugger_plugin.gd, addons/godot_ai/handlers/command_handler.gd, addons/godot_ai/utils/plugin_reload.gd, addons/godot_ai/utils/resource_io.gd
+
+[addons/godot_ai/utils/server_authority.gd] (GDScript, LoC: 172, I: 0.5)
+  ← Входящие (1): addons/godot_ai/utils/server_lifecycle.gd
+  → Исходящие (1): addons/godot_ai/utils/transport_capability.gd
+
+[addons/godot_ai/utils/server_lifecycle.gd] (GDScript, LoC: 1722, I: 0.88)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (7): addons/godot_ai/utils/server_authority.gd, addons/godot_ai/client_configurator.gd, addons/godot_ai/utils/port_resolver.gd, addons/godot_ai/utils/mcp_server_state.gd, addons/godot_ai/utils/server_version_check.gd, addons/godot_ai/utils/transport_capability.gd, addons/godot_ai/utils/uv_resolution_policy.gd
+
+[addons/godot_ai/utils/server_version_check.gd] (GDScript, LoC: 65, I: 0.0)
+  ← Входящие (1): addons/godot_ai/utils/server_lifecycle.gd
+
+[addons/godot_ai/utils/settings.gd] (GDScript, LoC: 136, I: 0.0)
+  ← Входящие (6): addons/godot_ai/clients/gemini_cli.gd, addons/godot_ai/clients/qwen_code.gd, addons/godot_ai/clients/zed.gd, addons/godot_ai/clients/zed.gd, addons/godot_ai/dock_panels/log_viewer.gd, addons/godot_ai/handlers/project_handler.gd
+
+[addons/godot_ai/utils/structured_log_ring.gd] (GDScript, LoC: 157, I: 0.0)
+  ← Входящие (2): addons/godot_ai/utils/editor_log_buffer.gd, addons/godot_ai/utils/game_log_buffer.gd
+
+[addons/godot_ai/utils/surfaced_error_tracker.gd] (GDScript, LoC: 643, I: 0.0)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+
+[addons/godot_ai/utils/transport_capability.gd] (GDScript, LoC: 306, I: 0.0)
+  ← Входящие (4): addons/godot_ai/plugin.gd, addons/godot_ai/utils/server_authority.gd, addons/godot_ai/utils/server_lifecycle.gd, addons/godot_ai/utils/update_manager.gd
+
+[addons/godot_ai/utils/update_activation_runner.gd] (GDScript, LoC: 392, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/utils/update_installer.gd] (GDScript, LoC: 549, I: 0.67)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (2): addons/godot_ai/utils/port_resolver.gd, addons/godot_ai/utils/release_verifier.gd
+
+[addons/godot_ai/utils/update_manager.gd] (GDScript, LoC: 534, I: 0.67)
+  ← Входящие (1): addons/godot_ai/plugin.gd
+  → Исходящие (2): addons/godot_ai/client_configurator.gd, addons/godot_ai/utils/transport_capability.gd
+
+[addons/godot_ai/utils/update_mixed_state.gd] (GDScript, LoC: 142, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/utils/uv_cache_cleanup.gd] (GDScript, LoC: 162, I: 0.5)
+  (изолированный файл)
+
+[addons/godot_ai/utils/uv_resolution_policy.gd] (GDScript, LoC: 98, I: 0.25)
+  ← Входящие (3): addons/godot_ai/client_configurator.gd, addons/godot_ai/clients/_cli_exec.gd, addons/godot_ai/utils/server_lifecycle.gd
+  → Исходящие (1): addons/godot_ai/clients/_path_template.gd
+
+[addons/godot_ai/utils/variant_serializer.gd] (GDScript, LoC: 103, I: 0.0)
+  ← Входящие (4): addons/godot_ai/handlers/animation_values.gd, addons/godot_ai/handlers/node_handler.gd, addons/godot_ai/handlers/resource_handler.gd, addons/godot_ai/utils/class_introspection.gd
+
+[addons/godot_ai/utils/windows_port_reservation.gd] (GDScript, LoC: 147, I: 0.0)
+  ← Входящие (3): addons/godot_ai/client_configurator.gd, addons/godot_ai/plugin.gd, addons/godot_ai/utils/port_resolver.gd
+
+[addons/godot_ai/vision_routing.gd] (GDScript, LoC: 1091, I: 0.0)
+  ← Входящие (4): addons/godot_ai/mcp_dock.gd, addons/godot_ai/plugin.gd, addons/godot_ai/debugger/mcp_debugger_plugin.gd, addons/godot_ai/handlers/editor_handler.gd
+
+[addons/scene_exported_properties_dashboard/core/property_collector.gd] (GDScript, LoC: 87, I: 0.0)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.gd
+
+[addons/scene_exported_properties_dashboard/core/property_editor.gd] (GDScript, LoC: 68, I: 0.0)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.gd
+
+[addons/scene_exported_properties_dashboard/core/snapshot_manager.gd] (GDScript, LoC: 194, I: 0.0)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.gd
+
+[addons/scene_exported_properties_dashboard/plugin.gd] (GDScript, LoC: 51, I: 0.5)
+  ← Входящие (1): addons/godot-mcp/plugin.gd
+  → Исходящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.tscn
+
+[addons/scene_exported_properties_dashboard/ui/dashboard_panel.gd] (GDScript, LoC: 399, I: 0.86)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.tscn
+  → Исходящие (6): addons/scene_exported_properties_dashboard/core/property_collector.gd, addons/scene_exported_properties_dashboard/core/property_editor.gd, addons/scene_exported_properties_dashboard/core/snapshot_manager.gd, addons/scene_exported_properties_dashboard/ui/filter_dialog.tscn, addons/scene_exported_properties_dashboard/ui/snapshot_dialog.tscn, addons/scene_exported_properties_dashboard/ui/snapshot_list.tscn
+
+[addons/scene_exported_properties_dashboard/ui/dashboard_panel.tscn] (Scene, LoC: 53, I: 0.5)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/plugin.gd
+  → Исходящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.gd
+
+[addons/scene_exported_properties_dashboard/ui/filter_dialog.gd] (GDScript, LoC: 40, I: 0.0)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/filter_dialog.tscn
+
+[addons/scene_exported_properties_dashboard/ui/filter_dialog.tscn] (Scene, LoC: 22, I: 0.5)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.gd
+  → Исходящие (1): addons/scene_exported_properties_dashboard/ui/filter_dialog.gd
+
+[addons/scene_exported_properties_dashboard/ui/snapshot_dialog.gd] (GDScript, LoC: 22, I: 0.0)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/snapshot_dialog.tscn
+
+[addons/scene_exported_properties_dashboard/ui/snapshot_dialog.tscn] (Scene, LoC: 25, I: 0.5)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.gd
+  → Исходящие (1): addons/scene_exported_properties_dashboard/ui/snapshot_dialog.gd
+
+[addons/scene_exported_properties_dashboard/ui/snapshot_list.gd] (GDScript, LoC: 56, I: 0.0)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/snapshot_list.tscn
+
+[addons/scene_exported_properties_dashboard/ui/snapshot_list.tscn] (Scene, LoC: 35, I: 0.5)
+  ← Входящие (1): addons/scene_exported_properties_dashboard/ui/dashboard_panel.gd
+  → Исходящие (1): addons/scene_exported_properties_dashboard/ui/snapshot_list.gd
+
+[autoload/mcp_interaction_server.gd] (GDScript, LoC: 4894, I: 0.5)
+  (изолированный файл)
+
+[scenes/infinite_world/infinite_world_game_demo.tscn] (Scene, LoC: 3, I: 0.5)
+  (изолированный файл)
+
+[scenes/main/Main.cs] (C#, LoC: 531, I: 0.94)
+  ← Входящие (4): src/ui/controllers/MainMenuController.cs, tests/Phase4StressTestRunner.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (66): src/ui/renderers/AgentRenderer.cs, src/simulation/AgentSimulationThread.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/ui/CameraController.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/farming/CropGrowthManager.cs, src/ui/renderers/CropRenderer.cs, src/ui/DayNightCycle.cs, src/simulation/items/DemandRegistry.cs, src/simulation/farming/FarmJobManager.cs, src/ui/renderers/FarmZoneRenderer.cs, src/simulation/agents/FlowFieldManager.cs, src/core/common/GameProfiler.cs, src/simulation/items/GroundItemManager.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/controllers/HUDController.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/ui/renderers/ItemShadowRenderer.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobPriorityManager.cs, scenes/main/Main.tscn, src/core/world/MapData.cs, src/ui/renderers/MapRenderer.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/core/common/ProfilerLogService.cs, src/ui/SelectionBox.cs, src/core/common/SimEvents.cs, src/simulation/items/StockpileManager.cs, src/simulation/stones/StoneJobManager.cs, src/ui/streaming/StreamingToolPlacement.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/ui/streaming/StreamingWorldView.cs, src/simulation/structures/StructureManager.cs, src/simulation/TimeManager.cs, src/simulation/trees/TreeJobManager.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/building/WorkProgressTracker.cs, src/ui/streaming/WorldAgentRenderer.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/ui/streaming/WorldJobTicker.cs, scenes/ui/WorldMap.tscn, src/ui/streaming/WorldMapOverlay.cs, src/core/world/streaming/coordinator/WorldSaveCoordinator.cs, src/simulation/WorldTime.cs, src/simulation/zones/ZoneManager.cs, src/core/common/CpuTopology.cs, src/core/common/ResourceRef.cs, src/core/common/ToolRequirement.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/streaming/WorldMapTileMapper.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs, src/ui/ICellProbeOverlay.cs, src/ui/controllers/BuildMenuController.cs, src/ui/controllers/FarmController.cs, src/ui/streaming/IWorldAgentSource.cs, src/ui/streaming/WorldAgent.cs, src/ui/streaming/WorldJobBoard.cs
+
+[scenes/main/Main.tscn] (Scene, LoC: 753, I: 0.0)
+  ← Входящие (6): scenes/main/Main.cs, src/ui/controllers/MainMenuController.cs, tests/Phase4StressTestRunner.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs, tests/test_phase0.gd
+
+[scenes/ui/Build.tscn] (Scene, LoC: 154, I: 0.0)
+  ← Входящие (13): addons/godot_ai/client_configurator.gd, addons/godot_ai/clients/_manual_command.gd, addons/godot_ai/handlers/api_handler.gd, addons/godot_ai/handlers/camera_handler.gd, addons/godot_ai/handlers/camera_presets.gd, addons/godot_ai/handlers/material_handler.gd, addons/godot_ai/handlers/material_presets.gd, addons/godot_ai/handlers/particle_handler.gd, addons/godot_ai/handlers/particle_presets.gd, addons/godot_ai/handlers/resource_handler.gd, addons/godot_ai/utils/class_introspection.gd, src/ui/controllers/BuildMenuController.cs, tests/test_phase0.gd
+
+[scenes/ui/Farm.tscn] (Scene, LoC: 148, I: 0.0)
+  ← Входящие (7): src/simulation/farming/FarmZoneManagerFacade.cs, src/simulation/zones/Zone.cs, src/simulation/zones/ZoneManager.cs, src/ui/controllers/FarmController.cs, src/ui/tools/BuildTool.cs, tests/Phase1StressTestRunner.cs, tests/Phase5StressTestRunner.cs
+
+[scenes/ui/Garden.tscn] (Scene, LoC: 3, I: 0.5)
+  (изолированный файл)
+
+[scenes/ui/JobDisplay.tscn] (Scene, LoC: 187, I: 0.0)
+  ← Входящие (2): src/ui/controllers/WorkZoneController.cs, tests/test_phase0.gd
+
+[scenes/ui/Prioritet.tscn] (Scene, LoC: 191, I: 0.0)
+  ← Входящие (2): src/ui/controllers/HUDController.cs, src/ui/controllers/WorkZoneController.cs
+
+[scenes/ui/WorldMap.tscn] (Scene, LoC: 36, I: 0.0)
+  ← Входящие (2): scenes/main/Main.cs, tests/TestWorldGen.cs
+
+[scenes/ui/hud.tscn] (Scene, LoC: 469, I: 0.5)
+  (изолированный файл)
+
+[scenes/ui/menu.tscn] (Scene, LoC: 1092, I: 0.0)
+  ← Входящие (1): tests/test_phase1.gd
+
+[scenes/ui/villager.tscn] (Scene, LoC: 54, I: 0.5)
+  (изолированный файл)
+
+[src/GlobalUsings.cs] (C#, LoC: 2, I: 0.5)
+  (изолированный файл)
+
+[src/core/common/CpuTopology.cs] (C#, LoC: 27, I: 0.0)
+  ← Входящие (98): scenes/main/Main.cs, src/core/common/GameProfiler.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/AgentSimulationThread.cs, src/simulation/SimulationContext.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/agents/FlatIdleWorkerPool.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/agents/IdleWorkerSpatialGrid.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildConfig.cs, src/simulation/building/BuildingManager.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/ConstructionPipeline.cs, src/simulation/building/TileClearanceService.cs, src/simulation/building/WallBuildManager.cs, src/simulation/building/WorkProgressTracker.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmZone.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/gpu/GpuFlowFieldSimulator.cs, src/simulation/gpu/GpuHumiditySimulator.cs, src/simulation/items/DemandRegistry.cs, src/simulation/items/GroundItemManager.cs, src/simulation/items/ResourceBroker.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobPriorityManager.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/WanderJobSystem.cs, src/simulation/offline/OfflineAgentNeeds.cs, src/simulation/offline/OfflineWorldTicker.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/structures/ConstructionSite.cs, src/simulation/structures/StructureDefinition.cs, src/simulation/structures/StructureInstance.cs, src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/simulation/zones/WorkZone.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/simulation/zones/Zone.cs, src/simulation/zones/ZoneManager.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/PriorityBoardController.cs, src/ui/controllers/WallMaterialRegistry.cs, src/ui/controllers/WorkZoneController.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/CropRenderer.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase2StressTestRunner.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestAdversarialJobDistribution.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestPerformanceComparison.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs
+
+[src/core/common/GameProfiler.cs] (C#, LoC: 356, I: 0.02)
+  ← Входящие (102): scenes/main/Main.cs, src/core/common/ProfilerLogService.cs, src/core/common/ProfilerLogService.cs, src/core/common/ProfilerLogService.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/AgentSimulationThread.cs, src/simulation/SimulationContext.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/agents/FlatIdleWorkerPool.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/agents/IdleWorkerSpatialGrid.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildConfig.cs, src/simulation/building/BuildingManager.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/ConstructionPipeline.cs, src/simulation/building/TileClearanceService.cs, src/simulation/building/WallBuildManager.cs, src/simulation/building/WorkProgressTracker.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmZone.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/gpu/GpuFlowFieldSimulator.cs, src/simulation/gpu/GpuHumiditySimulator.cs, src/simulation/items/DemandRegistry.cs, src/simulation/items/GroundItemManager.cs, src/simulation/items/ResourceBroker.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobPriorityManager.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/WanderJobSystem.cs, src/simulation/offline/OfflineAgentNeeds.cs, src/simulation/offline/OfflineWorldTicker.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/structures/ConstructionSite.cs, src/simulation/structures/StructureDefinition.cs, src/simulation/structures/StructureInstance.cs, src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/simulation/zones/WorkZone.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/simulation/zones/Zone.cs, src/simulation/zones/ZoneManager.cs, src/ui/PerformanceOverlay.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/MainMenuController.cs, src/ui/controllers/PriorityBoardController.cs, src/ui/controllers/WallMaterialRegistry.cs, src/ui/controllers/WorkZoneController.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/CropRenderer.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase2StressTestRunner.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestAdversarialJobDistribution.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestPerformanceComparison.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (2): src/core/common/CpuTopology.cs, src/core/common/SimEvents.cs
+
+[src/core/common/ProfilerLogService.cs] (C#, LoC: 848, I: 0.05)
+  ← Входящие (99): scenes/main/Main.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/AgentSimulationThread.cs, src/simulation/SimulationContext.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/agents/FlatIdleWorkerPool.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/agents/IdleWorkerSpatialGrid.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildConfig.cs, src/simulation/building/BuildingManager.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/ConstructionPipeline.cs, src/simulation/building/TileClearanceService.cs, src/simulation/building/WallBuildManager.cs, src/simulation/building/WorkProgressTracker.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmZone.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/gpu/GpuFlowFieldSimulator.cs, src/simulation/gpu/GpuHumiditySimulator.cs, src/simulation/items/DemandRegistry.cs, src/simulation/items/GroundItemManager.cs, src/simulation/items/ResourceBroker.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobPriorityManager.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/WanderJobSystem.cs, src/simulation/offline/OfflineAgentNeeds.cs, src/simulation/offline/OfflineWorldTicker.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/structures/ConstructionSite.cs, src/simulation/structures/StructureDefinition.cs, src/simulation/structures/StructureInstance.cs, src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/simulation/zones/WorkZone.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/simulation/zones/Zone.cs, src/simulation/zones/ZoneManager.cs, src/ui/PerformanceOverlay.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/MainMenuController.cs, src/ui/controllers/PriorityBoardController.cs, src/ui/controllers/WallMaterialRegistry.cs, src/ui/controllers/WorkZoneController.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/CropRenderer.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase2StressTestRunner.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestAdversarialJobDistribution.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestPerformanceComparison.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (5): src/core/common/GameProfiler.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/core/common/GameProfiler.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/core/common/GameProfiler.cs
+
+[src/core/common/ResourceRef.cs] (C#, LoC: 75, I: 0.0)
+  ← Входящие (7): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/ui/PerformanceOverlay.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/CropRenderer.cs
+
+[src/core/common/SimEvents.cs] (C#, LoC: 252, I: 0.0)
+  ← Входящие (12): scenes/main/Main.cs, src/core/common/GameProfiler.cs, src/simulation/AgentSimulationThread.cs, src/simulation/TimeManager.cs, src/simulation/items/GroundItemManager.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/GroundItemRenderer.cs
+
+[src/core/common/ToolRequirement.cs] (C#, LoC: 16, I: 0.0)
+  ← Входящие (1): scenes/main/Main.cs
+
+[src/core/economy/CityState.cs] (C#, LoC: 88, I: 0.0)
+  ← Входящие (1): src/ui/controllers/HUDController.cs
+
+[src/core/economy/ResourceTypes.cs] (C#, LoC: 18, I: 0.5)
+  (изолированный файл)
+
+[src/core/items/ItemDefinition.cs] (C#, LoC: 17, I: 0.0)
+  ← Входящие (1): src/core/items/ItemRegistry.cs
+
+[src/core/items/ItemRegistry.cs] (C#, LoC: 42, I: 0.12)
+  ← Входящие (7): src/simulation/building/BuildConfig.cs, src/simulation/items/GroundItemManager.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs
+  → Исходящие (1): src/core/items/ItemDefinition.cs
+
+[src/core/jobs/JobCategory.cs] (C#, LoC: 10, I: 0.5)
+  (изолированный файл)
+
+[src/core/jobs/JobData.cs] (C#, LoC: 32, I: 0.0)
+  ← Входящие (19): src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/structures/ConstructionManager.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialJobDistribution.cs
+
+[src/core/jobs/JobExecutionType.cs] (C#, LoC: 11, I: 0.5)
+  (изолированный файл)
+
+[src/core/jobs/JobPriorityTier.cs] (C#, LoC: 15, I: 0.5)
+  (изолированный файл)
+
+[src/core/jobs/JobTypeId.cs] (C#, LoC: 19, I: 0.5)
+  (изолированный файл)
+
+[src/core/jobs/NeedBehavior.cs] (C#, LoC: 19, I: 0.5)
+  (изолированный файл)
+
+[src/core/world/BiomeMapper.cs] (C#, LoC: 172, I: 0.07)
+  ← Входящие (25): scenes/main/Main.cs, src/core/world/MapData.cs, src/core/world/access/ChunkWorldAccess.cs, src/core/world/climate/ContinentShaper.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/climate/WorldClimateParams.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/RegionTraits.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldMapOverlay.cs, src/ui/streaming/WorldPathFinder.cs, tests/Phase2StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (2): src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs
+
+[src/core/world/BiomeType.cs] (C#, LoC: 39, I: 0.0)
+  ← Входящие (24): scenes/main/Main.cs, src/core/world/MapData.cs, src/core/world/access/ChunkWorldAccess.cs, src/core/world/climate/ContinentShaper.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/climate/WorldClimateParams.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/generation/RegionTraits.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldMapOverlay.cs, src/ui/streaming/WorldPathFinder.cs, tests/Phase2StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs, tests/TestWorldMapRealismAudit.cs
+
+[src/core/world/BuildingType.cs] (C#, LoC: 13, I: 0.5)
+  (изолированный файл)
+
+[src/core/world/FarmYield.cs] (C#, LoC: 34, I: 0.0)
+  ← Входящие (1): src/simulation/farming/CropGrowthManager.cs
+
+[src/core/world/FertilityMap.cs] (C#, LoC: 244, I: 0.0)
+  ← Входящие (6): src/core/world/MapData.cs, src/simulation/AgentSimulationThread.cs, src/simulation/SimulationContext.cs, src/simulation/farming/CropGrowthManager.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs
+
+[src/core/world/GridHelper.cs] (C#, LoC: 99, I: 0.0)
+  ← Входящие (2): src/simulation/agents/AgentMovementService.cs, src/simulation/jobs/JobBroker.cs
+
+[src/core/world/HumidityMap.cs] (C#, LoC: 396, I: 0.0)
+  ← Входящие (9): src/core/world/MapData.cs, src/simulation/AgentSimulationThread.cs, src/simulation/SimulationContext.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/gpu/GpuHumiditySimulator.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestPerformanceComparison.cs
+
+[src/core/world/MapData.cs] (C#, LoC: 101, I: 0.2)
+  ← Входящие (20): scenes/main/Main.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/ConstructionPipeline.cs, src/simulation/building/TileClearanceService.cs, src/simulation/items/GroundItemManager.cs, src/simulation/structures/ConstructionManager.cs, src/ui/controllers/FarmController.cs, src/ui/controllers/HUDController.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/TestAdversarialConstruction.cs, tests/TestShadowAndTerrainAudit.cs
+  → Исходящие (5): src/core/world/FertilityMap.cs, src/core/world/HumidityMap.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs
+
+[src/core/world/MountainTileHelper.cs] (C#, LoC: 102, I: 0.0)
+  ← Входящие (1): tests/TestWorldGen.cs
+
+[src/core/world/TileType.cs] (C#, LoC: 13, I: 0.5)
+  (изолированный файл)
+
+[src/core/world/WallTileHelper.cs] (C#, LoC: 98, I: 0.4)
+  ← Входящие (3): src/simulation/building/WorkProgressTracker.cs, src/ui/controllers/WallMaterialRegistry.cs, src/ui/renderers/MapRenderer.cs
+  → Исходящие (2): src/simulation/building/WorkProgressTracker.cs, src/ui/controllers/WallMaterialRegistry.cs
+
+[src/core/world/access/ChunkWorldAccess.cs] (C#, LoC: 67, I: 1.0)
+  → Исходящие (11): src/core/world/access/IWorldAccess.cs, src/core/world/access/IWorldAccess.cs, src/core/world/streaming/integration/IWorldCellSource.cs, src/core/world/streaming/integration/WorldDecor.cs, src/core/world/streaming/integration/WorldDeltaKind.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs
+
+[src/core/world/access/IWorldAccess.cs] (C#, LoC: 46, I: 0.0)
+  ← Входящие (2): src/core/world/access/ChunkWorldAccess.cs, src/core/world/access/ChunkWorldAccess.cs
+
+[src/core/world/climate/ContinentShaper.cs] (C#, LoC: 440, I: 0.5)
+  ← Входящие (5): src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, tests/Phase2StressTestRunner.cs, tests/TestWorldGen.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (5): src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/climate/Q16.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs
+
+[src/core/world/climate/LatitudeBands.cs] (C#, LoC: 122, I: 0.4)
+  ← Входящие (3): src/core/world/climate/WorldClimateProvider.cs, tests/Phase2StressTestRunner.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (2): src/core/world/climate/Q16.cs, src/simulation/zones/Zone.cs
+
+[src/core/world/climate/PlanetaryHydrology.cs] (C#, LoC: 228, I: 0.67)
+  ← Входящие (3): src/ui/streaming/WorldMapOverlay.cs, tests/Phase2StressTestRunner.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (6): src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/streaming/WorldMapTileMapper.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs
+
+[src/core/world/climate/Q16.cs] (C#, LoC: 64, I: 0.0)
+  ← Входящие (5): src/core/world/climate/ContinentShaper.cs, src/core/world/climate/LatitudeBands.cs, src/core/world/climate/WorldClimateFields.cs, src/core/world/climate/WorldClimateProvider.cs, tests/TestWorldMapRealismAudit.cs
+
+[src/core/world/climate/WorldClimateFields.cs] (C#, LoC: 78, I: 0.33)
+  ← Входящие (2): src/core/world/climate/WorldClimateProvider.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (1): src/core/world/climate/Q16.cs
+
+[src/core/world/climate/WorldClimateParams.cs] (C#, LoC: 192, I: 0.57)
+  ← Входящие (3): src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/streaming/generation/WorldClimateParams.cs
+  → Исходящие (4): src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs
+
+[src/core/world/climate/WorldClimateProvider.cs] (C#, LoC: 211, I: 0.53)
+  ← Входящие (8): scenes/main/Main.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/ui/controllers/MainMenuController.cs, src/ui/streaming/WorldMapOverlay.cs, tests/Phase2StressTestRunner.cs, tests/TestWorldGen.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (9): src/core/world/climate/ContinentShaper.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/climate/LatitudeBands.cs, src/core/world/climate/Q16.cs, src/core/world/streaming/generation/WorldRegions.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/climate/WorldClimateFields.cs
+
+[src/core/world/generation/UnifiedWorldGenerator.cs] (C#, LoC: 642, I: 0.43)
+  ← Входящие (27): scenes/main/Main.cs, src/core/world/MapData.cs, src/core/world/access/ChunkWorldAccess.cs, src/core/world/climate/ContinentShaper.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/climate/WorldClimateParams.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/generation/RegionTraits.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/simulation/agents/AgentMovementService.cs, src/ui/controllers/HUDController.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldMapOverlay.cs, src/ui/streaming/WorldPathFinder.cs, tests/Phase2StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (20): src/core/world/BiomeMapper.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/MapData.cs, src/core/world/streaming/generation/WorldChunk.cs, src/core/world/streaming/generation/WorldChunkGeneratorTiming.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/integration/WorldDecor.cs, src/core/world/streaming/generation/WorldRegions.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/generation/GeneratedCell.cs, src/core/world/streaming/generation/RegionKey.cs, src/core/world/climate/WorldClimateParams.cs, src/core/world/streaming/generation/WorldClimateParams.cs
+
+[src/core/world/streaming/WorldMapTileMapper.cs] (C#, LoC: 98, I: 0.0)
+  ← Входящие (11): scenes/main/Main.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldMapOverlay.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs, tests/TestWorldMapRealismAudit.cs
+
+[src/core/world/streaming/coordinator/WorldSaveCoordinator.cs] (C#, LoC: 252, I: 0.33)
+  ← Входящие (6): scenes/main/Main.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/ui/streaming/WorldMapOverlay.cs, tests/Phase5StressTestRunner.cs, tests/TestWorldGen.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (3): src/core/world/streaming/storage/WorldSaveMetadata.cs, src/core/world/streaming/storage/WorldChunkStore.cs, src/core/world/streaming/storage/WorldManifestStore.cs
+
+[src/core/world/streaming/generation/GeneratedCell.cs] (C#, LoC: 24, I: 0.0)
+  ← Входящие (2): src/core/world/generation/UnifiedWorldGenerator.cs, tests/Phase5StressTestRunner.cs
+
+[src/core/world/streaming/generation/RegionKey.cs] (C#, LoC: 3, I: 0.0)
+  ← Входящие (7): src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/RegionTraits.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/ui/streaming/WorldMapOverlay.cs, tests/Phase2StressTestRunner.cs, tests/TestWorldGen.cs, tests/TestWorldMapRealismAudit.cs
+
+[src/core/world/streaming/generation/RegionTraits.cs] (C#, LoC: 229, I: 0.89)
+  ← Входящие (1): src/core/world/streaming/generation/WorldClimateGenerator.cs
+  → Исходящие (8): src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/generation/WorldRegions.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/RegionKey.cs
+
+[src/core/world/streaming/generation/WorldChunk.cs] (C#, LoC: 39, I: 0.17)
+  ← Входящие (5): src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/WorldChunkGeneratorTiming.cs, src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/ui/streaming/StreamingWorldView.cs, tests/TestWorldGen.cs
+  → Исходящие (1): src/core/world/streaming/generation/WorldCoordinates.cs
+
+[src/core/world/streaming/generation/WorldChunkGeneratorTiming.cs] (C#, LoC: 128, I: 0.5)
+  ← Входящие (1): src/core/world/generation/UnifiedWorldGenerator.cs
+  → Исходящие (1): src/core/world/streaming/generation/WorldChunk.cs
+
+[src/core/world/streaming/generation/WorldClimateGenerator.cs] (C#, LoC: 367, I: 0.53)
+  ← Входящие (8): src/core/world/BiomeMapper.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/RegionTraits.cs, src/ui/streaming/WorldMapOverlay.cs, tests/Phase2StressTestRunner.cs, tests/TestWorldGen.cs, tests/TestWorldMapRealismAudit.cs
+  → Исходящие (9): src/core/world/climate/ContinentShaper.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/generation/RegionTraits.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/generation/WorldRegions.cs, src/core/world/streaming/generation/RegionKey.cs, src/core/world/climate/WorldClimateParams.cs, src/core/world/streaming/generation/WorldClimateParams.cs
+
+[src/core/world/streaming/generation/WorldClimateParams.cs] (C#, LoC: 70, I: 0.33)
+  ← Входящие (2): src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs
+  → Исходящие (1): src/core/world/climate/WorldClimateParams.cs
+
+[src/core/world/streaming/generation/WorldCoordinates.cs] (C#, LoC: 293, I: 0.0)
+  ← Входящие (22): src/core/world/BiomeMapper.cs, src/core/world/climate/ContinentShaper.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/climate/WorldClimateParams.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/RegionTraits.cs, src/core/world/streaming/generation/RegionTraits.cs, src/core/world/streaming/generation/WorldChunk.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/core/world/streaming/runtime/ChunkWindowPlanner.cs, src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldJobBoard.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs
+
+[src/core/world/streaming/generation/WorldFeatures.cs] (C#, LoC: 112, I: 0.5)
+  (изолированный файл)
+
+[src/core/world/streaming/generation/WorldRegions.cs] (C#, LoC: 54, I: 0.0)
+  ← Входящие (5): src/core/world/climate/WorldClimateProvider.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/RegionTraits.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, tests/TestWorldMapRealismAudit.cs
+
+[src/core/world/streaming/integration/ChunkMutations.cs] (C#, LoC: 131, I: 0.3)
+  ← Входящие (14): scenes/main/Main.cs, src/core/world/access/ChunkWorldAccess.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldAgent.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldJobTicker.cs, src/ui/streaming/WorldPathFinder.cs, tests/Phase5StressTestRunner.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (6): src/core/world/streaming/storage/WorldChunkDeltaCodec.cs, src/core/world/streaming/storage/WorldChunkDeltaCodec.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs
+
+[src/core/world/streaming/integration/IBlockWorld.cs] (C#, LoC: 23, I: 0.09)
+  ← Входящие (20): scenes/main/Main.cs, src/core/world/access/ChunkWorldAccess.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/IWorldCellSource.cs, src/core/world/streaming/integration/IWorldCellSource.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldAgent.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldJobTicker.cs, src/ui/streaming/WorldPathFinder.cs, tests/Phase5StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (2): src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/integration/IWallWorld.cs
+
+[src/core/world/streaming/integration/IWallWorld.cs] (C#, LoC: 26, I: 0.14)
+  ← Входящие (18): scenes/main/Main.cs, src/core/world/access/ChunkWorldAccess.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldAgent.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldJobTicker.cs, src/ui/streaming/WorldPathFinder.cs, tests/Phase5StressTestRunner.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (3): src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs
+
+[src/core/world/streaming/integration/IWorldCellSource.cs] (C#, LoC: 16, I: 0.25)
+  ← Входящие (6): src/core/world/access/ChunkWorldAccess.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/StreamingWorldView.cs, tests/Phase5StressTestRunner.cs, tests/Phase5StressTestRunner.cs
+  → Исходящие (2): src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IBlockWorld.cs
+
+[src/core/world/streaming/integration/StreamingWorldManager.cs] (C#, LoC: 197, I: 0.5)
+  ← Входящие (6): scenes/main/Main.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldJobTicker.cs, tests/Phase5StressTestRunner.cs
+  → Исходящие (6): src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/integration/WorldDeltaKind.cs, src/core/world/streaming/coordinator/WorldSaveCoordinator.cs
+
+[src/core/world/streaming/integration/WorldCellQuery.cs] (C#, LoC: 47, I: 0.29)
+  ← Входящие (10): src/core/world/streaming/integration/StreamingWorldManager.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/simulation/agents/AgentMovementService.cs, src/ui/controllers/HUDController.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldPathFinder.cs, tests/Phase5StressTestRunner.cs
+  → Исходящие (4): src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/streaming/WorldMapTileMapper.cs
+
+[src/core/world/streaming/integration/WorldDecor.cs] (C#, LoC: 13, I: 0.0)
+  ← Входящие (4): src/core/world/access/ChunkWorldAccess.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/ui/streaming/StreamingWorldView.cs
+
+[src/core/world/streaming/integration/WorldDeltaKind.cs] (C#, LoC: 104, I: 0.0)
+  ← Входящие (7): src/core/world/access/ChunkWorldAccess.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/core/world/streaming/integration/WorldPlan.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/StreamingWorldView.cs, tests/Phase5StressTestRunner.cs
+
+[src/core/world/streaming/integration/WorldGameRules.cs] (C#, LoC: 148, I: 0.67)
+  ← Входящие (3): scenes/main/Main.cs, src/ui/streaming/StreamingToolPlacement.cs, tests/Phase5StressTestRunner.cs
+  → Исходящие (6): src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWorldCellSource.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/integration/WorldDecor.cs, src/core/world/streaming/integration/WorldDeltaKind.cs
+
+[src/core/world/streaming/integration/WorldPlan.cs] (C#, LoC: 24, I: 0.5)
+  ← Входящие (1): src/ui/streaming/StreamingWorldView.cs
+  → Исходящие (1): src/core/world/streaming/integration/WorldDeltaKind.cs
+
+[src/core/world/streaming/runtime/ChunkWindowPlanner.cs] (C#, LoC: 244, I: 0.2)
+  ← Входящие (4): src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/StreamingWorldView.cs
+  → Исходящие (1): src/core/world/streaming/generation/WorldCoordinates.cs
+
+[src/core/world/streaming/runtime/WorldChunkStreamer.cs] (C#, LoC: 801, I: 0.89)
+  ← Входящие (1): src/ui/streaming/StreamingWorldView.cs
+  → Исходящие (8): src/core/world/streaming/storage/WorldSaveMetadata.cs, src/core/world/streaming/runtime/ChunkWindowPlanner.cs, src/core/world/streaming/runtime/ChunkWindowPlanner.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/WorldChunk.cs, src/core/world/streaming/storage/WorldChunkCodec.cs, src/core/world/streaming/storage/WorldChunkStore.cs, src/core/world/streaming/generation/WorldCoordinates.cs
+
+[src/core/world/streaming/storage/WorldChunkCodec.cs] (C#, LoC: 223, I: 0.2)
+  ← Входящие (4): src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/core/world/streaming/storage/WorldChunkDeltaCodec.cs, src/core/world/streaming/storage/WorldChunkStore.cs, src/ui/streaming/StreamingWorldView.cs
+  → Исходящие (1): src/core/world/streaming/storage/WorldSaveMetadata.cs
+
+[src/core/world/streaming/storage/WorldChunkDeltaCodec.cs] (C#, LoC: 298, I: 0.17)
+  ← Входящие (5): src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/StreamingWorldView.cs
+  → Исходящие (1): src/core/world/streaming/storage/WorldChunkCodec.cs
+
+[src/core/world/streaming/storage/WorldChunkStore.cs] (C#, LoC: 279, I: 0.4)
+  ← Входящие (3): src/core/world/streaming/coordinator/WorldSaveCoordinator.cs, src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/ui/streaming/StreamingWorldView.cs
+  → Исходящие (2): src/core/world/streaming/storage/WorldSaveMetadata.cs, src/core/world/streaming/storage/WorldChunkCodec.cs
+
+[src/core/world/streaming/storage/WorldManifestStore.cs] (C#, LoC: 271, I: 0.0)
+  ← Входящие (1): src/core/world/streaming/coordinator/WorldSaveCoordinator.cs
+
+[src/core/world/streaming/storage/WorldSaveMetadata.cs] (C#, LoC: 20, I: 0.0)
+  ← Входящие (4): src/core/world/streaming/coordinator/WorldSaveCoordinator.cs, src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/core/world/streaming/storage/WorldChunkCodec.cs, src/core/world/streaming/storage/WorldChunkStore.cs
+
+[src/simulation/AgentSimulationThread.cs] (C#, LoC: 1260, I: 0.5)
+  ← Входящие (45): scenes/main/Main.cs, src/simulation/TimeManager.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/offline/OfflineCatchUpPolicy.cs, src/simulation/offline/OfflineWorldTicker.cs, src/ui/DayNightCycle.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/ui/controllers/FarmController.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/PriorityBoardController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/CropRenderer.cs, src/ui/renderers/DesignationRenderer.cs, src/ui/renderers/FarmZoneRenderer.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/ui/streaming/WorldJobTicker.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/SelectTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase1StressTestRunner.cs, tests/Phase2StressTestRunner.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestAdversarialJobDistribution.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestPerformanceComparison.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs
+  → Исходящие (45): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/core/world/FertilityMap.cs, src/core/common/GameProfiler.cs, src/simulation/gpu/GpuHumiditySimulator.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/core/world/HumidityMap.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/scheduling/LoadMonitor.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/ParallelRng.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/core/common/SimEvents.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/SimulationContext.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/WanderJobSystem.cs, src/simulation/WorldTime.cs, src/simulation/zones/ZoneManager.cs, src/core/common/CpuTopology.cs, src/core/common/ProfilerLogService.cs, src/core/common/ResourceRef.cs, src/simulation/scheduling/AdaptivePartitioner.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/WorkItem.cs, src/simulation/simd/SimdMovementBatch.cs
+
+[src/simulation/DynamicWorkBalancer.cs] (C#, LoC: 67, I: 0.08)
+  ← Входящие (45): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/offline/OfflineCatchUpPolicy.cs, src/simulation/offline/OfflineWorldTicker.cs, src/ui/DayNightCycle.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/ui/controllers/FarmController.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/PriorityBoardController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/CropRenderer.cs, src/ui/renderers/DesignationRenderer.cs, src/ui/renderers/FarmZoneRenderer.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/ui/streaming/WorldJobTicker.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/SelectTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase1StressTestRunner.cs, tests/Phase2StressTestRunner.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestAdversarialJobDistribution.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestPerformanceComparison.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs
+  → Исходящие (4): src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/scheduling/AdaptivePartitioner.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/LoadMonitor.cs
+
+[src/simulation/GameSpeed.cs] (C#, LoC: 11, I: 0.0)
+  ← Входящие (43): scenes/main/Main.cs, src/simulation/offline/OfflineCatchUpPolicy.cs, src/simulation/offline/OfflineWorldTicker.cs, src/ui/DayNightCycle.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/ui/controllers/FarmController.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/PriorityBoardController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/CropRenderer.cs, src/ui/renderers/DesignationRenderer.cs, src/ui/renderers/FarmZoneRenderer.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/ui/streaming/WorldJobTicker.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/SelectTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase1StressTestRunner.cs, tests/Phase2StressTestRunner.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestAdversarialJobDistribution.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestPerformanceComparison.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs
+
+[src/simulation/ParallelRng.cs] (C#, LoC: 65, I: 0.0)
+  ← Входящие (26): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/WanderJobSystem.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/ui/PerformanceOverlay.cs, src/ui/renderers/AgentRenderer.cs, tests/Phase1StressTestRunner.cs, tests/Phase3StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestPerformanceComparison.cs, tests/TestRenderLodBenchmark.cs
+
+[src/simulation/SimulationContext.cs] (C#, LoC: 52, I: 0.16)
+  ← Входящие (36): src/simulation/AgentSimulationThread.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/building/ConstructionPipeline.cs, src/simulation/building/TileClearanceService.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/WanderJobSystem.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/structures/StructureManager.cs, src/simulation/trees/TreeJobManager.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/simulation/zones/ZoneManager.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs
+  → Исходящие (7): src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/core/world/FertilityMap.cs, src/core/world/HumidityMap.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/TimeManager.cs] (C#, LoC: 51, I: 0.3)
+  ← Входящие (7): scenes/main/Main.cs, src/ui/PerformanceOverlay.cs, src/ui/controllers/HUDController.cs, src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldJobTicker.cs, tests/Phase3StressTestRunner.cs
+  → Исходящие (3): src/simulation/AgentSimulationThread.cs, src/core/common/SimEvents.cs, src/simulation/WorldTime.cs
+
+[src/simulation/WorldTime.cs] (C#, LoC: 34, I: 0.0)
+  ← Входящие (12): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/TimeManager.cs, src/simulation/building/BuildConfig.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/offline/OfflineCatchUpPolicy.cs, src/ui/DayNightCycle.cs, src/ui/controllers/HUDController.cs, tests/TestShadowAndTerrainAudit.cs
+
+[src/simulation/agents/AgentDataPool.cs] (C#, LoC: 257, I: 0.0)
+  ← Входящие (46): src/simulation/AgentSimulationThread.cs, src/simulation/AgentSimulationThread.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/agents/FlatIdleWorkerPool.cs, src/simulation/agents/IdleWorkerSpatialGrid.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/WanderJobSystem.cs, src/simulation/offline/OfflineAgentNeeds.cs, src/simulation/offline/OfflineWorldTicker.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/structures/StructureManager.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/simulation/zones/ZoneManager.cs, tests/Phase4StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestAdversarialJobDistribution.cs, tests/TestExtreme100kPathStress.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestPerformanceComparison.cs
+
+[src/simulation/agents/AgentMovementService.cs] (C#, LoC: 484, I: 0.61)
+  ← Входящие (9): src/simulation/AgentSimulationThread.cs, src/simulation/SimulationContext.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs
+  → Исходящие (14): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/AgentSimulationThread.cs, src/simulation/agents/FlowFieldManager.cs, src/core/world/GridHelper.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/agents/AgentSpatialGrid.cs] (C#, LoC: 185, I: 0.31)
+  ← Входящие (9): src/simulation/AgentSimulationThread.cs, src/simulation/SimulationContext.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/Test100xPeakBenchmark.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialFlowField.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs
+  → Исходящие (4): src/simulation/agents/AgentDataPool.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/agents/AgentState.cs] (C#, LoC: 13, I: 0.5)
+  (изолированный файл)
+
+[src/simulation/agents/FlatIdleWorkerPool.cs] (C#, LoC: 148, I: 0.57)
+  ← Входящие (3): src/simulation/jobs/JobDispatcher.cs, tests/Phase1StressTestRunner.cs, tests/TestAdversarialJobDistribution.cs
+  → Исходящие (4): src/simulation/agents/AgentDataPool.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/agents/FlowFieldManager.cs] (C#, LoC: 224, I: 0.5)
+  ← Входящие (7): scenes/main/Main.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/structures/StructureManager.cs, src/ui/controllers/MainMenuController.cs, tests/Phase1StressTestRunner.cs, tests/TestAdversarialFlowField.cs
+  → Исходящие (7): src/simulation/gpu/GpuFlowFieldSimulator.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/agents/IdleWorkerSpatialGrid.cs] (C#, LoC: 402, I: 1.0)
+  → Исходящие (4): src/simulation/agents/AgentDataPool.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/building/BlueprintManager.cs] (C#, LoC: 133, I: 0.38)
+  ← Входящие (10): scenes/main/Main.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/TileClearanceService.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/MapRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/ZoneDraftTool.cs
+  → Исходящие (6): src/simulation/building/BuildConfig.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/structures/StructureRegistry.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/building/BuildConfig.cs] (C#, LoC: 60, I: 0.45)
+  ← Входящие (6): src/simulation/building/BlueprintManager.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/structures/StructureRegistry.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (5): src/core/items/ItemRegistry.cs, src/simulation/WorldTime.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/building/BuildObstacles.cs] (C#, LoC: 86, I: 1.0)
+  → Исходящие (10): src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/farming/FarmJobManager.cs, src/core/world/MapData.cs, src/simulation/structures/StructureManager.cs, src/simulation/building/TileClearanceService.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/building/BuildingManager.cs] (C#, LoC: 81, I: 0.38)
+  ← Входящие (8): scenes/main/Main.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/TileClearanceService.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/MapRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/ZoneDraftTool.cs
+  → Исходящие (5): src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/building/ConstructionPipeline.cs] (C#, LoC: 66, I: 1.0)
+  → Исходящие (7): src/simulation/structures/ConstructionManager.cs, src/core/world/MapData.cs, src/simulation/SimulationContext.cs, src/simulation/structures/StructureRegistry.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/building/TileClearanceService.cs] (C#, LoC: 191, I: 0.8)
+  ← Входящие (3): src/simulation/building/BuildObstacles.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, tests/Phase5StressTestRunner.cs
+  → Исходящие (12): src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/structures/ConstructionSite.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/items/GroundItemManager.cs, src/core/world/MapData.cs, src/simulation/SimulationContext.cs, src/simulation/structures/StructureManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/building/WallBuildManager.cs] (C#, LoC: 44, I: 0.5)
+  ← Входящие (5): src/ui/controllers/HUDController.cs, src/ui/renderers/MapRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/ZoneDraftTool.cs
+  → Исходящие (5): src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/building/WorkProgressTracker.cs] (C#, LoC: 184, I: 0.31)
+  ← Входящие (11): scenes/main/Main.cs, src/core/world/WallTileHelper.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/ui/controllers/MainMenuController.cs, src/ui/controllers/WallMaterialRegistry.cs, src/ui/renderers/MapRenderer.cs
+  → Исходящие (5): src/core/world/WallTileHelper.cs, src/ui/controllers/WallMaterialRegistry.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/farming/CropData.cs] (C#, LoC: 12, I: 0.0)
+  ← Входящие (1): src/simulation/farming/CropGrowthManager.cs
+
+[src/simulation/farming/CropGrowthManager.cs] (C#, LoC: 266, I: 0.62)
+  ← Входящие (8): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/zones/ZoneManager.cs, src/ui/controllers/FarmController.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/CropRenderer.cs
+  → Исходящие (13): src/simulation/farming/CropData.cs, src/core/world/FarmYield.cs, src/simulation/farming/FarmZone.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/core/world/FertilityMap.cs, src/simulation/items/GroundItemManager.cs, src/core/world/HumidityMap.cs, src/simulation/jobs/JobBroker.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/farming/FarmJobManager.cs] (C#, LoC: 371, I: 0.23)
+  ← Входящие (17): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/TileClearanceService.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/zones/ZoneManager.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/MapRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (5): src/simulation/farming/FarmZoneManagerFacade.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/JobBroker.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/trees/TreeJobManager.cs
+
+[src/simulation/farming/FarmZone.cs] (C#, LoC: 24, I: 0.43)
+  ← Входящие (4): src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/ui/controllers/FarmController.cs, tests/Phase2StressTestRunner.cs
+  → Исходящие (3): src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/farming/FarmZoneManagerFacade.cs] (C#, LoC: 178, I: 0.31)
+  ← Входящие (9): src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/ui/controllers/FarmController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/SelectTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase2StressTestRunner.cs
+  → Исходящие (4): scenes/ui/Farm.tscn, src/simulation/farming/FarmZone.cs, src/simulation/zones/Zone.cs, src/simulation/zones/ZoneManager.cs
+
+[src/simulation/gpu/GpuAgentTransformSimulator.cs] (C#, LoC: 292, I: 0.64)
+  ← Входящие (4): tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestExtreme100kPathStress.cs, tests/TestPerformanceComparison.cs
+  → Исходящие (7): src/simulation/agents/AgentDataPool.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/simd/SimdMovementBatch.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/simd/SimdNeedsBatch.cs
+
+[src/simulation/gpu/GpuFlowFieldSimulator.cs] (C#, LoC: 414, I: 0.38)
+  ← Входящие (5): src/simulation/agents/FlowFieldManager.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestExtreme100kPathStress.cs, tests/TestPerformanceComparison.cs
+  → Исходящие (3): src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/gpu/GpuHumiditySimulator.cs] (C#, LoC: 322, I: 0.44)
+  ← Входящие (5): src/simulation/AgentSimulationThread.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestExtreme100kPathStress.cs, tests/TestPerformanceComparison.cs
+  → Исходящие (4): src/core/world/HumidityMap.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/items/DemandRegistry.cs] (C#, LoC: 139, I: 0.43)
+  ← Входящие (4): scenes/main/Main.cs, src/simulation/items/ResourceBroker.cs, src/simulation/jobs/JobBroker.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (3): src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/items/GroundItemManager.cs] (C#, LoC: 677, I: 0.31)
+  ← Входящие (25): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/building/TileClearanceService.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/structures/ConstructionManager.cs, src/ui/PerformanceOverlay.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/GroundItemRenderer.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (11): src/simulation/structures/ConstructionManager.cs, src/simulation/farming/FarmJobManager.cs, src/core/items/ItemRegistry.cs, src/simulation/jobs/JobBroker.cs, src/core/world/MapData.cs, src/simulation/items/ResourceBroker.cs, src/core/common/SimEvents.cs, src/simulation/items/StockpileManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/items/ResourceBroker.cs] (C#, LoC: 37, I: 0.8)
+  ← Входящие (2): src/simulation/items/GroundItemManager.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (8): src/simulation/items/DemandRegistry.cs, src/simulation/jobs/JobDispatcher.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs
+
+[src/simulation/items/StockpileManager.cs] (C#, LoC: 894, I: 0.29)
+  ← Входящие (20): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/structures/ConstructionManager.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase4StressTestRunner.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (8): src/simulation/structures/ConstructionManager.cs, src/simulation/items/GroundItemManager.cs, src/core/items/ItemRegistry.cs, src/simulation/jobs/JobBroker.cs, src/simulation/structures/StructureManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/GenericJobSpatialIndex.cs] (C#, LoC: 1143, I: 1.0)
+  → Исходящие (11): src/simulation/agents/AgentDataPool.cs, src/simulation/items/GroundItemManager.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobPriorityManager.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/IJobHandler.cs] (C#, LoC: 20, I: 0.26)
+  ← Входящие (17): src/simulation/jobs/JobRegistry.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs
+  → Исходящие (6): src/simulation/agents/AgentDataPool.cs, src/core/jobs/JobData.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/JobBroker.cs] (C#, LoC: 534, I: 0.44)
+  ← Входящие (18): src/simulation/AgentSimulationThread.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/items/GroundItemManager.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/trees/TreeJobManager.cs, src/simulation/zones/ZoneManager.cs, src/ui/PerformanceOverlay.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (14): src/simulation/building/BuildConfig.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/items/DemandRegistry.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/core/world/GridHelper.cs, src/simulation/items/GroundItemManager.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/simulation/WorldTime.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/JobDispatcher.cs] (C#, LoC: 209, I: 0.38)
+  ← Входящие (23): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/items/ResourceBroker.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/NeedsJobSystem.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/jobs/handlers/WanderJobSystem.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/zones/ZoneManager.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/MainMenuController.cs, src/ui/controllers/WorkZoneController.cs, tests/Phase2StressTestRunner.cs, tests/TestAdversarialConstruction.cs, tests/TestAdversarialJobDistribution.cs
+  → Исходящие (14): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/FlatIdleWorkerPool.cs, src/core/common/GameProfiler.cs, src/simulation/items/GroundItemManager.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobPriorityManager.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/core/common/CpuTopology.cs, src/core/common/ProfilerLogService.cs, src/core/common/ResourceRef.cs
+
+[src/simulation/jobs/JobPriorityManager.cs] (C#, LoC: 67, I: 0.27)
+  ← Входящие (8): scenes/main/Main.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/zones/ZoneManager.cs, src/ui/controllers/MainMenuController.cs, src/ui/controllers/PriorityBoardController.cs, src/ui/controllers/WorkZoneController.cs
+  → Исходящие (3): src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/JobRegistry.cs] (C#, LoC: 40, I: 0.4)
+  ← Входящие (6): src/simulation/AgentSimulationThread.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/jobs/JobValidator.cs, src/simulation/zones/ZoneManager.cs
+  → Исходящие (4): src/simulation/jobs/IJobHandler.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/JobSpatialPyramid.cs] (C#, LoC: 897, I: 0.62)
+  ← Входящие (6): src/simulation/AgentSimulationThread.cs, src/simulation/jobs/GenericJobSpatialIndex.cs, src/simulation/jobs/JobDispatcher.cs, tests/Phase2StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestAdversarialJobDistribution.cs
+  → Исходящие (10): src/simulation/agents/AgentDataPool.cs, src/simulation/items/GroundItemManager.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobPriorityManager.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/JobValidator.cs] (C#, LoC: 353, I: 0.94)
+  ← Входящие (1): src/simulation/AgentSimulationThread.cs
+  → Исходящие (15): src/simulation/agents/AgentDataPool.cs, src/simulation/building/BlueprintManager.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/SimulationContext.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/trees/TreeJobManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs] (C#, LoC: 236, I: 0.79)
+  ← Входящие (4): src/simulation/AgentSimulationThread.cs, src/simulation/items/ResourceBroker.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs
+  → Исходящие (15): src/simulation/jobs/IJobHandler.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/IJobHandler.cs, src/core/items/ItemRegistry.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/ConstructionJobHandler.cs] (C#, LoC: 150, I: 0.82)
+  ← Входящие (4): src/simulation/AgentSimulationThread.cs, src/simulation/items/ResourceBroker.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs
+  → Исходящие (18): src/simulation/jobs/IJobHandler.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildConfig.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/simulation/building/WorkProgressTracker.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/FarmingJobHandler.cs] (C#, LoC: 113, I: 0.71)
+  ← Входящие (6): src/simulation/AgentSimulationThread.cs, src/simulation/items/ResourceBroker.cs, src/simulation/jobs/JobBroker.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (15): src/simulation/jobs/IJobHandler.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/building/TileClearanceService.cs, src/simulation/building/WorkProgressTracker.cs, src/simulation/WorldTime.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/HarvestJobHandler.cs] (C#, LoC: 94, I: 0.87)
+  ← Входящие (2): src/simulation/AgentSimulationThread.cs, tests/Phase4StressTestRunner.cs
+  → Исходящие (13): src/simulation/jobs/IJobHandler.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/building/WorkProgressTracker.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/MiningJobHandler.cs] (C#, LoC: 145, I: 0.94)
+  ← Входящие (1): src/simulation/AgentSimulationThread.cs
+  → Исходящие (16): src/simulation/jobs/IJobHandler.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/IJobHandler.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/building/WorkProgressTracker.cs, src/simulation/WorldTime.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/NeedsJobSystem.cs] (C#, LoC: 292, I: 0.92)
+  ← Входящие (1): src/simulation/AgentSimulationThread.cs
+  → Исходящие (11): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/items/GroundItemManager.cs, src/core/items/ItemRegistry.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/PlantingJobHandler.cs] (C#, LoC: 227, I: 0.89)
+  ← Входящие (2): src/simulation/AgentSimulationThread.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (17): src/simulation/jobs/IJobHandler.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/simulation/building/WorkProgressTracker.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs] (C#, LoC: 235, I: 0.93)
+  ← Входящие (1): src/simulation/AgentSimulationThread.cs
+  → Исходящие (13): src/simulation/jobs/IJobHandler.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/IJobHandler.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/TreeChoppingJobHandler.cs] (C#, LoC: 148, I: 0.94)
+  ← Входящие (1): src/simulation/AgentSimulationThread.cs
+  → Исходящие (17): src/simulation/jobs/IJobHandler.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/IJobHandler.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/simulation/trees/TreeJobManager.cs, src/simulation/building/WorkProgressTracker.cs, src/simulation/WorldTime.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/jobs/handlers/WanderJobSystem.cs] (C#, LoC: 94, I: 0.88)
+  ← Входящие (1): src/simulation/AgentSimulationThread.cs
+  → Исходящие (7): src/simulation/agents/AgentDataPool.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/ParallelRng.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/offline/OfflineAgentNeeds.cs] (C#, LoC: 91, I: 0.83)
+  ← Входящие (1): src/simulation/offline/OfflineWorldTicker.cs
+  → Исходящие (5): src/simulation/agents/AgentDataPool.cs, src/simulation/offline/OfflineCatchUpPolicy.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/offline/OfflineCatchUpPolicy.cs] (C#, LoC: 30, I: 0.57)
+  ← Входящие (3): src/simulation/offline/OfflineAgentNeeds.cs, src/simulation/offline/OfflineCropGrowth.cs, src/simulation/offline/OfflineWorldTicker.cs
+  → Исходящие (4): src/simulation/WorldTime.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/simulation/offline/OfflineCropGrowth.cs] (C#, LoC: 55, I: 0.5)
+  ← Входящие (1): src/simulation/offline/OfflineWorldTicker.cs
+  → Исходящие (1): src/simulation/offline/OfflineCatchUpPolicy.cs
+
+[src/simulation/offline/OfflineWorldTicker.cs] (C#, LoC: 141, I: 1.0)
+  → Исходящие (10): src/simulation/agents/AgentDataPool.cs, src/simulation/offline/OfflineAgentNeeds.cs, src/simulation/offline/OfflineCatchUpPolicy.cs, src/simulation/offline/OfflineCropGrowth.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/simulation/pathfinding/HierarchicalPathfinder.cs] (C#, LoC: 1253, I: 0.35)
+  ← Входящие (11): scenes/main/Main.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/structures/StructureManager.cs, src/ui/controllers/MainMenuController.cs, tests/Phase1StressTestRunner.cs, tests/TestAdversarialFlowField.cs, tests/TestExtreme100kPathStress.cs
+  → Исходящие (6): src/simulation/pathfinding/NavGridState.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/pathfinding/NavGridState.cs] (C#, LoC: 44, I: 0.0)
+  ← Входящие (1): src/simulation/pathfinding/HierarchicalPathfinder.cs
+
+[src/simulation/scheduling/AdaptivePartitioner.cs] (C#, LoC: 106, I: 0.0)
+  ← Входящие (7): src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestPerformanceComparison.cs
+
+[src/simulation/scheduling/DynamicWorkScheduler.cs] (C#, LoC: 877, I: 0.59)
+  ← Входящие (9): src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/scheduling/LoadMonitor.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestPerformanceComparison.cs
+  → Исходящие (13): src/simulation/scheduling/IDynamicWorkScheduler.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/LoadMonitor.cs, src/simulation/ParallelRng.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/WorkItem.cs, src/simulation/scheduling/WorkQuantum.cs, src/simulation/scheduling/WorkStealingQueue.cs, src/core/common/ProfilerLogService.cs, src/core/common/ResourceRef.cs, src/core/common/SimEvents.cs
+
+[src/simulation/scheduling/IDynamicWorkScheduler.cs] (C#, LoC: 117, I: 0.08)
+  ← Входящие (11): src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/scheduling/LoadMonitor.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestPerformanceComparison.cs
+  → Исходящие (1): src/simulation/scheduling/WorkQuantum.cs
+
+[src/simulation/scheduling/LoadMonitor.cs] (C#, LoC: 256, I: 0.2)
+  ← Входящие (8): src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestPerformanceComparison.cs
+  → Исходящие (2): src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs
+
+[src/simulation/scheduling/WorkItem.cs] (C#, LoC: 57, I: 0.0)
+  ← Входящие (3): src/simulation/AgentSimulationThread.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, tests/Test10kBenchmark.cs
+
+[src/simulation/scheduling/WorkQuantum.cs] (C#, LoC: 99, I: 0.0)
+  ← Входящие (2): src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs
+
+[src/simulation/scheduling/WorkStealingQueue.cs] (C#, LoC: 240, I: 0.0)
+  ← Входящие (2): src/simulation/scheduling/DynamicWorkScheduler.cs, tests/Test10kBenchmark.cs
+
+[src/simulation/simd/SimdMovementBatch.cs] (C#, LoC: 280, I: 0.36)
+  ← Входящие (9): src/simulation/AgentSimulationThread.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestPerformanceComparison.cs
+  → Исходящие (5): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentDataPool.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/simd/SimdNeedsBatch.cs] (C#, LoC: 572, I: 0.36)
+  ← Входящие (9): src/simulation/AgentSimulationThread.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, tests/Test100xPeakBenchmark.cs, tests/Test10kBenchmark.cs, tests/TestAdversarialFlowField.cs, tests/TestAdversarialGpuAndSimd.cs, tests/TestExtreme100kPathStress.cs, tests/TestGlobal100kBreakdown.cs, tests/TestPerformanceComparison.cs
+  → Исходящие (5): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentDataPool.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/stones/StoneJobManager.cs] (C#, LoC: 142, I: 0.17)
+  ← Входящие (10): scenes/main/Main.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/structures/ConstructionManager.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/DesignationRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/tools/StoneMiningTool.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (2): src/simulation/jobs/JobBroker.cs, src/simulation/SimulationContext.cs
+
+[src/simulation/structures/ConstructionManager.cs] (C#, LoC: 651, I: 0.41)
+  ← Входящие (24): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/ConstructionPipeline.cs, src/simulation/building/TileClearanceService.cs, src/simulation/items/GroundItemManager.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/MiningJobHandler.cs, src/simulation/jobs/handlers/StockpileHaulingJobHandler.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/structures/StructureManager.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/MapRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase2StressTestRunner.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (17): src/simulation/agents/AgentDataPool.cs, src/simulation/building/BuildConfig.cs, src/simulation/structures/ConstructionSite.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/core/world/MapData.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/structures/StructureDefinition.cs, src/simulation/structures/StructureManager.cs, src/simulation/trees/TreeJobManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/structures/ConstructionSite.cs] (C#, LoC: 105, I: 0.67)
+  ← Входящие (2): src/simulation/building/TileClearanceService.cs, src/simulation/structures/ConstructionManager.cs
+  → Исходящие (4): src/simulation/structures/StructureDefinition.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/structures/StructureCategory.cs] (C#, LoC: 11, I: 0.5)
+  (изолированный файл)
+
+[src/simulation/structures/StructureDefinition.cs] (C#, LoC: 66, I: 0.38)
+  ← Входящие (5): src/simulation/structures/ConstructionManager.cs, src/simulation/structures/ConstructionSite.cs, src/simulation/structures/StructureInstance.cs, src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs
+  → Исходящие (3): src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/structures/StructureInstance.cs] (C#, LoC: 24, I: 0.8)
+  ← Входящие (1): src/simulation/structures/StructureManager.cs
+  → Исходящие (4): src/simulation/structures/StructureDefinition.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/structures/StructureManager.cs] (C#, LoC: 249, I: 0.42)
+  ← Входящие (14): scenes/main/Main.cs, src/simulation/building/BuildingManager.cs, src/simulation/building/BuildObstacles.cs, src/simulation/building/TileClearanceService.cs, src/simulation/building/WallBuildManager.cs, src/simulation/items/StockpileManager.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/structures/ConstructionManager.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/MapRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (10): src/simulation/agents/AgentDataPool.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/SimulationContext.cs, src/simulation/structures/StructureDefinition.cs, src/simulation/structures/StructureInstance.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/structures/StructureRegistry.cs] (C#, LoC: 111, I: 0.33)
+  ← Входящие (10): src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/simulation/building/ConstructionPipeline.cs, src/simulation/building/WallBuildManager.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/ui/tools/BuildTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase3StressTestRunner.cs, tests/Phase4StressTestRunner.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (5): src/simulation/building/BuildConfig.cs, src/simulation/structures/StructureDefinition.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/trees/TreeJobManager.cs] (C#, LoC: 132, I: 0.17)
+  ← Входящие (10): scenes/main/Main.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/jobs/JobValidator.cs, src/simulation/jobs/handlers/TreeChoppingJobHandler.cs, src/simulation/structures/ConstructionManager.cs, src/ui/controllers/MainMenuController.cs, src/ui/renderers/DesignationRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/tools/TreeFellingTool.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (2): src/simulation/jobs/JobBroker.cs, src/simulation/SimulationContext.cs
+
+[src/simulation/zones/WorkZone.cs] (C#, LoC: 57, I: 0.5)
+  ← Входящие (3): src/simulation/zones/WorkZoneManagerFacade.cs, src/ui/controllers/WorkZoneController.cs, tests/Phase2StressTestRunner.cs
+  → Исходящие (3): src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/zones/WorkZoneManagerFacade.cs] (C#, LoC: 147, I: 0.8)
+  ← Входящие (2): src/ui/controllers/WorkZoneController.cs, tests/Phase2StressTestRunner.cs
+  → Исходящие (8): src/simulation/agents/AgentDataPool.cs, src/simulation/SimulationContext.cs, src/simulation/zones/WorkZone.cs, src/simulation/zones/Zone.cs, src/simulation/zones/ZoneManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/zones/Zone.cs] (C#, LoC: 159, I: 0.4)
+  ← Входящие (6): src/core/world/climate/LatitudeBands.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/simulation/zones/ZoneManager.cs, tests/Phase1StressTestRunner.cs, tests/Phase5StressTestRunner.cs
+  → Исходящие (4): scenes/ui/Farm.tscn, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/simulation/zones/ZoneManager.cs] (C#, LoC: 676, I: 0.54)
+  ← Входящие (11): scenes/main/Main.cs, src/simulation/AgentSimulationThread.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/MainMenuController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/renderers/FarmZoneRenderer.cs, src/ui/tools/BuildTool.cs, src/ui/tools/SelectTool.cs, tests/Phase2StressTestRunner.cs
+  → Исходящие (13): src/simulation/agents/AgentDataPool.cs, src/simulation/farming/CropGrowthManager.cs, scenes/ui/Farm.tscn, src/simulation/farming/FarmJobManager.cs, src/simulation/jobs/JobBroker.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobPriorityManager.cs, src/simulation/jobs/JobRegistry.cs, src/simulation/SimulationContext.cs, src/simulation/zones/Zone.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/ui/CameraController.cs] (C#, LoC: 181, I: 0.08)
+  ← Входящие (11): scenes/main/Main.cs, src/ui/PlayerInteractionManager.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/tools/SelectTool.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGen.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (1): src/ui/renderers/MapRenderer.cs
+
+[src/ui/DayNightCycle.cs] (C#, LoC: 203, I: 0.18)
+  ← Входящие (18): scenes/main/Main.cs, src/ui/controllers/HUDController.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/ItemShadowRenderer.cs, src/ui/renderers/ItemShadowRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/tools/SelectTool.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestRenderLodBenchmark.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (4): src/simulation/WorldTime.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/ICellProbeOverlay.cs] (C#, LoC: 16, I: 0.0)
+  ← Входящие (12): scenes/main/Main.cs, src/ui/PlayerInteractionManager.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/HUDController.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/tools/SelectTool.cs, tests/Phase4StressTestRunner.cs, tests/Phase5StressTestRunner.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGenSeamAudit.cs
+
+[src/ui/PerformanceOverlay.cs] (C#, LoC: 945, I: 0.74)
+  ← Входящие (5): scenes/main/Main.cs, src/ui/tools/SelectTool.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs
+  → Исходящие (14): src/simulation/AgentSimulationThread.cs, src/core/common/ProfilerLogService.cs, src/core/common/GameProfiler.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/JobBroker.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/TimeManager.cs, src/core/common/CpuTopology.cs, src/core/common/ResourceRef.cs, src/core/common/SimEvents.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs
+
+[src/ui/PlayerInteractionManager.cs] (C#, LoC: 126, I: 0.79)
+  ← Входящие (4): scenes/main/Main.cs, src/ui/controllers/HUDController.cs, tests/Phase4StressTestRunner.cs, tests/TestMacroRenderGpuLoad.cs
+  → Исходящие (15): src/ui/CameraController.cs, src/ui/ICellProbeOverlay.cs, src/ui/tools/ITool.cs, src/ui/tools/SelectTool.cs, src/ui/SelectionBox.cs, src/core/common/SimEvents.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/IToolWorldPlacement.cs
+
+[src/ui/SelectionBox.cs] (C#, LoC: 104, I: 0.0)
+  ← Входящие (8): scenes/main/Main.cs, src/ui/PlayerInteractionManager.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/SelectTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/ZoneDraftTool.cs
+
+[src/ui/controllers/BuildMenuController.cs] (C#, LoC: 496, I: 0.75)
+  ← Входящие (2): scenes/main/Main.cs, src/ui/controllers/HUDController.cs
+  → Исходящие (6): scenes/ui/Build.tscn, src/ui/controllers/IDraftCoordinator.cs, src/ui/controllers/WallMaterialRegistry.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/ITool.cs
+
+[src/ui/controllers/FarmController.cs] (C#, LoC: 425, I: 0.86)
+  ← Входящие (2): scenes/main/Main.cs, src/ui/controllers/HUDController.cs
+  → Исходящие (12): src/ui/controllers/IZoneWindow.cs, src/simulation/farming/CropGrowthManager.cs, scenes/ui/Farm.tscn, src/simulation/farming/FarmZone.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/ui/controllers/IZoneWindow.cs, src/core/world/MapData.cs, src/ui/renderers/MapRenderer.cs, src/ui/controllers/ZoneWindowRegistry.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/controllers/HUDController.cs] (C#, LoC: 1500, I: 0.95)
+  ← Входящие (2): scenes/main/Main.cs, tests/Phase4StressTestRunner.cs
+  → Исходящие (37): src/ui/ICellProbeOverlay.cs, src/ui/controllers/IDraftCoordinator.cs, src/ui/controllers/BuildMenuController.cs, src/ui/tools/BuildTool.cs, src/core/economy/CityState.cs, src/ui/DayNightCycle.cs, src/ui/controllers/FarmController.cs, src/ui/ICellProbeOverlay.cs, src/ui/controllers/IDraftCoordinator.cs, src/ui/tools/IToolWorldPlacement.cs, src/simulation/jobs/JobDispatcher.cs, src/core/world/MapData.cs, src/ui/renderers/MapRenderer.cs, src/ui/PlayerInteractionManager.cs, scenes/ui/Prioritet.tscn, src/ui/controllers/PriorityBoardController.cs, src/core/common/SimEvents.cs, src/simulation/items/StockpileManager.cs, src/ui/tools/StoneMiningTool.cs, src/simulation/TimeManager.cs, src/ui/tools/TreeFellingTool.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/building/WallBuildManager.cs, src/ui/controllers/WorkZoneController.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/simulation/WorldTime.cs, src/ui/tools/ZoneDraftTool.cs, src/simulation/zones/ZoneManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/ITool.cs, src/ui/tools/SelectTool.cs
+
+[src/ui/controllers/IDraftCoordinator.cs] (C#, LoC: 33, I: 0.0)
+  ← Входящие (3): src/ui/controllers/BuildMenuController.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/HUDController.cs
+
+[src/ui/controllers/IZoneWindow.cs] (C#, LoC: 25, I: 0.0)
+  ← Входящие (8): src/ui/controllers/FarmController.cs, src/ui/controllers/FarmController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/controllers/WorkZoneController.cs, src/ui/controllers/ZoneWindowRegistry.cs, src/ui/controllers/ZoneWindowRegistry.cs
+
+[src/ui/controllers/MainMenuController.cs] (C#, LoC: 94, I: 0.96)
+  ← Входящие (1): tests/Phase4StressTestRunner.cs
+  → Исходящие (23): src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/farming/CropGrowthManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/agents/FlowFieldManager.cs, src/core/common/GameProfiler.cs, src/simulation/items/GroundItemManager.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobPriorityManager.cs, scenes/main/Main.cs, scenes/main/Main.tscn, src/ui/renderers/MapRenderer.cs, src/core/common/ProfilerLogService.cs, src/core/common/SimEvents.cs, src/simulation/items/StockpileManager.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/structures/StructureManager.cs, src/simulation/trees/TreeJobManager.cs, src/simulation/building/WorkProgressTracker.cs, src/core/world/climate/WorldClimateProvider.cs, src/simulation/zones/ZoneManager.cs
+
+[src/ui/controllers/PriorityBoardController.cs] (C#, LoC: 136, I: 0.88)
+  ← Входящие (1): src/ui/controllers/HUDController.cs
+  → Исходящие (7): src/simulation/jobs/JobPriorityManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/controllers/WallMaterialRegistry.cs] (C#, LoC: 42, I: 0.6)
+  ← Входящие (4): src/core/world/WallTileHelper.cs, src/simulation/building/WorkProgressTracker.cs, src/ui/controllers/BuildMenuController.cs, src/ui/tools/ZoneDraftTool.cs
+  → Исходящие (6): src/core/world/WallTileHelper.cs, src/simulation/building/WorkProgressTracker.cs, src/ui/renderers/MapRenderer.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs
+
+[src/ui/controllers/WorkZoneController.cs] (C#, LoC: 477, I: 0.95)
+  ← Входящие (1): src/ui/controllers/HUDController.cs
+  → Исходящие (19): src/ui/controllers/IZoneWindow.cs, src/ui/controllers/IZoneWindow.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/ui/controllers/IZoneWindow.cs, src/ui/controllers/IZoneWindow.cs, src/simulation/jobs/JobDispatcher.cs, scenes/ui/JobDisplay.tscn, src/simulation/jobs/JobPriorityManager.cs, scenes/ui/Prioritet.tscn, src/simulation/zones/WorkZone.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/simulation/zones/ZoneManager.cs, src/ui/controllers/ZoneWindowRegistry.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/controllers/ZoneWindowRegistry.cs] (C#, LoC: 18, I: 0.5)
+  ← Входящие (2): src/ui/controllers/FarmController.cs, src/ui/controllers/WorkZoneController.cs
+  → Исходящие (2): src/ui/controllers/IZoneWindow.cs, src/ui/controllers/IZoneWindow.cs
+
+[src/ui/renderers/AgentLerpBatch.cs] (C#, LoC: 242, I: 0.0)
+  ← Входящие (2): src/ui/renderers/AgentRenderer.cs, tests/TestRenderLodBenchmark.cs
+
+[src/ui/renderers/AgentRenderer.cs] (C#, LoC: 588, I: 0.81)
+  ← Входящие (3): scenes/main/Main.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestRenderLodBenchmark.cs
+  → Исходящие (13): src/ui/renderers/AgentLerpBatch.cs, src/simulation/AgentSimulationThread.cs, src/ui/DayNightCycle.cs, src/core/common/GameProfiler.cs, src/ui/renderers/MapRenderer.cs, src/core/common/SimEvents.cs, src/ui/DayNightCycle.cs, src/core/common/CpuTopology.cs, src/core/common/ProfilerLogService.cs, src/core/common/ResourceRef.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs
+
+[src/ui/renderers/CropRenderer.cs] (C#, LoC: 145, I: 0.91)
+  ← Входящие (1): scenes/main/Main.cs
+  → Исходящие (10): src/simulation/farming/CropGrowthManager.cs, src/ui/renderers/ItemShadowRenderer.cs, src/ui/renderers/MapRenderer.cs, src/core/common/ResourceRef.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/renderers/DesignationRenderer.cs] (C#, LoC: 200, I: 0.86)
+  ← Входящие (1): src/ui/renderers/MapRenderer.cs
+  → Исходящие (6): src/ui/renderers/MapRenderer.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/trees/TreeJobManager.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/renderers/FarmZoneRenderer.cs] (C#, LoC: 131, I: 0.8)
+  ← Входящие (1): scenes/main/Main.cs
+  → Исходящие (4): src/simulation/zones/ZoneManager.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/renderers/FertilityOverlayRenderer.cs] (C#, LoC: 155, I: 0.93)
+  ← Входящие (1): src/ui/renderers/MapRenderer.cs
+  → Исходящие (13): src/core/world/FertilityMap.cs, src/ui/renderers/MapRenderer.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/streaming/WorldMapTileMapper.cs
+
+[src/ui/renderers/GroundItemRenderer.cs] (C#, LoC: 133, I: 0.92)
+  ← Входящие (1): scenes/main/Main.cs
+  → Исходящие (11): src/simulation/items/GroundItemManager.cs, src/core/items/ItemRegistry.cs, src/ui/renderers/ItemShadowRenderer.cs, src/ui/renderers/MapRenderer.cs, src/core/common/SimEvents.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/renderers/HumidityOverlayRenderer.cs] (C#, LoC: 146, I: 0.93)
+  ← Входящие (1): src/ui/renderers/MapRenderer.cs
+  → Исходящие (13): src/core/world/HumidityMap.cs, src/ui/renderers/MapRenderer.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/streaming/WorldMapTileMapper.cs
+
+[src/ui/renderers/ItemShadowRenderer.cs] (C#, LoC: 255, I: 0.33)
+  ← Входящие (6): scenes/main/Main.cs, src/ui/renderers/CropRenderer.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestRenderLodBenchmark.cs
+  → Исходящие (3): src/ui/DayNightCycle.cs, src/ui/renderers/MapRenderer.cs, src/ui/DayNightCycle.cs
+
+[src/ui/renderers/MapRenderer.cs] (C#, LoC: 1513, I: 0.59)
+  ← Входящие (25): scenes/main/Main.cs, src/ui/CameraController.cs, src/ui/controllers/FarmController.cs, src/ui/controllers/HUDController.cs, src/ui/controllers/MainMenuController.cs, src/ui/controllers/WallMaterialRegistry.cs, src/ui/renderers/AgentRenderer.cs, src/ui/renderers/CropRenderer.cs, src/ui/renderers/DesignationRenderer.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/ui/renderers/GroundItemRenderer.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/ui/renderers/ItemShadowRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/streaming/WorldJobTicker.cs, src/ui/tools/BuildTool.cs, src/ui/tools/WorldPlacementPass.cs, src/ui/tools/ZoneDraftTool.cs, tests/Phase5StressTestRunner.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestShadowAndTerrainAudit.cs, tests/TestWorldGenSeamAudit.cs
+  → Исходящие (36): src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/simulation/structures/ConstructionManager.cs, src/ui/renderers/DesignationRenderer.cs, src/simulation/farming/FarmJobManager.cs, src/core/world/FertilityMap.cs, src/ui/renderers/FertilityOverlayRenderer.cs, src/core/world/HumidityMap.cs, src/ui/renderers/HumidityOverlayRenderer.cs, src/core/world/MapData.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/renderers/StockpileItemRenderer.cs, src/simulation/items/StockpileManager.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/structures/StructureManager.cs, src/ui/renderers/TerrainTileLayer.cs, src/simulation/TimeManager.cs, src/simulation/trees/TreeJobManager.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/building/WallBuildManager.cs, src/core/world/WallTileHelper.cs, src/simulation/building/WorkProgressTracker.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/streaming/WorldMapTileMapper.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/renderers/ShadowCasterRenderer.cs] (C#, LoC: 289, I: 0.71)
+  ← Входящие (4): src/ui/renderers/MapRenderer.cs, tests/TestMacroRenderGpuLoad.cs, tests/TestRenderLodBenchmark.cs, tests/TestShadowAndTerrainAudit.cs
+  → Исходящие (10): src/ui/DayNightCycle.cs, src/core/world/MapData.cs, src/ui/renderers/MapRenderer.cs, src/ui/DayNightCycle.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/renderers/StockpileItemRenderer.cs] (C#, LoC: 131, I: 0.91)
+  ← Входящие (1): src/ui/renderers/MapRenderer.cs
+  → Исходящие (10): src/core/items/ItemRegistry.cs, src/ui/renderers/ItemShadowRenderer.cs, src/ui/renderers/MapRenderer.cs, src/simulation/items/StockpileManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/renderers/TerrainTileLayer.cs] (C#, LoC: 93, I: 0.0)
+  ← Входящие (2): src/ui/renderers/MapRenderer.cs, src/ui/streaming/StreamingWorldView.cs
+
+[src/ui/streaming/IWorldAgentSource.cs] (C#, LoC: 15, I: 0.14)
+  ← Входящие (6): scenes/main/Main.cs, src/ui/streaming/WorldAgentRenderer.cs, src/ui/streaming/WorldJobTicker.cs, src/ui/streaming/WorldJobTicker.cs, tests/Phase3StressTestRunner.cs, tests/TestMacroRenderGpuLoad.cs
+  → Исходящие (1): src/ui/streaming/WorldAgent.cs
+
+[src/ui/streaming/StreamingToolPlacement.cs] (C#, LoC: 110, I: 0.8)
+  ← Входящие (3): scenes/main/Main.cs, tests/Phase3StressTestRunner.cs, tests/TestMacroRenderGpuLoad.cs
+  → Исходящие (12): src/ui/tools/IToolWorldPlacement.cs, src/ui/tools/IToolWorldPlacement.cs, src/ui/renderers/MapRenderer.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/core/world/streaming/integration/WorldDeltaKind.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/ITool.cs
+
+[src/ui/streaming/StreamingWorldView.cs] (C#, LoC: 1710, I: 0.86)
+  ← Входящие (5): scenes/main/Main.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldJobTicker.cs, tests/Phase3StressTestRunner.cs, tests/TestMacroRenderGpuLoad.cs
+  → Исходящие (32): src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWorldCellSource.cs, src/core/world/streaming/runtime/ChunkWindowPlanner.cs, src/core/world/streaming/runtime/ChunkWindowPlanner.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/integration/IWorldCellSource.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/TerrainTileLayer.cs, src/simulation/TimeManager.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/WorldChunk.cs, src/core/world/streaming/storage/WorldChunkCodec.cs, src/core/world/streaming/storage/WorldChunkDeltaCodec.cs, src/core/world/streaming/storage/WorldChunkDeltaCodec.cs, src/core/world/streaming/storage/WorldChunkDeltaCodec.cs, src/core/world/streaming/storage/WorldChunkStore.cs, src/core/world/streaming/runtime/WorldChunkStreamer.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/streaming/integration/WorldDecor.cs, src/core/world/streaming/integration/WorldDeltaKind.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/streaming/WorldMapTileMapper.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/ui/CameraController.cs, src/ui/DayNightCycle.cs, src/ui/ICellProbeOverlay.cs, src/core/world/streaming/integration/WorldPlan.cs
+
+[src/ui/streaming/WorldAgent.cs] (C#, LoC: 47, I: 0.43)
+  ← Входящие (4): scenes/main/Main.cs, src/ui/streaming/IWorldAgentSource.cs, src/ui/streaming/WorldJobTicker.cs, tests/TestMacroRenderGpuLoad.cs
+  → Исходящие (3): src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs
+
+[src/ui/streaming/WorldAgentRenderer.cs] (C#, LoC: 55, I: 0.33)
+  ← Входящие (2): scenes/main/Main.cs, src/ui/streaming/WorldJobTicker.cs
+  → Исходящие (1): src/ui/streaming/IWorldAgentSource.cs
+
+[src/ui/streaming/WorldJobBoard.cs] (C#, LoC: 105, I: 0.82)
+  ← Входящие (2): scenes/main/Main.cs, src/ui/streaming/WorldJobTicker.cs
+  → Исходящие (9): src/core/world/streaming/integration/StreamingWorldManager.cs, src/ui/streaming/StreamingWorldView.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs
+
+[src/ui/streaming/WorldJobTicker.cs] (C#, LoC: 471, I: 0.94)
+  ← Входящие (1): scenes/main/Main.cs
+  → Исходящие (16): src/ui/streaming/IWorldAgentSource.cs, src/ui/streaming/IWorldAgentSource.cs, src/ui/renderers/MapRenderer.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/ui/streaming/StreamingWorldView.cs, src/simulation/TimeManager.cs, src/ui/streaming/WorldAgent.cs, src/ui/streaming/WorldAgentRenderer.cs, src/ui/streaming/WorldJobBoard.cs, src/ui/streaming/WorldPathFinder.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/streaming/WorldMapOverlay.cs] (C#, LoC: 895, I: 0.82)
+  ← Входящие (2): scenes/main/Main.cs, tests/TestWorldGen.cs
+  → Исходящие (9): src/core/world/BiomeMapper.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/WorldMapTileMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/coordinator/WorldSaveCoordinator.cs, src/core/world/streaming/generation/RegionKey.cs
+
+[src/ui/streaming/WorldPathFinder.cs] (C#, LoC: 227, I: 0.88)
+  ← Входящие (1): src/ui/streaming/WorldJobTicker.cs
+  → Исходящие (7): src/core/world/streaming/integration/WorldCellQuery.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs
+
+[src/ui/tools/BuildTool.cs] (C#, LoC: 291, I: 0.8)
+  ← Входящие (5): src/ui/PlayerInteractionManager.cs, src/ui/controllers/BuildMenuController.cs, src/ui/controllers/HUDController.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/tools/ZoneDraftTool.cs
+  → Исходящие (20): src/ui/tools/ITool.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/simulation/structures/ConstructionManager.cs, scenes/ui/Farm.tscn, src/simulation/farming/FarmJobManager.cs, src/ui/tools/ITool.cs, src/ui/tools/IToolWorldPlacement.cs, src/core/world/MapData.cs, src/ui/renderers/MapRenderer.cs, src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/simulation/building/WallBuildManager.cs, src/simulation/zones/ZoneManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/tools/FarmingTool.cs] (C#, LoC: 164, I: 0.78)
+  ← Входящие (5): src/ui/PlayerInteractionManager.cs, src/ui/controllers/BuildMenuController.cs, src/ui/controllers/HUDController.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/tools/ZoneDraftTool.cs
+  → Исходящие (18): src/ui/tools/ITool.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/ui/tools/ITool.cs, src/ui/tools/IToolWorldPlacement.cs, src/core/world/MapData.cs, src/ui/SelectionBox.cs, src/simulation/structures/StructureManager.cs, src/simulation/building/WallBuildManager.cs, src/ui/tools/WorldPlacementPass.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/tools/ITool.cs] (C#, LoC: 12, I: 0.0)
+  ← Входящие (18): src/ui/PlayerInteractionManager.cs, src/ui/controllers/BuildMenuController.cs, src/ui/controllers/HUDController.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/tools/BuildTool.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/SelectTool.cs, src/ui/tools/SelectTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/ZoneDraftTool.cs, src/ui/tools/ZoneDraftTool.cs
+
+[src/ui/tools/IToolWorldPlacement.cs] (C#, LoC: 53, I: 0.0)
+  ← Входящие (11): src/ui/PlayerInteractionManager.cs, src/ui/controllers/HUDController.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/WorldPlacementPass.cs, src/ui/tools/ZoneDraftTool.cs
+
+[src/ui/tools/SelectTool.cs] (C#, LoC: 98, I: 0.8)
+  ← Входящие (3): src/ui/PlayerInteractionManager.cs, src/ui/controllers/HUDController.cs, src/ui/tools/ZoneDraftTool.cs
+  → Исходящие (12): src/ui/tools/ITool.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/ui/ICellProbeOverlay.cs, src/ui/tools/ITool.cs, src/ui/SelectionBox.cs, src/simulation/zones/ZoneManager.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/ui/CameraController.cs, src/ui/DayNightCycle.cs, src/ui/PerformanceOverlay.cs
+
+[src/ui/tools/StoneMiningTool.cs] (C#, LoC: 122, I: 0.93)
+  ← Входящие (1): src/ui/controllers/HUDController.cs
+  → Исходящие (13): src/ui/tools/ITool.cs, src/ui/tools/ITool.cs, src/ui/tools/IToolWorldPlacement.cs, src/core/world/MapData.cs, src/ui/SelectionBox.cs, src/simulation/stones/StoneJobManager.cs, src/ui/tools/WorldPlacementPass.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/tools/TreeFellingTool.cs] (C#, LoC: 118, I: 0.93)
+  ← Входящие (1): src/ui/controllers/HUDController.cs
+  → Исходящие (13): src/ui/tools/ITool.cs, src/ui/tools/ITool.cs, src/ui/tools/IToolWorldPlacement.cs, src/core/world/MapData.cs, src/ui/SelectionBox.cs, src/simulation/trees/TreeJobManager.cs, src/ui/tools/WorldPlacementPass.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/tools/WarehouseTool.cs] (C#, LoC: 94, I: 1.0)
+  → Исходящие (9): src/ui/tools/ITool.cs, src/ui/tools/ITool.cs, src/ui/tools/IToolWorldPlacement.cs, src/ui/SelectionBox.cs, src/simulation/items/StockpileManager.cs, src/ui/tools/WorldPlacementPass.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[src/ui/tools/WorldPlacementPass.cs] (C#, LoC: 87, I: 0.25)
+  ← Входящие (6): src/ui/tools/FarmingTool.cs, src/ui/tools/StoneMiningTool.cs, src/ui/tools/TreeFellingTool.cs, src/ui/tools/WarehouseTool.cs, src/ui/tools/ZoneDraftTool.cs, tests/TestAdversarialConstruction.cs
+  → Исходящие (2): src/ui/tools/IToolWorldPlacement.cs, src/ui/renderers/MapRenderer.cs
+
+[src/ui/tools/ZoneDraftTool.cs] (C#, LoC: 681, I: 0.96)
+  ← Входящие (1): src/ui/controllers/HUDController.cs
+  → Исходящие (26): src/ui/tools/ITool.cs, src/simulation/building/BlueprintManager.cs, src/simulation/building/BuildingManager.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/ui/tools/ITool.cs, src/ui/tools/IToolWorldPlacement.cs, src/core/world/MapData.cs, src/ui/renderers/MapRenderer.cs, src/ui/SelectionBox.cs, src/simulation/items/StockpileManager.cs, src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/simulation/building/WallBuildManager.cs, src/ui/controllers/WallMaterialRegistry.cs, src/ui/tools/WorldPlacementPass.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/ui/tools/BuildTool.cs, src/ui/tools/FarmingTool.cs, src/ui/tools/SelectTool.cs
+
+[tests/Phase1StressTestRunner.cs] (C#, LoC: 135, I: 0.9)
+  ← Входящие (1): tests/test_phase1.gd
+  → Исходящие (9): src/simulation/AgentSimulationThread.cs, scenes/ui/Farm.tscn, src/simulation/agents/FlatIdleWorkerPool.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/zones/Zone.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs
+
+[tests/Phase2StressTestRunner.cs] (C#, LoC: 124, I: 0.96)
+  ← Входящие (1): tests/test_phase2.gd
+  → Исходящие (23): src/simulation/structures/ConstructionManager.cs, src/simulation/farming/FarmZone.cs, src/simulation/farming/FarmZoneManagerFacade.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/simulation/zones/WorkZone.cs, src/simulation/zones/WorkZoneManagerFacade.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/climate/WorldClimateProvider.cs, src/simulation/zones/ZoneManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/climate/ContinentShaper.cs, src/core/world/climate/LatitudeBands.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/core/world/streaming/generation/RegionKey.cs
+
+[tests/Phase3StressTestRunner.cs] (C#, LoC: 113, I: 0.94)
+  ← Входящие (1): tests/test_phase3.gd
+  → Исходящие (15): src/simulation/AgentSimulationThread.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/items/GroundItemManager.cs, src/core/world/MapData.cs, src/simulation/structures/StructureRegistry.cs, src/simulation/TimeManager.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs, src/ui/streaming/IWorldAgentSource.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/StreamingWorldView.cs
+
+[tests/Phase4StressTestRunner.cs] (C#, LoC: 200, I: 0.93)
+  ← Входящие (2): tests/run_phase4_suite.gd, tests/test_phase4.gd
+  → Исходящие (28): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/items/GroundItemManager.cs, src/ui/controllers/HUDController.cs, src/core/jobs/JobData.cs, scenes/main/Main.cs, scenes/main/Main.tscn, src/core/world/MapData.cs, src/ui/PlayerInteractionManager.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/simulation/structures/StructureRegistry.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/jobs/handlers/HarvestJobHandler.cs, src/ui/CameraController.cs, src/ui/DayNightCycle.cs, src/ui/ICellProbeOverlay.cs, src/ui/controllers/MainMenuController.cs
+
+[tests/Phase5StressTestRunner.cs] (C#, LoC: 363, I: 0.95)
+  ← Входящие (2): tests/run_phase5_suite.gd, tests/test_phase5.gd
+  → Исходящие (36): src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWorldCellSource.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, scenes/ui/Farm.tscn, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWorldCellSource.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/ui/renderers/MapRenderer.cs, src/simulation/SimulationContext.cs, src/core/world/streaming/integration/StreamingWorldManager.cs, src/simulation/building/TileClearanceService.cs, src/core/world/streaming/integration/WorldDeltaKind.cs, src/core/world/streaming/integration/WorldGameRules.cs, src/core/world/streaming/coordinator/WorldSaveCoordinator.cs, src/simulation/zones/Zone.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IWallWorld.cs, src/core/world/streaming/integration/WorldCellQuery.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/jobs/handlers/BlueprintDeliveryJobHandler.cs, src/simulation/jobs/handlers/ConstructionJobHandler.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/ui/CameraController.cs, src/ui/DayNightCycle.cs, src/ui/ICellProbeOverlay.cs, src/core/world/streaming/generation/GeneratedCell.cs
+
+[tests/Test100xPeakBenchmark.cs] (C#, LoC: 309, I: 0.94)
+  ← Входящие (1): tests/run_100x_benchmark.gd
+  → Исходящие (17): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs, src/simulation/scheduling/AdaptivePartitioner.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/LoadMonitor.cs, src/simulation/simd/SimdMovementBatch.cs
+
+[tests/Test10kBenchmark.cs] (C#, LoC: 274, I: 0.94)
+  ← Входящие (1): tests/run_benchmark.gd
+  → Исходящие (15): src/simulation/agents/AgentDataPool.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/scheduling/WorkItem.cs, src/simulation/scheduling/WorkStealingQueue.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/scheduling/AdaptivePartitioner.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/LoadMonitor.cs, src/simulation/simd/SimdMovementBatch.cs
+
+[tests/TestAdversarialConstruction.cs] (C#, LoC: 474, I: 0.96)
+  ← Входящие (1): tests/run_adversarial_construction_test.gd
+  → Исходящие (27): src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/building/BuildConfig.cs, src/simulation/structures/ConstructionManager.cs, src/simulation/items/DemandRegistry.cs, src/simulation/farming/FarmJobManager.cs, src/simulation/jobs/handlers/FarmingJobHandler.cs, src/simulation/items/GroundItemManager.cs, src/simulation/jobs/JobBroker.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/core/world/MapData.cs, src/simulation/jobs/handlers/PlantingJobHandler.cs, src/simulation/items/ResourceBroker.cs, src/simulation/SimulationContext.cs, src/simulation/items/StockpileManager.cs, src/simulation/stones/StoneJobManager.cs, src/simulation/structures/StructureManager.cs, src/simulation/structures/StructureRegistry.cs, src/simulation/trees/TreeJobManager.cs, src/ui/tools/WorldPlacementPass.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[tests/TestAdversarialFlowField.cs] (C#, LoC: 331, I: 0.95)
+  ← Входящие (1): tests/run_adversarial_flow_test.gd
+  → Исходящие (18): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/agents/FlowFieldManager.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/gpu/GpuFlowFieldSimulator.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/gpu/GpuHumiditySimulator.cs, src/simulation/simd/SimdNeedsBatch.cs
+
+[tests/TestAdversarialGpuAndSimd.cs] (C#, LoC: 178, I: 0.93)
+  ← Входящие (1): tests/run_adversarial_test.gd
+  → Исходящие (13): src/simulation/agents/AgentDataPool.cs, src/simulation/gpu/GpuHumiditySimulator.cs, src/core/world/HumidityMap.cs, src/simulation/simd/SimdNeedsBatch.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/gpu/GpuFlowFieldSimulator.cs
+
+[tests/TestAdversarialJobDistribution.cs] (C#, LoC: 275, I: 0.92)
+  ← Входящие (1): tests/run_adversarial_job_distribution_test.gd
+  → Исходящие (11): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/FlatIdleWorkerPool.cs, src/core/jobs/JobData.cs, src/simulation/jobs/JobDispatcher.cs, src/simulation/jobs/JobSpatialPyramid.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs
+
+[tests/TestExtreme100kPathStress.cs] (C#, LoC: 294, I: 0.96)
+  ← Входящие (1): tests/run_extreme_stress_test.gd
+  → Исходящие (22): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/pathfinding/HierarchicalPathfinder.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs, src/simulation/scheduling/AdaptivePartitioner.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/LoadMonitor.cs, src/simulation/gpu/GpuFlowFieldSimulator.cs, src/simulation/gpu/GpuHumiditySimulator.cs
+
+[tests/TestGlobal100kBreakdown.cs] (C#, LoC: 232, I: 0.94)
+  ← Входящие (1): tests/run_global_100k_test.gd
+  → Исходящие (17): src/simulation/agents/AgentDataPool.cs, src/simulation/agents/AgentMovementService.cs, src/simulation/agents/AgentSpatialGrid.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/simd/SimdNeedsBatch.cs, src/simulation/SimulationContext.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs, src/simulation/scheduling/AdaptivePartitioner.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/LoadMonitor.cs, src/simulation/simd/SimdMovementBatch.cs
+
+[tests/TestMacroRenderGpuLoad.cs] (C#, LoC: 157, I: 0.95)
+  ← Входящие (1): tests/run_gpu_load_test.gd
+  → Исходящие (21): src/ui/renderers/AgentRenderer.cs, src/simulation/AgentSimulationThread.cs, src/ui/CameraController.cs, src/ui/DayNightCycle.cs, src/ui/renderers/ItemShadowRenderer.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/streaming/StreamingWorldView.cs, src/ui/DayNightCycle.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs, src/ui/ICellProbeOverlay.cs, src/ui/PerformanceOverlay.cs, src/ui/PlayerInteractionManager.cs, src/ui/streaming/IWorldAgentSource.cs, src/ui/streaming/StreamingToolPlacement.cs, src/ui/streaming/WorldAgent.cs
+
+[tests/TestPerformanceComparison.cs] (C#, LoC: 299, I: 0.95)
+  ← Входящие (1): tests/run_perf_comparison.gd
+  → Исходящие (18): src/simulation/agents/AgentDataPool.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/scheduling/DynamicWorkScheduler.cs, src/simulation/gpu/GpuHumiditySimulator.cs, src/core/world/HumidityMap.cs, src/simulation/simd/SimdNeedsBatch.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/AgentSimulationThread.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs, src/simulation/scheduling/AdaptivePartitioner.cs, src/simulation/scheduling/IDynamicWorkScheduler.cs, src/simulation/scheduling/LoadMonitor.cs, src/simulation/simd/SimdMovementBatch.cs, src/simulation/gpu/GpuAgentTransformSimulator.cs, src/simulation/gpu/GpuFlowFieldSimulator.cs
+
+[tests/TestRenderLodBenchmark.cs] (C#, LoC: 253, I: 0.94)
+  ← Входящие (1): tests/run_render_test.gd
+  → Исходящие (16): src/ui/renderers/AgentLerpBatch.cs, src/ui/renderers/AgentRenderer.cs, src/simulation/AgentSimulationThread.cs, src/ui/DayNightCycle.cs, src/ui/renderers/ItemShadowRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/ui/DayNightCycle.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/simulation/ParallelRng.cs, src/ui/CameraController.cs, src/ui/ICellProbeOverlay.cs, src/ui/PerformanceOverlay.cs
+
+[tests/TestShadowAndTerrainAudit.cs] (C#, LoC: 253, I: 0.94)
+  ← Входящие (1): tests/run_shadow_terrain_test.gd
+  → Исходящие (17): src/ui/DayNightCycle.cs, src/core/world/MapData.cs, src/ui/renderers/MapRenderer.cs, src/ui/renderers/ShadowCasterRenderer.cs, src/simulation/WorldTime.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/simulation/AgentSimulationThread.cs, src/simulation/DynamicWorkBalancer.cs, src/simulation/GameSpeed.cs, src/ui/CameraController.cs, src/ui/ICellProbeOverlay.cs, src/ui/PerformanceOverlay.cs
+
+[tests/TestWorldGen.cs] (C#, LoC: 1002, I: 0.95)
+  ← Входящие (1): tests/run_test.gd
+  → Исходящие (20): src/core/world/BiomeMapper.cs, src/ui/CameraController.cs, src/core/world/climate/ContinentShaper.cs, scenes/main/Main.cs, scenes/main/Main.tscn, src/core/world/MountainTileHelper.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/WorldChunk.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/generation/WorldCoordinates.cs, scenes/ui/WorldMap.tscn, src/ui/streaming/WorldMapOverlay.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/BiomeType.cs, src/core/world/streaming/WorldMapTileMapper.cs, src/core/world/streaming/coordinator/WorldSaveCoordinator.cs, src/core/world/streaming/generation/RegionKey.cs
+
+[tests/TestWorldGenSeamAudit.cs] (C#, LoC: 184, I: 0.94)
+  ← Входящие (1): tests/run_world_gen_seam_audit.gd
+  → Исходящие (17): scenes/main/Main.cs, scenes/main/Main.tscn, src/ui/renderers/MapRenderer.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/generation/WorldCoordinates.cs, src/core/common/CpuTopology.cs, src/core/common/GameProfiler.cs, src/core/common/ProfilerLogService.cs, src/core/world/BiomeMapper.cs, src/core/world/BiomeType.cs, src/core/world/streaming/WorldMapTileMapper.cs, src/core/world/streaming/integration/ChunkMutations.cs, src/core/world/streaming/integration/IBlockWorld.cs, src/core/world/streaming/integration/IWallWorld.cs, src/ui/CameraController.cs, src/ui/DayNightCycle.cs, src/ui/ICellProbeOverlay.cs
+
+[tests/TestWorldMapRealismAudit.cs] (C#, LoC: 220, I: 0.93)
+  ← Входящие (1): tests/run_world_map_audit.gd
+  → Исходящие (14): src/core/world/BiomeMapper.cs, src/core/world/climate/ContinentShaper.cs, src/core/world/climate/PlanetaryHydrology.cs, src/core/world/streaming/generation/WorldClimateGenerator.cs, src/core/world/climate/WorldClimateProvider.cs, src/core/world/streaming/WorldMapTileMapper.cs, src/core/world/streaming/generation/WorldRegions.cs, src/core/world/BiomeType.cs, src/core/world/generation/UnifiedWorldGenerator.cs, src/core/world/streaming/coordinator/WorldSaveCoordinator.cs, src/core/world/climate/LatitudeBands.cs, src/core/world/climate/Q16.cs, src/core/world/climate/WorldClimateFields.cs, src/core/world/streaming/generation/RegionKey.cs
+
+[tests/run_100x_benchmark.gd] (GDScript, LoC: 35, I: 1.0)
+  → Исходящие (1): tests/Test100xPeakBenchmark.cs
+
+[tests/run_adversarial_construction_test.gd] (GDScript, LoC: 31, I: 1.0)
+  → Исходящие (1): tests/TestAdversarialConstruction.cs
+
+[tests/run_adversarial_flow_test.gd] (GDScript, LoC: 31, I: 1.0)
+  → Исходящие (1): tests/TestAdversarialFlowField.cs
+
+[tests/run_adversarial_job_distribution_test.gd] (GDScript, LoC: 31, I: 1.0)
+  → Исходящие (1): tests/TestAdversarialJobDistribution.cs
+
+[tests/run_adversarial_test.gd] (GDScript, LoC: 31, I: 1.0)
+  → Исходящие (1): tests/TestAdversarialGpuAndSimd.cs
+
+[tests/run_benchmark.gd] (GDScript, LoC: 35, I: 1.0)
+  → Исходящие (1): tests/Test10kBenchmark.cs
+
+[tests/run_extreme_stress_test.gd] (GDScript, LoC: 31, I: 1.0)
+  → Исходящие (1): tests/TestExtreme100kPathStress.cs
+
+[tests/run_global_100k_test.gd] (GDScript, LoC: 31, I: 1.0)
+  → Исходящие (1): tests/TestGlobal100kBreakdown.cs
+
+[tests/run_gpu_load_test.gd] (GDScript, LoC: 12, I: 1.0)
+  → Исходящие (1): tests/TestMacroRenderGpuLoad.cs
+
+[tests/run_perf_comparison.gd] (GDScript, LoC: 31, I: 1.0)
+  → Исходящие (1): tests/TestPerformanceComparison.cs
+
+[tests/run_phase4_suite.gd] (GDScript, LoC: 32, I: 1.0)
+  → Исходящие (1): tests/Phase4StressTestRunner.cs
+
+[tests/run_phase5_suite.gd] (GDScript, LoC: 33, I: 1.0)
+  → Исходящие (1): tests/Phase5StressTestRunner.cs
+
+[tests/run_render_test.gd] (GDScript, LoC: 35, I: 1.0)
+  → Исходящие (1): tests/TestRenderLodBenchmark.cs
+
+[tests/run_shadow_terrain_test.gd] (GDScript, LoC: 35, I: 1.0)
+  → Исходящие (1): tests/TestShadowAndTerrainAudit.cs
+
+[tests/run_test.gd] (GDScript, LoC: 35, I: 1.0)
+  → Исходящие (1): tests/TestWorldGen.cs
+
+[tests/run_world_gen_seam_audit.gd] (GDScript, LoC: 13, I: 1.0)
+  → Исходящие (1): tests/TestWorldGenSeamAudit.cs
+
+[tests/run_world_map_audit.gd] (GDScript, LoC: 35, I: 1.0)
+  → Исходящие (1): tests/TestWorldMapRealismAudit.cs
+
+[tests/test_phase0.gd] (GDScript, LoC: 60, I: 1.0)
+  → Исходящие (4): scenes/main/Main.tscn, scenes/ui/Build.tscn, scenes/ui/JobDisplay.tscn, addons/godot_ai/testing/test_suite.gd
+
+[tests/test_phase1.gd] (GDScript, LoC: 24, I: 1.0)
+  → Исходящие (3): tests/Phase1StressTestRunner.cs, scenes/ui/menu.tscn, addons/godot_ai/testing/test_suite.gd
+
+[tests/test_phase2.gd] (GDScript, LoC: 16, I: 1.0)
+  → Исходящие (2): tests/Phase2StressTestRunner.cs, addons/godot_ai/testing/test_suite.gd
+
+[tests/test_phase3.gd] (GDScript, LoC: 16, I: 1.0)
+  → Исходящие (2): tests/Phase3StressTestRunner.cs, addons/godot_ai/testing/test_suite.gd
+
+[tests/test_phase4.gd] (GDScript, LoC: 16, I: 1.0)
+  → Исходящие (2): tests/Phase4StressTestRunner.cs, addons/godot_ai/testing/test_suite.gd
+
+[tests/test_phase5.gd] (GDScript, LoC: 16, I: 1.0)
+  → Исходящие (2): tests/Phase5StressTestRunner.cs, addons/godot_ai/testing/test_suite.gd
+
+[tools/atlas_probe.gd] (GDScript, LoC: 47, I: 0.5)
+  (изолированный файл)

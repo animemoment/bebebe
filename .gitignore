@@ -20,4 +20,14 @@ obj/
 
 # Temporary / helper scripts
 powershell.cmd
-cde.txt
+cde.txt# --- bundled tools / artifacts (не в репозиторий) ---
+.venv/
+__pycache__/
+*.pyc
+dependency_graph_visualizer/build/
+*.exe
+*.exe.bak
+powershell.exe
+*.zip
+*.log
+*.tmp

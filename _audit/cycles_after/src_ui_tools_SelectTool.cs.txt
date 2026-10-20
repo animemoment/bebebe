@@ -1,0 +1,7 @@
+﻿DependencyGraphVisualizer.exe : [CLI Error]: sequence item 0: expected str instance, dict found
+строка:17 знак:3
++   & $exe --cli --project $proj --deps $f --format compact 2>&1 | Out- ...
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([CLI Error]: se...nce, dict found:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
