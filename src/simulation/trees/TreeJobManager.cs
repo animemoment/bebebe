@@ -1,129 +1,3 @@
-using System;
-using System.Collections.Generic;
-using Godot;
-
-namespace Game.Simulation;
-
-public class TreeJobManager
-{
-    public static TreeJobManager Instance { get; } = new();
-
-    private readonly object _lock = new();
-    private readonly HashSet<(int X, int Y)> _markedTrees = new(4096);
-
-    /// <summary>
-    /// P7б §119: per-cell прогресс рубки 0..1 — переживает прерывание агента
-    /// (нужды/stuck/отмена). Пишет OnCancel хендлера, читает OnStart,
-    /// чистят Unmark*/CompleteTree/ClearAll.
-    /// </summary>
-    public CellProgressStore ChopProgress { get; } = new();
-
-    public event Action<(int X, int Y)> OnTreeMarked;
-    public event Action<List<(int X, int Y)>> OnTreesBatchMarked;
-    public event Action<(int X, int Y)> OnTreeUnmarked;
-    public event Action<List<(int X, int Y)>> OnTreesBatchUnmarked;
-    public event Action<(int X, int Y)> OnTreeChopped;
-
-    public void MarkTree(int x, int y)
-    {
-        lock (_lock)
-        {
-            if (_markedTrees.Add((x, y)))
-            {
-                JobBroker.Instance.RegisterTreeChop(x, y);
-                Callable.From(() => OnTreeMarked?.Invoke((x, y))).CallDeferred();
-            }
-        }
-    }
-
-    public void MarkTreesBatch(List<(int X, int Y)> trees, SimulationContext ctx = null)
-    {
-        if (trees == null || trees.Count == 0) return;
-
-        var addedList = new List<(int X, int Y)>(trees.Count);
-        lock (_lock)
-        {
-            foreach (var pos in trees)
-            {
-                if (_markedTrees.Add(pos))
-                {
-                    addedList.Add(pos);
-                }
-            }
-        }
-
-        if (addedList.Count > 0)
-        {
-            JobBroker.Instance.RegisterTreeChopBatch(addedList, ctx);
-            Callable.From(() => OnTreesBatchMarked?.Invoke(addedList)).CallDeferred();
-        }
-    }
-
-    public void UnmarkTree(int x, int y)
-    {
-        lock (_lock)
-        {
-            if (_markedTrees.Remove((x, y)))
-            {
-                ChopProgress.Clear(x, y);
-                JobBroker.Instance.UnregisterTreeChop(x, y);
-                Callable.From(() => OnTreeUnmarked?.Invoke((x, y))).CallDeferred();
-            }
-        }
-    }
-
-    public void UnmarkTreesBatch(List<(int X, int Y)> trees)
-    {
-        if (trees == null || trees.Count == 0) return;
-
-        var removedList = new List<(int X, int Y)>(trees.Count);
-        lock (_lock)
-        {
-            foreach (var pos in trees)
-            {
-                if (_markedTrees.Remove(pos))
-                {
-                    ChopProgress.Clear(pos.X, pos.Y);
-                    removedList.Add(pos);
-                }
-            }
-        }
-
-        if (removedList.Count > 0)
-        {
-            JobBroker.Instance.UnregisterTreeChopBatch(removedList);
-            Callable.From(() => OnTreesBatchUnmarked?.Invoke(removedList)).CallDeferred();
-        }
-    }
-
-    public bool IsTreeMarked(int x, int y)
-    {
-        lock (_lock)
-        {
-            return _markedTrees.Contains((x, y));
-        }
-    }
-
-    /// <summary>Копия всех меток (для JobValidator — аудит потерь задач).</summary>
-    public HashSet<(int X, int Y)> GetAllMarkedTrees()
-    {
-        lock (_lock)
-        {
-            return new HashSet<(int X, int Y)>(_markedTrees);
-        }
-    }
-
-    public void CompleteTree(int x, int y)
-    {
-        lock (_lock)
-        {
-            _markedTrees.Remove((x, y));
-            ChopProgress.Clear(x, y);
-            JobBroker.Instance.UnregisterTreeChop(x, y);
-            Callable.From(() => OnTreeChopped?.Invoke((x, y))).CallDeferred();
-        }
-    }
-
     /// <summary>Очистить все метки рубки при смене региона / перезапуске карты.</summary>
     public void ClearAll()
     {
@@ -131,12 +5,17 @@ public class TreeJobManager
         {
             var oldTrees = new List<(int X, int Y)>(_markedTrees);
             _markedTrees.Clear();
-            ChopProgress.ClearAll();
-            if (oldTrees.Count > 0)
+            
+            // Обновляем визуал всех деревьев на "обычный"
+            foreach (var (x, y) in oldTrees)
             {
-                JobBroker.Instance.UnregisterTreeChopBatch(oldTrees);
-                Callable.From(() => OnTreesBatchUnmarked?.Invoke(oldTrees)).CallDeferred();
+                if (IsValidTree(x, y))
+                {
+                    MapRenderer.Instance.UpdateToolVisual(x, y, ToolVisualSpec.WorldKinds.Tree);
+                }
             }
+            
+            ChopProgress.ClearAll();
+            JobBroker.Instance.ClearTreeJobs();
         }
     }
-}
